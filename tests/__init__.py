@@ -11,13 +11,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+SCRIPTS = Path(__file__).resolve().parent.parent / "plugin" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 _PREVIOUS_XDG = os.environ.get("XDG_CONFIG_HOME")
 CONFIG_HOME = tempfile.mkdtemp(prefix="sbom-audit-tests-xdg-")
 os.environ["XDG_CONFIG_HOME"] = CONFIG_HOME
+# `settings` and its refresh write ~/.claude/settings.json; tests point them at a scratch home instead.
+os.environ["SBOM_AUDIT_HOME"] = tempfile.mkdtemp(prefix="sbom-audit-tests-home-")
 
 
 def _restore_config_home() -> None:
@@ -26,6 +28,7 @@ def _restore_config_home() -> None:
     else:
         os.environ["XDG_CONFIG_HOME"] = _PREVIOUS_XDG
     shutil.rmtree(CONFIG_HOME, ignore_errors=True)
+    shutil.rmtree(os.environ.pop("SBOM_AUDIT_HOME", ""), ignore_errors=True)
 
 
 atexit.register(_restore_config_home)

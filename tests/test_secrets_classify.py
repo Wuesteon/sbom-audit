@@ -19,7 +19,7 @@ from sbomaudit import config
 from tests import secrets_fixture as fx
 from tests.secrets_fixture import PLANTED
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent / "plugin"
 RULES = tomllib.loads((ROOT / "secrets" / "gitleaks.toml").read_text())
 CUSTOM = {rule["id"]: rule for rule in RULES["rules"]}
 CLASSES = cl.load_classes()

@@ -11,6 +11,7 @@ mapping, what leaves your machine and the known limitations. For installation an
 - [Scheduler](#scheduler)
 - [Secrets](#secrets)
 - [Hosts](#hosts)
+- [Modes, the session line and reading code](#modes-the-session-line-and-reading-code)
 - [The `security/` folder](#the-security-folder)
 - [Cyber Resilience Act](#cyber-resilience-act)
 - [Privacy: what leaves your machine](#privacy-what-leaves-your-machine)
@@ -100,7 +101,7 @@ then says the verifier disagreed. A headless proposal has no second agent and ma
 `unverified`; they are verified when you apply it.
 
 ```bash
-python3 scripts/sbom_audit_cli.py vex add billing-api GHSA-xxxx-yyyy-zzzz not_affected \
+python3 plugin/scripts/sbom_audit_cli.py vex add billing-api GHSA-xxxx-yyyy-zzzz not_affected \
   --justification vulnerable_code_not_in_execute_path \
   --impact "The parser is only used on trusted config files."
 ```
@@ -146,9 +147,9 @@ agent that fixes one project should not load the whole list; it asks for its par
 nothing and works in read-only mode:
 
 ```bash
-python3 scripts/sbom_audit_cli.py issues --project shop --max-priority 3 --json   # what to fix first in shop
-python3 scripts/sbom_audit_cli.py issues --kind secret                           # one line per open secret
-python3 scripts/sbom_audit_cli.py issues --host web-1                            # one server
+python3 plugin/scripts/sbom_audit_cli.py issues --project shop --max-priority 3 --json   # what to fix first in shop
+python3 plugin/scripts/sbom_audit_cli.py issues --kind secret                           # one line per open secret
+python3 plugin/scripts/sbom_audit_cli.py issues --host web-1                            # one server
 ```
 
 `--project` also selects the findings of the hosts that run the project. Each advisory entry carries
@@ -167,7 +168,7 @@ Saturday 03:00 local time: a per-user launchd agent in `~/Library/LaunchAgents/`
 systemd user service and timer in `~/.config/systemd/user/` on Linux. The timer calls a
 small wrapper that resolves the installed plugin path at run time, so it survives plugin
 updates. `schedule off` removes both. Other platforms get the GitHub Actions template
-`templates/github-actions/sbom-audit.yml` instead; it downloads pinned, checksum-verified syft,
+`plugin/templates/github-actions/sbom-audit.yml` instead; it downloads pinned, checksum-verified syft,
 osv-scanner and gitleaks release binaries from github.com in your CI. It clones the plugin at the
 release tag in `SBOM_AUDIT_REF`. A tag can be moved; to run a fixed version, point the clone at your own
 fork.
@@ -175,7 +176,7 @@ fork.
 - **One writer.** Only one machine runs the schedule and pushes to the evidence repository.
   When setup sees that the last run happened on another host, it says so; turn the timer
   off on one of them.
-- A missed week (the machine was asleep or off) shows in the SessionStart line and in
+- A missed week (the machine was asleep or off) shows in the session status line (when turned on) and in
   `STATUS.md` as `scheduler did not run since …`.
 - Unattended runs never prompt for a password or passphrase; when GitHub's host key is not
   yet in `~/.ssh/known_hosts`, the fetch fails with `Host key verification failed`, which
@@ -262,7 +263,7 @@ projects = ["shop-web"]              # optional: named in the report
 - The OS release's own end of life, from endoflife.date (Ubuntu by `VERSION_ID`, e.g. `22.04`; Debian by major version): `os:eol` is critical once the release's free security support has ended (paid Ubuntu Pro or Extended LTS support is named, not assumed) and informational within 90 days of that date. A failed lookup is the informational `info:os-eol-unavailable`, never "supported". It cannot be accepted, only fixed by upgrading the release.
 - The Lynis hardening index, its drop since the last run, warnings and suggestions.
 
-The result is `security/HOSTS.md` (a summary table, then one section per host with, in this order: critical, failed checks, host key, KEV, patch automation, logins, fingerprint changes, permissive defaults, Lynis warnings, vulnerabilities, third-party updates, collapsed Lynis suggestions, informational) and `hosts.json`; accepted state lives in `hosts/baseline/<host>.json` and `hosts-decisions.toml`, pinned host keys in `hosts/known_hosts`. `status.json` and the SessionStart line gain the open key `hosts_critical`. The first successful check becomes the baseline; after that every difference stays open until you `accept` it.
+The result is `security/HOSTS.md` (a summary table, then one section per host with, in this order: critical, failed checks, host key, KEV, patch automation, logins, fingerprint changes, permissive defaults, Lynis warnings, vulnerabilities, third-party updates, collapsed Lynis suggestions, informational) and `hosts.json`; accepted state lives in `hosts/baseline/<host>.json` and `hosts-decisions.toml`, pinned host keys in `hosts/known_hosts`. `status.json` and the session status line gain the open key `hosts_critical`. The first successful check becomes the baseline; after that every difference stays open until you `accept` it.
 
 **How a server is reached.** Each server gets a user `sbom-audit` with its own ed25519 key. Its `authorized_keys` line is `restrict,command="sudo -n /usr/local/lib/sbom-audit/collect"` and the sudoers drop-in allows exactly that path, with no arguments. The collector is a single POSIX `sh` script, owned by root and not writable by that user; it never reads `.env` files, application directories or private keys, and reports fingerprints and hashes instead of key or sudoers content. The private key `~/.ssh/sbom-audit_ed25519` has no passphrase, because the weekly run is unattended. That is acceptable only because of the forced command: the key can run the collector and nothing else. Host keys are pinned in `security/hosts/known_hosts` and checked with `StrictHostKeyChecking=yes`; a changed key aborts that host and is critical. `patch` and `bootstrap` use your own admin SSH access, never the audit key.
 
@@ -284,6 +285,48 @@ GitHub Actions does not support host mode: the template has no audit key, so the
 - `hosts patch <host>` runs the host's own `unattended-upgrade`, once: a dry run (preceded by `apt-get update` to refresh the package lists) shows the package list and whether `reboot-required` is already pending, and a confirmed run installs exactly that list. The plan does not predict whether the upgrade will need a reboot: the reboot state afterwards and the services on old libraries are reported once the upgrade has run. The saved plan is valid for 24 hours, `--include-docker` must match the plan's, and the list is checked again before anything is installed; otherwise the plan has to be run again. Without passwordless sudo, the command printed for you to run by hand is pinned to the saved plan's packages and is printed only while that plan is under 24 hours old and has the same `--include-docker`; otherwise you get the plan command. It never reboots and never restarts services or containers (`NEEDRESTART_SUSPEND=1`). Docker packages are held back unless you add `--include-docker`; a Docker-related package missing from the hold-back list blocks patching. unattended-upgrades runs with a strict Package-Whitelist and with the kernel and dependency autoremovals off for that run, so an upgrade that needs a new package, typically a new kernel image, may be refused: install those by hand with apt in a maintenance window. Packages' own maintainer scripts may restart their own services (ssh, for example); sbom-audit itself restarts nothing. If an `apt.conf.d` file on the host sets an unattended-upgrades `Remove-*` option to `"true"`, patch stops with "not in force": the host's file overrides the run's own setting (autoremovals off), so the run could remove packages nobody confirmed. Change that setting on the host by hand for patch to work there.
 
 Hosts reached only through ProxyJump or ProxyCommand are not supported: the host-key scan finds no keys.
+
+## Modes, the session line and reading code
+
+The plugin ships no hooks, and its skills pre-approve only Read, Grep and Glob, so by default Claude Code
+asks before each command. `/sbom-audit:settings` (CLI: `settings`) manages two opt-ins in the user's
+`~/.claude/settings.json`:
+
+```bash
+python3 plugin/scripts/sbom_audit_cli.py settings                      # what is on
+python3 plugin/scripts/sbom_audit_cli.py settings --autonomy on        # autonomous mode
+python3 plugin/scripts/sbom_audit_cli.py settings --session-hook on    # status line at session start
+python3 plugin/scripts/sbom_audit_cli.py settings --autonomy off --session-hook off
+```
+
+- **Autonomous mode** adds `Bash(python3 "<installed CLI path>" <subcommand> *)` (quoted and unquoted) for
+  `status`, `lookup`, `incident`, `code`, `issues`, `run`, `scan`, `audit`, `vex add`, `secrets`,
+  `hosts check` and `hosts accept`, plus `WebSearch` and `WebFetch(domain:…)` for the advisory sources.
+  The path is absolute, with no wildcard, so a repository you scan cannot ship a script that matches.
+  `setup`, `hosts patch|bootstrap|unbootstrap` and `settings` itself are never covered.
+- **Session hook** copies `templates/session-hook/session-start.py` to `~/.claude/sbom-audit/` and
+  registers it for `startup|resume|clear` with a 5-second timeout. It reads `security/status.json` from
+  the working directory upwards, treats every string in it as untrusted, makes no network call and
+  always exits 0.
+- What was added is recorded in `~/.claude/sbom-audit/integration.json`; `off` removes exactly that and
+  leaves your own rules and hooks alone. `settings.json` is backed up to `settings.json.sbom-audit.bak`
+  on the first change, and a file that is not valid JSON is never touched.
+- A plugin update changes the installed path. `run` and `setup` move recorded rules to the new path and
+  refresh the hook script; they never add anything that was not turned on.
+
+**Reading code on an audited branch.** `code` reads committed code without a shell and without checking
+anything out, for the assessment's verifier agents and for you:
+
+```bash
+python3 plugin/scripts/sbom_audit_cli.py code grep shop main 'template\(' --path src   # extended regex
+python3 plugin/scripts/sbom_audit_cli.py code show shop main src/server.js --lines 10-40
+python3 plugin/scripts/sbom_audit_cli.py code files shop main src
+```
+
+Only configured projects and existing branches (local or `origin/`, chosen like the scan does); paths
+must be repository-relative, `security/.cache/` is never read, repository textconv drivers and hooks
+never run, and output is capped at 400 lines. Exit 1 means no match, 2 a refused request. It writes
+nothing, so the headless assessment may call it too.
 
 ## The `security/` folder
 

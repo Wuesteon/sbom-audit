@@ -15,7 +15,7 @@
 #              connection attempt fails at name resolution and nothing is ever reachable)
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"   # physical: plugin/evals is a symlink to evals/
 ROOT="$(cd "$HERE/../.." && pwd)"
 export GIT_AUTHOR_NAME=eval GIT_AUTHOR_EMAIL=eval@example.invalid
 export GIT_COMMITTER_NAME=eval GIT_COMMITTER_EMAIL=eval@example.invalid
@@ -61,9 +61,9 @@ JS
     git -C ./shop-web -c commit.gpgsign=false commit -q -am "greeting endpoint"
     ;;
   secrets)
-    PYTHONPATH="$ROOT:$ROOT/scripts" python3 -c \
+    PYTHONPATH="$ROOT:$ROOT/plugin/scripts" python3 -c \
       'from pathlib import Path; from tests.secrets_fixture import write_fixture_portfolio; write_fixture_portfolio(Path("."))'
-    python3 "$ROOT/scripts/sbom_audit_cli.py" secrets scan --out ./security >/dev/null 2>&1 || test $? -eq 1
+    python3 "$ROOT/plugin/scripts/sbom_audit_cli.py" secrets scan --out ./security >/dev/null 2>&1 || test $? -eq 1
     test -f ./security/SECRETS.md
     ;;
   hosts)

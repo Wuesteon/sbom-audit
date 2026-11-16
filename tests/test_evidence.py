@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from scripts.sbomaudit import evidence
+from sbomaudit import evidence
 from tests.helpers import make_repo
 
 MARKER = "<!-- sbom-audit-template v{} -->"

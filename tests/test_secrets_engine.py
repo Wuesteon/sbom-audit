@@ -303,7 +303,7 @@ class ScanRepoTests(unittest.TestCase):
         self.assertEqual(eng.log_opts_since(["a", "b"]), "--all ^a ^b")
 
     def test_rules_path_is_the_plugin_rules_file(self):
-        self.assertEqual(eng.RULES_PATH, Path(__file__).resolve().parent.parent / "secrets" / "gitleaks.toml")
+        self.assertEqual(eng.RULES_PATH, Path(__file__).resolve().parent.parent / "plugin" / "secrets" / "gitleaks.toml")
         self.assertTrue(eng.RULES_PATH.is_file())
 
 

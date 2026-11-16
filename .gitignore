@@ -5,3 +5,6 @@ __pycache__/
 .superpowers/
 .worktrees/
 evals/results/
+
+# `ln -s ../evals plugin/evals` for `claude plugin eval plugin` (CONTRIBUTING.md); never committed
+plugin/evals

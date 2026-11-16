@@ -16,30 +16,32 @@ from pathlib import Path
 from sbomaudit import status as status_mod
 
 ROOT = Path(__file__).resolve().parents[1]
+PLUGIN = ROOT / "plugin"
 # skill name -> disable-model-invocation (True: only the user starts it)
 SKILLS = {"setup": True, "run": True, "status": False, "assess": False, "lookup": False,
-          "incident": False, "vex": True, "secrets": True, "schedule": True, "hosts": True}
+          "incident": False, "vex": True, "secrets": True, "schedule": True, "hosts": True,
+          "settings": True}
 # skill name -> the CLI subcommand its body must call (`schedule` fronts `setup --schedule`; `assess` sweeps with `incident`)
 SKILL_CLI = {"setup": "setup", "run": "run", "status": "status", "assess": "incident", "lookup": "lookup",
              "incident": "incident", "vex": "vex add", "secrets": "secrets", "schedule": "setup --schedule",
-             "hosts": "hosts"}
-# skill name -> allowed-tools (v1 list form until the narrow `Bash(python3 "…":*)` rule is verified, R77)
-ALLOWED_TOOLS = {"setup": "Bash, Read", "run": "Bash, Read, Grep, WebSearch, WebFetch, Agent", "status": "Bash, Read",
-                 "assess": "Bash, Read, Grep, WebSearch, WebFetch, Agent", "lookup": "Bash",
-                 "incident": "Bash, Read, Grep, WebSearch, WebFetch", "vex": "Bash, Read", "secrets": "Bash, Read",
-                 "schedule": "Bash, Read", "hosts": "Bash, Read"}
+             "hosts": "hosts", "settings": "settings"}
+# skill name -> allowed-tools. Only Read/Grep/Glob are pre-approved (directory policy for unverified publishers):
+# every command asks, unless the user opted into autonomous mode (`settings --autonomy on`, integration.py).
+ALLOWED_TOOLS = {"setup": "Read", "run": "Read, Grep, Glob", "status": "Read", "assess": "Read, Grep, Glob",
+                 "lookup": "Read", "incident": "Read, Grep, Glob", "vex": "Read", "secrets": "Read",
+                 "schedule": "Read", "hosts": "Read", "settings": "Read"}
 CLI = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py" '
 WRITE_CALLS = (CLI + "vex add", CLI + "secrets resolve", CLI + "hosts accept", CLI + "hosts patch")
 # description first words; `Use` for the two skills the model picks between (incident vs lookup routing)
-VERBS = ("Set", "Run", "Print", "Assess", "Find", "Check", "Record", "Scan", "Schedule", "Use")
-HOOK = ROOT / "hooks" / "session-start.py"
+VERBS = ("Set", "Run", "Print", "Assess", "Find", "Check", "Record", "Scan", "Schedule", "Switch", "Use")
+HOOK = PLUGIN / "templates" / "session-hook" / "session-start.py"
 FIXTURES = ROOT / "tests" / "fixtures" / "status"
 # claude plugin eval (2.1.319): the five cases and the prompt.md frontmatter keys it accepts
 EVAL_CASES = ("setup", "run", "lookup", "incident", "secrets", "hosts", "assess")
 EVAL_PROMPT_KEYS = {"schema_version", "name", "description", "tags", "plugins", "runs", "expected_outcome",
                     "model", "max_turns", "timeout_seconds", "allowed_tools", "disallowed_tools",
                     "artifact_publish", "growthbook_overrides", "append_system_prompt"}
-PLUGIN_VERSION = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
+PLUGIN_VERSION = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())["version"]
 
 
 def frontmatter(text: str) -> dict[str, str]:
@@ -71,27 +73,28 @@ def now_iso(delta_days: float = 0) -> str:
 
 class ManifestTests(unittest.TestCase):
     def test_plugin_json_and_marketplace_parse(self):
-        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+        plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())
         self.assertEqual(plugin["name"], "sbom-audit")
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
         self.assertEqual(market["name"], "wuesteon-plugins")
         self.assertEqual(market["owner"]["name"], "Nils Weiser")
         self.assertEqual([p["name"] for p in market["plugins"]], ["sbom-audit"])
         entry = market["plugins"][0]
-        self.assertEqual(entry["source"], "./")
+        self.assertEqual(entry["source"], "./plugin")
         self.assertEqual(entry["category"], "security")
         self.assertEqual(entry["version"], plugin["version"])
 
     def test_every_skill_has_frontmatter_and_cli_call(self):
         for name, disabled in SKILLS.items():
-            text = (ROOT / "skills" / name / "SKILL.md").read_text()
+            text = (PLUGIN / "skills" / name / "SKILL.md").read_text()
             fm, body = frontmatter(text), body_of(text)
             self.assertEqual(fm.get("name", "").strip(), name, name)
             description = fm.get("description", "").strip()
             self.assertIn(description.split(" ", 1)[0], VERBS, f"{name}: description starts with a verb")
             self.assertNotRegex(description.rstrip("."), r"[.!?]\s", f"{name}: description is one sentence")
             self.assertTrue(fm.get("argument-hint", "").strip(), name)
-            self.assertIn("Bash", fm.get("allowed-tools", ""), name)
+            granted = {tool.strip() for tool in fm.get("allowed-tools", "").split(",")}
+            self.assertLessEqual(granted, {"Read", "Grep", "Glob"}, name)
             self.assertIn(CLI + SKILL_CLI[name], body, name)
             self.assertIn("$ARGUMENTS", body, name)
             flag = fm.get("disable-model-invocation", "").strip()
@@ -99,7 +102,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_lookup_description_is_positive_and_body_hands_off_to_incident(self):
         # R83: negations in a description attract the very question they exclude
-        text = (ROOT / "skills" / "lookup" / "SKILL.md").read_text()
+        text = (PLUGIN / "skills" / "lookup" / "SKILL.md").read_text()
         description = frontmatter(text).get("description", "")
         for word in ("affected", "CVE", "GHSA", "PYSEC", "verdict", "incident"):
             self.assertNotIn(word.lower(), description.lower(), f"lookup description mentions {word}")
@@ -111,20 +114,20 @@ class ManifestTests(unittest.TestCase):
     def test_allowed_tools_match_the_table(self):
         self.assertEqual(set(ALLOWED_TOOLS), set(SKILLS))
         for name, tools in ALLOWED_TOOLS.items():
-            fm = frontmatter((ROOT / "skills" / name / "SKILL.md").read_text())
+            fm = frontmatter((PLUGIN / "skills" / name / "SKILL.md").read_text())
             self.assertEqual(fm.get("allowed-tools", "").strip(), tools, name)
 
     def test_cli_calls_never_forward_arguments_unrouted(self):
-        secrets = body_of((ROOT / "skills" / "secrets" / "SKILL.md").read_text())
+        secrets = body_of((PLUGIN / "skills" / "secrets" / "SKILL.md").read_text())
         self.assertNotIn(CLI + "secrets $ARGUMENTS", secrets)       # a bare `resolve` must never reach the CLI
         self.assertLess(secrets.find("start with `resolve`"), secrets.find("```"), "route resolve before any call")
-        status = body_of((ROOT / "skills" / "status" / "SKILL.md").read_text())
+        status = body_of((PLUGIN / "skills" / "status" / "SKILL.md").read_text())
         self.assertNotIn(CLI + "status $ARGUMENTS", status)
         for name in [*SKILLS, "sbom-audit"]:                        # the parser reads only `## Assessment YYYY-MM-DD`
-            self.assertNotIn("## Assessment <date>", (ROOT / "skills" / name / "SKILL.md").read_text(), name)
+            self.assertNotIn("## Assessment <date>", (PLUGIN / "skills" / name / "SKILL.md").read_text(), name)
 
     def test_hosts_skill_never_forwards_arguments_unrouted(self):
-        body = body_of((ROOT / "skills" / "hosts" / "SKILL.md").read_text())
+        body = body_of((PLUGIN / "skills" / "hosts" / "SKILL.md").read_text())
         self.assertNotIn(CLI + "hosts $ARGUMENTS", body)
         self.assertNotIn("hosts $ARGUMENTS", body)
         for sub in ("check", "accept", "patch", "bootstrap", "unbootstrap"):          # each route is written out
@@ -144,17 +147,17 @@ class ManifestTests(unittest.TestCase):
 
     def test_writing_skills_require_confirmation_wording(self):
         for name in ("vex", "secrets", "assess", "hosts"):
-            body = body_of((ROOT / "skills" / name / "SKILL.md").read_text())
+            body = body_of((PLUGIN / "skills" / name / "SKILL.md").read_text())
             writes = [body.find(call) for call in WRITE_CALLS if call in body]
             self.assertTrue(writes, f"{name}: no CLI write call")
             first_write = min(writes)
             self.assertIn("confirm", body[:first_write].lower(), f"{name}: confirmation must come before the write")
-        assess = body_of((ROOT / "skills" / "assess" / "SKILL.md").read_text())
+        assess = body_of((PLUGIN / "skills" / "assess" / "SKILL.md").read_text())
         for needle in ("--headless", "proposal waiting:", "nothing that writes"):
             self.assertIn(needle, assess, needle)
 
     def test_assess_verifies_suppressing_decisions_before_the_confirmation(self):
-        assess = body_of((ROOT / "skills" / "assess" / "SKILL.md").read_text())
+        assess = body_of((PLUGIN / "skills" / "assess" / "SKILL.md").read_text())
         verify = assess.find("**Adversarial verification.**")
         self.assertGreater(verify, assess.find("## 6. Decisions"), "verification belongs to the decisions step")
         self.assertLess(verify, assess.find("Show the list and wait"), "verify before the user confirms")
@@ -168,11 +171,11 @@ class ManifestTests(unittest.TestCase):
             self.assertIn(needle, section, needle)
         self.assertIn("no Agent tool", assess, "headless mode has no verifier")
         self.assertIn("marked `unverified`", assess, "a headless proposal says its decisions are unverified")
-        run = body_of((ROOT / "skills" / "run" / "SKILL.md").read_text())
+        run = body_of((PLUGIN / "skills" / "run" / "SKILL.md").read_text())
         self.assertIn("fresh verifier agent", run)
 
     def test_knowledge_skill_sections(self):
-        text = (ROOT / "skills" / "sbom-audit" / "SKILL.md").read_text()
+        text = (PLUGIN / "skills" / "sbom-audit" / "SKILL.md").read_text()
         fm = frontmatter(text)
         self.assertEqual(fm["name"].strip(), "sbom-audit")
         self.assertTrue(fm["description"].strip().startswith("Use when"))
@@ -184,8 +187,8 @@ class ManifestTests(unittest.TestCase):
             self.assertIn(needle, text, needle)
 
     def test_icon_is_512_png(self):
-        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
-        icon = ROOT / plugin["icon"]
+        plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())
+        icon = PLUGIN / plugin["icon"]
         self.assertEqual(plugin["icon"], ".claude-plugin/icon.png")
         data = icon.read_bytes()
         self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
@@ -195,11 +198,11 @@ class ManifestTests(unittest.TestCase):
         self.assertLess(len(data), 200 * 1024)
 
     def test_versions_agree(self):
-        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
+        plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())["version"]
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())["plugins"][0]["version"]
-        init = (ROOT / "scripts" / "sbomaudit" / "__init__.py").read_text()
+        init = (PLUGIN / "scripts" / "sbomaudit" / "__init__.py").read_text()
         package = re.search(r'__version__ = "([^"]+)"', init).group(1)
-        self.assertEqual((plugin, market, package), ("1.2.0", "1.2.0", "1.2.0"))
+        self.assertEqual((plugin, market, package), ("1.2.1", "1.2.1", "1.2.1"))
 
     def test_every_eval_case_has_prompt_and_graders(self):
         evals = ROOT / "evals"
@@ -226,15 +229,15 @@ class ManifestTests(unittest.TestCase):
                 if script:
                     self.assertTrue((evals / name / script.group(1)).is_file(), f"{name}: scaffold script missing")
 
-    def test_hooks_json_matcher_and_command(self):
-        hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())
-        entry = hooks["hooks"]["SessionStart"][0]
-        self.assertEqual(entry["matcher"], "startup|resume|clear")
-        command = entry["hooks"][0]
-        self.assertIn("hooks/session-start.py", command["command"])
-        self.assertEqual(command["timeout"], 5)
+    def test_plugin_ships_no_hooks(self):
+        """The session hook is opt-in (`settings --session-hook on`), never installed with the plugin."""
+        self.assertFalse((PLUGIN / "hooks").exists())
+        self.assertNotIn("hooks", json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text()))
         self.assertTrue(os.access(HOOK, os.X_OK), "session-start.py must be executable")
-        self.assertFalse((ROOT / "hooks" / "stale-check.sh").exists())
+
+    def test_installable_plugin_holds_no_tests_or_evals(self):
+        for name in ("tests", "evals", ".github", "tools", "docs"):
+            self.assertFalse((PLUGIN / name).exists(), name)
 
 
 # fixture -> (substring of systemMessage, additionalContext offers the assessment)

@@ -19,10 +19,10 @@ from unittest import mock
 from sbomaudit import cli, config
 from sbomaudit.hosts import admin, transport
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent / "plugin"
 SCRIPT = ROOT / "templates" / "hosts" / "patch.sh"
-FIXTURE = ROOT / "tests" / "fixtures" / "hosts" / "unattended-upgrade-dry-run.txt"            # a recording
-FIXTURE_EMPTY = ROOT / "tests" / "fixtures" / "hosts" / "unattended-upgrade-dry-run-empty.txt"  # a recording
+FIXTURE = ROOT.parent / "tests" / "fixtures" / "hosts" / "unattended-upgrade-dry-run.txt"            # a recording
+FIXTURE_EMPTY = ROOT.parent / "tests" / "fixtures" / "hosts" / "unattended-upgrade-dry-run-empty.txt"  # a recording
 NONE_LINE = "No packages found that can be upgraded unattended and no pending auto-removals\n"
 NOW = dt.datetime(2026, 11, 10, 12, 0, tzinfo=dt.timezone.utc)
 

@@ -135,7 +135,7 @@ class CheckTests(HostsCliBase):
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["sbom-audit.toml"])
 
 
-HOOK = Path(__file__).resolve().parent.parent / "hooks" / "session-start.py"
+HOOK = Path(__file__).resolve().parent.parent / "plugin" / "templates" / "session-hook" / "session-start.py"
 
 
 class StatusRefreshTests(HostsCliBase):

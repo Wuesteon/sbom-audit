@@ -12,7 +12,7 @@ from tests.secrets_fixture import EVAL_GRADER, PLANTED, eval_windows, write_eval
 ROOT = Path(__file__).resolve().parents[1]
 # every committed text output a planted value could leak into (the redaction rule covers them all)
 PUBLIC_TEXT = ("README.md", "CONTRIBUTING.md", "CHANGELOG.md", "docs", "evals")
-VERSION = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
+VERSION = json.loads((ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text())["version"]
 
 
 class ReleaseTests(unittest.TestCase):
@@ -48,7 +48,14 @@ class ReleaseTests(unittest.TestCase):
         section = text.split("## 1.2.0", 1)[1].split("\n## ", 1)[0]
         for needle in ("issues.json", "--max-priority", "secrets resolve", "adversarial verification", "`assess` case"):
             self.assertIn(needle, section, needle)
-        self.assertEqual(VERSION, "1.2.0")
+
+    def test_changelog_has_1_2_1_section(self):
+        text = (ROOT / "CHANGELOG.md").read_text()
+        self.assertRegex(text, r"^# Changelog\n\n## 1\.2\.1 — 2026-11-16\n")
+        section = text.split("## 1.2.1", 1)[1].split("\n## ", 1)[0]
+        for needle in ("/sbom-audit:settings", "autonomous", "code grep", "plugin/", "hook on"):
+            self.assertIn(needle, section, needle)
+        self.assertEqual(VERSION, "1.2.1")
 
     def test_changelog_has_1_0_0_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
@@ -76,7 +83,7 @@ class ReleaseTests(unittest.TestCase):
 
 
     def test_actions_template_is_pinned_and_verifies_downloads(self):
-        text = (ROOT / "templates" / "github-actions" / "sbom-audit.yml").read_text()
+        text = (ROOT / "plugin" / "templates" / "github-actions" / "sbom-audit.yml").read_text()
         self.assertIn("sha256", text)
         self.assertIn("--ignore-missing", text)
         uses = [line.strip() for line in text.splitlines() if line.strip().startswith("- uses:")]

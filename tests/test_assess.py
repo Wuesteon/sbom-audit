@@ -87,7 +87,9 @@ class AssessTests(unittest.TestCase):
                                 "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py incident:*),"
                                 'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" incident:*),'
                                 "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py status:*),"
-                                'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" status:*)')
+                                'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" status:*),'
+                                "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py code:*),"
+                                'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" code:*)')
         self.assertEqual(cmd[cmd.index("--max-budget-usd") + 1], "2.5")
         self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
         self.assertNotIn("--max-turns", cmd)

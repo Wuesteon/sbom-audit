@@ -1,0 +1,15 @@
+{
+  "name": "sbom-audit",
+  "displayName": "SBOM Audit",
+  "version": "1.2.1",
+  "description": "Portfolio-wide SBOMs, vulnerability audit and secrets scan for every git repository in a folder, with Claude-assisted triage and recorded OpenVEX decisions.",
+  "author": {
+    "name": "Nils Weiser",
+    "url": "https://waiser.dev"
+  },
+  "homepage": "https://github.com/Wuesteon/sbom-audit",
+  "repository": "https://github.com/Wuesteon/sbom-audit",
+  "license": "MIT",
+  "icon": ".claude-plugin/icon.png",
+  "keywords": ["sbom", "cyclonedx", "vulnerability", "cve", "osv", "cisa-kev", "openvex", "secrets", "gitleaks", "supply-chain", "cra", "security"]
+}

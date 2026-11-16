@@ -94,11 +94,29 @@ Sample from the committed demo fixture [`evals/fixtures/security/AUDIT.md`](eval
 | `/sbom-audit:secrets` | `scan`, `report` and `resolve` secrets findings |
 | `/sbom-audit:schedule` | Installs or removes a weekly run (launchd on macOS, systemd on Linux) |
 | `/sbom-audit:hosts` | Audits Debian/Ubuntu servers over a forced-command SSH key, installing nothing; `accept` writes after you confirm the list, `patch`, `bootstrap` and `unbootstrap` act only after you confirm the host by name |
+| `/sbom-audit:settings` | Switches between ask-first and autonomous mode, and turns the session status line on or off |
 
-Skills that write anything show the whole list first and wait for one confirmation. A SessionStart
-hook shows a one-line status (overdue run, class A secrets, new KEV or CRITICAL/HIGH findings)
-without any network call. Every skill calls `scripts/sbom_audit_cli.py`, which you can also run by
-hand.
+Skills that write anything show the whole list first and wait for one confirmation. Every skill calls
+`plugin/scripts/sbom_audit_cli.py`, which you can also run by hand.
+
+## Two modes
+
+**Ask-first (default).** The plugin installs no hooks and pre-approves nothing but reading files, so
+Claude Code asks before every command it runs. Nothing changes in your Claude Code settings.
+
+**Autonomous (opt-in).** `/sbom-audit:settings autonomous` adds allow rules to your
+`~/.claude/settings.json` for exactly this plugin's CLI, and only for what reads or writes the local
+`security/` folder (`run`, `status`, `lookup`, `incident`, `code`, `issues`, `vex add`, `secrets`,
+`hosts check`, `hosts accept`, …), plus web search and fetches from the advisory sources (osv.dev,
+GitHub, NVD, CISA, endoflife.date, distro trackers, registries). The audit, the assessment and its
+verifier agents then run without interruptions. Never covered, always asked: `setup` (it can change
+GitHub settings), `hosts patch|bootstrap|unbootstrap` (they change servers), `gh`, `git` and any other
+command. `/sbom-audit:settings ask` removes exactly the rules it added; a backup of your settings is
+kept on the first change.
+
+**Session status line (opt-in).** `/sbom-audit:settings hook on` registers a small stdlib script that
+prints one line when a session starts (overdue run, class A secrets, new KEV or CRITICAL/HIGH findings),
+with no network call.
 
 ## Privacy
 
@@ -116,14 +134,14 @@ versions also go to osv.dev, and with `[schedule] assess = true` the weekly run 
 - **[Reference](docs/reference.md)**: configuration, the full pipeline, `issues.json`, scheduler,
   secrets, hosts, the `security/` folder, the EU Cyber Resilience Act mapping, limitations.
 - **[CHANGELOG](CHANGELOG.md)**: release notes.
-- **[CONTRIBUTING](CONTRIBUTING.md)**: tests, plugin validation, evals and the release steps.
+- **[CONTRIBUTING](CONTRIBUTING.md)**: layout, tests, plugin validation, evals and the release steps.
 
 ## Development
 
 ```bash
 python3 -m unittest discover -s tests -t .      # synthetic fixtures; tool-dependent tests skip when a tool is missing
-claude plugin validate --strict --profile directory .
-claude --plugin-dir .                            # try the plugin from a checkout
+claude plugin validate --strict --profile directory plugin
+claude --plugin-dir plugin                       # try the plugin from a checkout
 ```
 
 ## License

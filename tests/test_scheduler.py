@@ -303,7 +303,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("warning:") for line in lines), lines)
 
     def test_actions_template_is_valid_yaml_shape_and_fails_on_public(self):
-        text = (ROOT / "templates" / "github-actions" / "sbom-audit.yml").read_text()
+        text = (ROOT / "plugin" / "templates" / "github-actions" / "sbom-audit.yml").read_text()
         self.assertNotIn("\t", text)
         for needle in ("schedule:", "- cron:", "workflow_dispatch:", "actions/checkout@", "visibility",
                        "::error::evidence repository must be private", "gh api",
@@ -324,7 +324,7 @@ class SchedulerTests(unittest.TestCase):
 
     def test_plugin_root_prefers_env(self):
         self.assertEqual(scheduler.plugin_root({"CLAUDE_PLUGIN_ROOT": "/p/root"}), Path("/p/root"))
-        self.assertEqual(scheduler.plugin_root({}), ROOT)
+        self.assertEqual(scheduler.plugin_root({}), ROOT / "plugin")
 
     def test_next_fire_is_the_coming_saturday_at_three(self):
         friday = dt.datetime(2026, 11, 6, 12, 0).astimezone()

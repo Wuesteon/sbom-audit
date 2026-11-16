@@ -19,24 +19,36 @@ running a test file by path does not work, because the modules import `tests.` a
 Every test uses synthetic fixtures; none touches the network, a real evidence repo or a real project.
 Tests that need Syft, osv-scanner or gitleaks skip when the tool is missing. CI installs gitleaks, so
 the redaction test (`tests/test_secrets_redaction.py`) always runs there. Install it locally with
-`brew install gitleaks` before you touch anything under `scripts/sbomaudit/secrets/`.
+`brew install gitleaks` before you touch anything under `plugin/scripts/sbomaudit/secrets/`.
+
+## Layout
+
+`plugin/` is the installable plugin and the only folder users get: `skills/`, `scripts/` (the CLI),
+`secrets/` (gitleaks rules), `templates/` and `.claude-plugin/plugin.json`. Everything else stays in the
+repository: `tests/`, `evals/`, `docs/`, `tools/` (icon and parity helpers) and CI. The marketplace
+(`.claude-plugin/marketplace.json` at the root) points at `./plugin`.
+
+The plugin ships no hooks, and its skills pre-approve only Read, Grep and Glob. The session status hook
+and autonomous mode are opt-ins the user turns on with `/sbom-audit:settings`
+(`plugin/scripts/sbomaudit/integration.py`); keep it that way.
 
 ## Validate
 
 ```bash
-claude plugin validate --strict --profile directory .
+claude plugin validate --strict --profile directory plugin
+claude plugin validate --strict .
 ```
 
-This must exit 0 with no warnings. `--profile directory` also checks the README and the icon
-(`.claude-plugin/icon.png`, written by `python3 scripts/make_icon.py`).
+Both must exit 0 with no warnings. `--profile directory` also checks the README and the icon
+(`plugin/.claude-plugin/icon.png`, written by `python3 tools/make_icon.py`).
 
 ## Try a change in Claude Code
 
 ```bash
-claude --plugin-dir /path/to/your/sbom-audit/checkout
+claude --plugin-dir /path/to/your/sbom-audit/checkout/plugin
 ```
 
-After editing a skill or hook, run `/reload-plugins` in that session. Try it in a throwaway folder
+After editing a skill, run `/reload-plugins` in that session. Try it in a throwaway folder
 (copy `evals/fixtures/security/` there), never in your real `security/` repo.
 
 ## Redaction rule
@@ -68,8 +80,13 @@ appears in the committed README, CONTRIBUTING, CHANGELOG, `docs/` or `evals/`.
 Run the evals by hand before every release. CI doesn't run them, because each run is a real Claude
 session.
 
+The eval runner only reads cases below the plugin folder, and `evals/` stays outside it so the
+fixtures are never shipped. Link it in for the run (the link is gitignored):
+
 ```bash
-claude plugin eval . --threshold 0.8 --allow-tools Bash --scaffold --trust-plugin --no-publish
+ln -sfn ../evals plugin/evals
+claude plugin eval plugin --threshold 0.8 --allow-tools Bash --scaffold --trust-plugin --no-publish
+rm plugin/evals
 ```
 
 Latest results, 2026-11-16 (1.2.0, three runs per arm), with/without the plugin: `assess` 1.00/0.83, `hosts` 1.00/0.33, `incident` 1.00/0.75, `lookup` 0.89/0.67, `run` 1.00/0.00, `secrets` 0.88/0.50, `setup` 1.00/0.33 (mean Δ +0.48). Every case meets the 0.8 threshold. The `hosts` case is single-turn, so it covers only the path where the host was not yet named and confirmed. The baseline `assess` arm also finds the call site but starts no verifier agent.
@@ -116,11 +133,11 @@ Latest results, 2026-11-16 (1.2.0, three runs per arm), with/without the plugin:
 ## Release
 
 1. Bump the version in all three places, which `tests/test_plugin_surface.py` checks agree:
-   `.claude-plugin/plugin.json`, the `sbom-audit` entry in `.claude-plugin/marketplace.json`, and
-   `scripts/sbomaudit/__init__.py`.
+   `plugin/.claude-plugin/plugin.json`, the `sbom-audit` entry in `.claude-plugin/marketplace.json`, and
+   `plugin/scripts/sbomaudit/__init__.py`.
 2. Add a `## <version> — <date>` section at the top of `CHANGELOG.md`. The release notes are taken
    from it.
-3. Update `SBOM_AUDIT_REF` in `templates/github-actions/sbom-audit.yml`, refresh its action SHA pins
+3. Update `SBOM_AUDIT_REF` in `plugin/templates/github-actions/sbom-audit.yml`, refresh its action SHA pins
    and the pinned tool versions (`SYFT_VERSION`, `OSV_SCANNER_VERSION`, `GITLEAKS_VERSION`), and
    update `docs/index.html` if the feature set changed.
 4. Make sure the tests are green, `validate` is clean, and every eval case scores ≥ 0.8.
@@ -130,7 +147,7 @@ Latest results, 2026-11-16 (1.2.0, three runs per arm), with/without the plugin:
 
 ## Manual headless checks
 
-The optional headless assessment (`scripts/sbomaudit/assess.py`, `[schedule] assess = true`) runs
+The optional headless assessment (`plugin/scripts/sbomaudit/assess.py`, `[schedule] assess = true`) runs
 `claude -p` as a child. Recheck these by hand after every Claude Code upgrade, with
 `SBOM_AUDIT_READ_ONLY=1` set and a throwaway evidence repo (a git copy of
 `evals/fixtures/security/`), never your real `security/` repo. Checks 1-6 were run on Claude Code 2.1.319,
@@ -142,12 +159,12 @@ check 7 on 2.1.325, both with `~/.claude/settings.json` `permissions.defaultMode
 | 2 | Do `--permission-mode dontAsk --tools Read,Grep,Glob,WebSearch,WebFetch,Bash --permission-prompts none --strict-mcp-config` fully override `defaultMode = "auto"`? | yes | 2026-11-08 | An unlisted `touch probe2.txt` was denied (`permission_denials` listed it, no file created). Write and Edit are not in `--tools`. |
 | 3 | Is `--restricted` a better fit for the child? | no | 2026-11-08 | With `--restricted` the installed plugin was not loaded ("`/sbom-audit:status` isn't installed"). It only loaded with an explicit `--plugin-dir`, so keep the current flags. |
 | 4 | `claude --plugin-dir <checkout>`, then `/sbom-audit:status` prints the status hint | not run (interactive) | 2026-11-08 | Command: `claude --plugin-dir <checkout>`, then type `/sbom-audit:status`. Print mode showed the same screen (check 1). |
-| 5 | Does the narrow rule `Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py":*)` in a skill's `allowed-tools` run without a prompt? | not run (interactive) | 2026-11-08 | Command: change one skill's `allowed-tools` to that form, then `claude --plugin-dir <checkout>` and run the skill. The skills keep the list form until this is a yes. |
+| 5 | Does a narrow rule `Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<script>" <sub> *)` in a skill's `allowed-tools` run without a prompt, and only for that subcommand? | yes | 2026-11-16 | On 2.1.325 with `claude -p --plugin-dir` and `--permission-mode default`: `${CLAUDE_PLUGIN_ROOT}` was expanded in the rule, `<sub>` and `<sub> args` ran, another subcommand was denied. The skills still pre-approve only Read/Grep/Glob (directory policy); the same rule shape is what `settings --autonomy on` writes, with the absolute path. |
 | 6 | Is the headless child's `lookup` call auto-approved in both the skill-expansion and the fallback path, and is `${CLAUDE_PLUGIN_ROOT}` substituted in print-mode expansion? | yes | 2026-11-08 | With `assess.command()`'s exact argv, `/sbom-audit:lookup lodash` ran `python3 "<abs root>/scripts/sbom_audit_cli.py" lookup lodash` (substituted, quoted). The fallback ran the unquoted absolute path. Both answered, with no `permission_denials`. |
 | 7 | Do the child's scoped rules `Read(//<abs path>/**)` and `WebFetch(domain:<host>)` (in `--allowedTools`, with Read and WebFetch still in `--tools`) limit it? | yes | 2026-11-16 | On 2.1.325: Read, Grep and Glob inside the path were allowed, outside it denied; `WebFetch(domain:api.osv.dev)` fetched osv.dev and example.com was denied. |
 
 Print-mode finding (confirmed by check 1): `claude -p` expands plugin skills on 2.1.319.
 `assess.skill_expansion_works()` still probes once per evidence repo and caches the answer under
 `print_mode_skills` in `.cache/scheduler.json`. When skills don't expand, the child gets the body of
-`skills/assess/SKILL.md` with `${CLAUDE_PLUGIN_ROOT}` replaced by the resolved plugin root. Never
+`plugin/skills/assess/SKILL.md` with `${CLAUDE_PLUGIN_ROOT}` replaced by the resolved plugin root. Never
 pass `--restricted` to the child (check 3).

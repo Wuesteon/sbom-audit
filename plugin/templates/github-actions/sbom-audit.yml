@@ -1,0 +1,155 @@
+# sbom-audit weekly run on GitHub Actions: the alternative to the local launchd / systemd timer.
+#
+# Copy this file to .github/workflows/sbom-audit.yml of your PRIVATE evidence repository.
+# The evidence repository IS the security/ folder: it must contain sbom-audit.toml at its root
+# (run `sbom-audit setup` once) and list the repositories to scan (see [discovery] there).
+# To read other private repositories, add a read-only token as the secret SBOM_AUDIT_REPOS_TOKEN;
+# only the steps that fetch sbom-audit, set up git's HTTPS credentials and run it receive it; checkout
+# and push use the default token.
+#
+# On the runner the repositories are cloned over HTTPS with that token (gh auth setup-git), not over SSH.
+# Secrets: SBOM_AUDIT_SECRETS_KEY (key for the secret fingerprints), optional SBOM_AUDIT_REPOS_TOKEN.
+# Nothing in the issues or the commit contains a secret value: only counts and classes.
+name: sbom-audit
+
+on:
+  schedule:
+    - cron: "0 3 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sbom-audit
+  cancel-in-progress: false
+
+env:
+  # The sbom-audit release tag this workflow runs; bump it when you update the plugin.
+  SBOM_AUDIT_REF: "sbom-audit--v1.2.1"
+  # Pinned 2026-11-09; check for newer: gh api repos/<owner>/<repo>/releases/latest --jq .tag_name
+  # Each download is checked against the checksum file of its release before it is installed.
+  SYFT_VERSION: "1.56.0"
+  OSV_SCANNER_VERSION: "2.7.0"
+  GITLEAKS_VERSION: "8.30.1"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Refuse a public evidence repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)"
+          if [ "$visibility" != "private" ]; then
+            echo "::error::evidence repository must be private"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install syft (checksum-verified)
+        working-directory: ${{ runner.temp }}
+        run: |
+          base="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"
+          curl -sSfLO "$base/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfLO "$base/syft_${SYFT_VERSION}_checksums.txt"
+          sha256sum -c --ignore-missing "syft_${SYFT_VERSION}_checksums.txt"
+          sudo tar -xz -C /usr/local/bin -f "syft_${SYFT_VERSION}_linux_amd64.tar.gz" syft
+
+      - name: Install osv-scanner (checksum-verified)
+        working-directory: ${{ runner.temp }}
+        run: |
+          base="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}"
+          curl -sSfLO "$base/osv-scanner_linux_amd64"
+          curl -sSfLO "$base/osv-scanner_SHA256SUMS"
+          sha256sum -c --ignore-missing osv-scanner_SHA256SUMS
+          sudo install -m 0755 osv-scanner_linux_amd64 /usr/local/bin/osv-scanner
+
+      - name: Install gitleaks (checksum-verified)
+        working-directory: ${{ runner.temp }}
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -sSfLO "$base/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum -c --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sudo tar -xz -C /usr/local/bin -f "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+
+      - name: Fetch sbom-audit
+        env:
+          GH_TOKEN: ${{ secrets.SBOM_AUDIT_REPOS_TOKEN || github.token }}
+        run: gh repo clone Wuesteon/sbom-audit "$RUNNER_TEMP/sbom-audit" -- --depth 1 --branch "$SBOM_AUDIT_REF"
+
+      - name: Set the commit identity
+        run: |
+          git config user.name "sbom-audit"
+          git config user.email "sbom-audit@users.noreply.github.com"
+
+      - name: Let git clone the listed repositories over HTTPS with the token
+        env:
+          GH_TOKEN: ${{ secrets.SBOM_AUDIT_REPOS_TOKEN || github.token }}
+        run: gh auth setup-git
+
+      - name: Run sbom-audit
+        env:
+          SBOM_AUDIT_SECRETS_KEY: ${{ secrets.SBOM_AUDIT_SECRETS_KEY }}
+          GH_TOKEN: ${{ secrets.SBOM_AUDIT_REPOS_TOKEN || github.token }}
+          SBOM_AUDIT_GIT_PROTOCOL: https
+        run: python3 "$RUNNER_TEMP/sbom-audit/scripts/sbom_audit_cli.py" run --out "$GITHUB_WORKSPACE"
+        continue-on-error: true
+
+      - name: Commit and push the evidence
+        run: |
+          # the run commits its own files; this catches anything it left behind
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(security): weekly sbom-audit run $(date -u +%F)"
+          fi
+          git push
+
+      - name: Open one issue per project with new KEV or CRITICAL/HIGH in production
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+
+          # Counts and classes only: no advisory text, no package list, no secret value.
+          status = json.load(open("status.json"))
+          audit = json.load(open("audit.json"))
+          deltas, day = status["deltas"], status["generated_at"][:10]
+          production = set(audit.get("production_projects", []))
+          # status.json identities are "<advisory> <ecosystem>:<name>@<version>"; audit.json knows the projects.
+          projects_of = {}
+          for v in audit.get("vulnerabilities", []):
+              ident = f"{v['ecosystem']}:{v['name']}@{v['version']}"
+              projects_of[ident] = {l["project"] for l in v.get("locations", [])}
+          per_project = {}
+          for key in ("kev", "critical_high_production"):
+              for item in deltas[key]["new"]:
+                  for project in projects_of.get(item.split(" ", 1)[1], ()):
+                      if key == "kev" or project in production:
+                          per_project.setdefault(project, {"kev": 0, "critical_high_production": 0})[key] += 1
+          for project, n in sorted(per_project.items()):
+              title = f"sbom-audit {day}: {project}: {n['kev']} new KEV, {n['critical_high_production']} new CRITICAL/HIGH"
+              body = f"{n['kev']} new KEV and {n['critical_high_production']} new CRITICAL/HIGH in production since the last run.\n\nDetails: AUDIT.md."
+              subprocess.run(["gh", "issue", "create", "--title", title, "--body", body], check=True)
+          new_a = len(deltas["secrets_a"]["new"])
+          if new_a:    # secrets are not tied to a project in status.json: one portfolio issue, class and count only
+              subprocess.run(["gh", "issue", "create", "--title", f"sbom-audit {day}: {new_a} new class A secrets",
+                              "--body", f"{new_a} new class A secrets since the last run. Details: STATUS.md."],
+                             check=True)
+          PY
+
+      - name: Fail the job when the run failed
+        run: |
+          python3 -c 'import json,sys; sys.exit(2 if (json.load(open("status.json")).get("exit_code") or 0) >= 2 else 0)'

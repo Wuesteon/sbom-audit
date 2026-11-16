@@ -25,7 +25,7 @@ from sbomaudit import cli, config
 from sbomaudit.hosts import admin, parse, store, transport
 from tests.hosts_fixture import collector_doc
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent / "plugin"
 TEMPLATES = ROOT / "templates" / "hosts"
 PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample0 sbom-audit"
 KEY_LINE = 'restrict,command="sudo -n /usr/local/lib/sbom-audit/collect" ' + PUB

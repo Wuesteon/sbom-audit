@@ -27,7 +27,7 @@ from sbomaudit.secrets.findings import assert_redacted
 from tests import secrets_fixture as fx
 from tests.helpers import _git, make_repo
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = Path(__file__).resolve().parents[1] / "plugin"
 GUARD_TEMPLATE = PLUGIN_ROOT / "templates" / "guard" / "guard.py"
 PLANTED = list(fx.PLANTED.values())
 ALL_PRESENT = lambda tool: f"/usr/local/bin/{tool}"  # noqa: E731

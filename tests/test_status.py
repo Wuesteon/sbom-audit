@@ -500,7 +500,7 @@ class HostsStatusTest(unittest.TestCase):
         if not hasattr(time, "tzset"):
             self.skipTest("time.tzset is POSIX only")
         spec = importlib.util.spec_from_file_location(
-            "session_start_hook", Path(__file__).resolve().parents[1] / "hooks" / "session-start.py")
+            "session_start_hook", Path(__file__).resolve().parents[1] / "plugin" / "templates" / "session-hook" / "session-start.py")
         hook = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(hook)
 

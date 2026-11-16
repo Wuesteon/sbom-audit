@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.1 — 2026-11-16
+
+- Upgrading from 1.2.0: the SessionStart hook is no longer installed with the plugin. Run
+  `/sbom-audit:settings hook on` to keep the status line. Claude Code now asks before each plugin
+  command; `/sbom-audit:settings autonomous` lets the local and read-only ones run without asking.
+- Safety: the plugin ships no hooks, and every skill pre-approves only Read, Grep and Glob (before:
+  unrestricted Bash, WebFetch and WebSearch in ten skills). Two opt-ins replace that, managed by the
+  new `/sbom-audit:settings` skill and `settings` subcommand in the user's `~/.claude/settings.json`:
+  autonomous mode (allow rules for this plugin's CLI at its absolute installed path, only for
+  subcommands that read or write the local `security/` folder, plus WebFetch on the advisory domains;
+  never `setup` or a host change) and the session status line. `off` removes exactly what `on` added;
+  a backup of `settings.json` is kept; after a plugin update `run` and `setup` move the recorded rules
+  to the new path and add nothing else.
+- New: `code grep|show|files <project> <branch>` reads committed code on an audited branch without a
+  shell or a checkout (configured projects only, repository-relative paths, `security/.cache/` never
+  read, no textconv or hooks, output capped). The assessment's verifier agents use it instead of raw
+  `git`, and the headless assessment may call it.
+- Layout: the installable plugin moved to `plugin/`. Tests, evals, docs, CI and the icon and parity
+  helpers (`tools/`) stay in the repository and are no longer shipped to users. The marketplace entry
+  points at `./plugin`.
+
 ## 1.2.0 — 2026-11-16
 
 - Upgrading from 1.1.x: nothing to migrate. The minor version bump triggers one full secrets
