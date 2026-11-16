@@ -1,0 +1,7 @@
+START 1794211150
+report_datetime_end=2026-11-09 08:02:10
+hardening_index=72
+warning[]=SSH-7408|SSH option AllowTcpForwarding is not hardened|-|-|
+suggestion[]=AUTH-9230|Configure password hashing rounds in /etc/login.defs|-|-|
+suggestion[]=PKGS-7346|Purge old/removed packages (1 found) with aptitude purge or dpkg --purge command.|-|-|
+MTIME 1794211330

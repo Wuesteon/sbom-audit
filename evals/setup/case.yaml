@@ -1,0 +1,6 @@
+schema_version: "1.0"
+name: setup
+description: "Setup in a fresh folder of three fixture repositories writes security/sbom-audit.toml and asks before anything that acts outside security/."
+tags: [setup]
+context:
+  scaffold_script: scaffold.sh

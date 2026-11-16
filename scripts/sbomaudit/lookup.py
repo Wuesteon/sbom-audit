@@ -1,0 +1,423 @@
+"""`lookup` (who uses what) from inventory.json and `incident` (are we affected) from OSV + audit.json."""
+from __future__ import annotations
+
+import datetime as dt
+import fnmatch
+import json
+import re
+import urllib.error
+import urllib.parse
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import config, report, scan, vex
+from .config import Config
+from .enrich import http_get_json
+from .model import BranchInventory, Component
+from .versions import norm_py
+
+OSV_VULN_API = "https://api.osv.dev/v1/vulns/"
+VULN_ID_RE = re.compile(r"^(CVE|GHSA|PYSEC|OSV|GO|RUSTSEC)-", re.IGNORECASE)
+PURL_TYPE = {"npm": "npm", "pypi": "pypi", "go": "golang", "crates.io": "cargo", "rubygems": "gem",
+             "maven": "maven", "nuget": "nuget", "packagist": "composer", "hex": "hex", "pub": "pub",
+             "jsr": "jsr", "cocoapods": "cocoapods", "swift": "swift"}
+VERDICT_HIT, VERDICT_UNKNOWN, VERDICT_PRESENT, VERDICT_ABSENT = "hit", "unknown", "present_not_affected", "absent"
+ALIAS_ORDER = ("GHSA-", "PYSEC-", "RUSTSEC-", "GO-", "OSV-")   # ecosystem advisories name packages; CVE records often do not
+
+
+@dataclass
+class Row:
+    name: str
+    project: str
+    branch: str
+    manifest: str
+    version: str
+    how: str                 # direct | transitive | image | runtime
+    ecosystem: str = ""
+
+
+@dataclass
+class Verdict:
+    project: str
+    branch: str
+    verdict: str             # hit | unknown | present_not_affected | absent
+    name: str = ""
+    ecosystem: str = ""
+    version: str = ""
+    evidence: str = ""
+
+
+@dataclass
+class Incident:
+    ident: str
+    kind: str                # vuln | package
+    id: str = ""
+    aliases: list[str] = field(default_factory=list)
+    summary: str = ""
+    affected: list[tuple[str, str]] = field(default_factory=list)
+    fixed: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    unknown: bool = False
+    note: str = ""           # why there are no verdicts
+    warning: str = ""        # verdicts exist but deserve a caveat
+    verdicts: list[Verdict] = field(default_factory=list)
+    rows: list[Row] = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- lookup
+
+def _norm(ecosystem: str, name: str) -> str:
+    return norm_py(name) if ecosystem.lower() == "pypi" else name.lower()
+
+
+def _how(c: Component) -> str:
+    if c.kind in ("image", "runtime"):
+        return c.kind
+    return "direct" if c.direct else "transitive"
+
+
+def _matches(c: Component, patterns: list[str]) -> bool:
+    candidates = {_norm(c.ecosystem, c.name), c.name.lower()}
+    if c.kind == "image":
+        image = (c.props.get("image") or "").lower()
+        candidates |= {image, image.split("@", 1)[0]}
+    elif c.kind == "runtime":
+        candidates.add(f"{c.name}:{c.version}".lower())
+    return any(fnmatch.fnmatchcase(cand, pat) for cand in candidates for pat in patterns)
+
+
+def rows(out: Path, names: list[str]) -> list[Row]:
+    """Every project@branch component whose name (or image reference) matches one of `names`.
+
+    Patterns are case-insensitive fnmatch globs; PyPI names are PEP 503 normalised on both sides.
+    """
+    inventories, _ = scan.read_inventory(Path(out))
+    patterns = [p.lower() for p in names if p]
+    patterns += [norm_py(p) for p in list(patterns) if norm_py(p) != p]
+    found: list[Row] = []
+    for inv in inventories:
+        for c in inv.components:
+            if _matches(c, patterns):
+                found.append(Row(name=c.name, project=inv.project, branch=inv.branch,
+                                 manifest="; ".join(c.locations) or c.props.get("source", ""),
+                                 version=c.version, how=_how(c), ecosystem=c.ecosystem))
+    found.sort(key=lambda r: (r.name.lower(), r.project, r.branch, r.version))
+    return found
+
+
+def rows_table(found: list[Row]) -> str:
+    lines = ["| Name | Version | Project | Branch | How | Ecosystem | Manifest |", "|---|---|---|---|---|---|---|"]
+    for r in found:
+        lines.append(f"| {report.md(r.name)} | {report.md(r.version) or '?'} | {report.md(r.project)} | "
+                     f"{r.branch} | {r.how} | {r.ecosystem} | {report.md(r.manifest)} |")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- incident
+
+def _osv_record(ident: str, fetch) -> dict | None:
+    """The OSV record for `ident`, or None when OSV does not know the id (HTTP 404)."""
+    try:
+        return fetch(OSV_VULN_API + urllib.parse.quote(ident, safe=""))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+def _affected(record: dict) -> tuple[list[tuple[str, str]], dict[tuple[str, str], list[str]]]:
+    pairs: list[tuple[str, str]] = []
+    fixed: dict[tuple[str, str], list[str]] = {}
+    for aff in record.get("affected") or []:
+        pkg = aff.get("package") or {}
+        eco, name = (pkg.get("ecosystem") or "").split(":")[0], pkg.get("name") or ""
+        if not eco or not name:
+            continue
+        key = (eco, name)
+        if key not in pairs:
+            pairs.append(key)
+        for rng in aff.get("ranges") or []:
+            for ev in rng.get("events") or []:
+                if "fixed" in ev and ev["fixed"] not in fixed.setdefault(key, []):
+                    fixed[key].append(ev["fixed"])
+    return pairs, fixed
+
+
+def _affected_with_aliases(record: dict, fetch) -> tuple[list[tuple[str, str]], dict]:
+    """Affected (ecosystem, name) pairs from the record, else from the first alias record that names packages."""
+    pairs, fixed = _affected(record)
+    if pairs:
+        return pairs, fixed
+    rank = {p: i for i, p in enumerate(ALIAS_ORDER)}
+    aliases = sorted((a for a in record.get("aliases") or [] if isinstance(a, str)),
+                     key=lambda a: (rank.get(a.split("-", 1)[0].upper() + "-", len(rank)), a))
+    for alias in aliases:
+        rec = _osv_record(alias, fetch)
+        if rec is None:
+            continue
+        pairs, fixed = _affected(rec)
+        if pairs:
+            return pairs, fixed
+    return [], {}
+
+
+def _read_audit(out: Path) -> dict:
+    path = Path(out) / report.JSON_FILE
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _as_utc(stamp: str) -> dt.datetime | None:
+    """ISO 8601 with Z or offset, any fractional precision -> aware UTC datetime; None when unparsable."""
+    if not stamp:
+        return None
+    text = re.sub(r"\.\d+", "", str(stamp).strip()).replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _stale_warning(record: dict, rep: dict, inventory_meta: dict | None = None) -> str:
+    """Why the verdicts may be out of date: the OSV record or the inventory is newer than the audit."""
+    changed = _as_utc(record.get("modified") or record.get("published") or "")
+    audited = _as_utc(rep.get("generated_at") or "")
+    scanned = _as_utc((inventory_meta or {}).get("generated_at") or "")
+    reasons = []
+    if changed and audited and changed > audited:
+        reasons.append(f"the OSV record changed {changed.date().isoformat()}, after the last audit "
+                       f"({audited.date().isoformat()})")
+    if scanned and audited and scanned > audited:
+        reasons.append(f"{scan.INVENTORY_FILE} ({scanned.date().isoformat()}) is newer than {report.JSON_FILE} "
+                       f"({audited.date().isoformat()}), so the verdicts rest on an older inventory")
+    if not reasons:
+        return ""
+    return "; ".join(reasons) + f": run /sbom-audit:run before trusting {VERDICT_PRESENT} verdicts."
+
+
+def _incomplete(rep: dict, inventories: list[BranchInventory]) -> dict[tuple[str, str], str]:
+    """(project, branch) -> why the last audit cannot vouch for that branch: its checkout or readers
+    reported errors, or osv-scanner failed on it. No finding there proves nothing."""
+    out: dict[tuple[str, str], str] = {}
+    for inv in inventories:
+        if inv.errors:
+            out[(inv.project, inv.branch)] = "; ".join(inv.errors)
+    for f in ((rep.get("sources") or {}).get("osv-scanner") or {}).get("failed") or []:
+        if isinstance(f, dict):
+            out[(f.get("project", ""), f.get("branch", ""))] = f"osv-scanner failed: {f.get('error')}"
+    return out
+
+
+def _audit_hits(rep: dict, ids: set[str]) -> dict[tuple[str, str, str, str, str], str]:
+    """(project, branch, ecosystem, normalised name, version) -> evidence, for findings in audit.json
+    that carry one of `ids`. Keyed by version: a branch can hold two versions of one package."""
+    hits: dict[tuple[str, str, str, str, str], str] = {}
+    for entry in rep.get("vulnerabilities") or []:
+        matching_vulns = [v for v in entry.get("vulns") or []
+                          if ids & ({v.get("id", "")} | set(v.get("aliases") or []))]
+        if not matching_vulns:
+            continue
+        v = matching_vulns[0]
+        evidence = f"{v.get('id')} {v.get('severity', '')}".strip()
+        if v.get("fixed_in"):
+            evidence += f", fix {entry['version']} → {v['fixed_in']}"
+        if v.get("kev"):
+            evidence = "KEV, " + evidence
+        for loc in entry.get("locations") or []:
+            key = (loc["project"], loc["branch"], entry["ecosystem"].lower(),
+                   _norm(entry["ecosystem"], entry["name"]), entry["version"])
+            hits[key] = evidence + (f" ({loc['manifest']})" if loc.get("manifest") else "")
+    for sup in rep.get("suppressed") or []:
+        f, st = sup["finding"], sup["statement"]
+        v = f["vulns"][0] if f.get("vulns") else {}
+        if not ids & ({v.get("id", "")} | set(v.get("aliases") or [])):
+            continue
+        c = f["component"]
+        key = (f["project"], f["branch"], c["ecosystem"].lower(), _norm(c["ecosystem"], c["name"]), c["version"])
+        hits.setdefault(key, f"suppressed by VEX: {st.get('status')} ({st.get('justification') or 'no justification'})")
+    return hits
+
+
+def _verdicts(inventories: list[BranchInventory], affected: list[tuple[str, str]],
+              fixed: dict, hits: dict, incomplete: dict[tuple[str, str], str] | None = None) -> list[Verdict]:
+    wanted = {(eco.lower(), _norm(eco, name)): (eco, name) for eco, name in affected}
+    incomplete = incomplete or {}
+    out: list[Verdict] = []
+    for inv in inventories:
+        gap = incomplete.get((inv.project, inv.branch))
+        gap_evidence = f"audit incomplete for this branch: {gap}" if gap else ""
+        found_any = False
+        for c in inv.components:
+            if c.kind != "package":
+                continue
+            key = (c.ecosystem.lower(), _norm(c.ecosystem, c.name))
+            if key not in wanted:
+                continue
+            found_any = True
+            hit = hits.get((inv.project, inv.branch, *key, c.version))
+            if hit and not hit.startswith("suppressed by VEX"):
+                out.append(Verdict(inv.project, inv.branch, VERDICT_HIT, c.name, c.ecosystem, c.version, hit))
+            elif gap and not hit:
+                out.append(Verdict(inv.project, inv.branch, VERDICT_UNKNOWN, c.name, c.ecosystem, c.version, gap_evidence))
+            else:
+                fixes = fixed.get(wanted[key]) or []
+                evidence = hit or (f"{c.version} not in the affected range per osv-scanner"
+                                   + (f" (fixed: {', '.join(fixes)})" if fixes else ""))
+                out.append(Verdict(inv.project, inv.branch, VERDICT_PRESENT, c.name, c.ecosystem, c.version, evidence))
+        if not found_any and gap:
+            out.append(Verdict(inv.project, inv.branch, VERDICT_UNKNOWN, evidence=gap_evidence))
+        elif not found_any:
+            out.append(Verdict(inv.project, inv.branch, VERDICT_ABSENT, evidence="not in SBOM"))
+    order = {VERDICT_HIT: 0, VERDICT_UNKNOWN: 1, VERDICT_PRESENT: 2, VERDICT_ABSENT: 3}
+    out.sort(key=lambda v: (order[v.verdict], v.project, v.branch, v.name))
+    return out
+
+
+def incident(out: Path, ident: str, fetch=None) -> Incident:
+    """Are we affected by `ident`? A vulnerability id is resolved through OSV and checked against
+    audit.json's findings and inventory.json's components; a bare name is a plain lookup."""
+    out = Path(out)
+    fetch = fetch or http_get_json
+    ident = ident.strip()
+    if not VULN_ID_RE.match(ident):
+        return Incident(ident=ident, kind="package", rows=rows(out, [ident]))
+    ident = ident.upper() if ident.upper().startswith(("CVE-", "GHSA-")) else ident
+    if ident.upper().startswith("GHSA-"):
+        ident = "GHSA-" + ident[5:].lower()
+    inc = Incident(ident=ident, kind="vuln")
+    record = _osv_record(ident, fetch)
+    if record is None:
+        inc.unknown = True
+        inc.note = f"OSV does not know {ident}; falling back to a name lookup."
+        inc.rows = rows(out, [ident])
+        return inc
+    inc.id = record.get("id") or ident
+    inc.aliases = list(record.get("aliases") or [])
+    inc.summary = (record.get("summary") or (record.get("details") or "")[:160]).strip()
+    inc.affected, inc.fixed = _affected_with_aliases(record, fetch)
+    if not inc.affected:
+        inc.note = (f"OSV lists no affected packages for {inc.id} or its aliases (source ranges only): "
+                    "it cannot be mapped to the SBOMs; check the advisory by hand.")
+        return inc
+    ids = {ident, inc.id, *inc.aliases}
+    inventories, meta = scan.read_inventory(out)
+    try:
+        rep = _read_audit(out)
+    except FileNotFoundError:
+        inc.note = (f"{report.JSON_FILE} not found: run the audit first to tell hits from "
+                    "present-but-unaffected; listing where the affected packages occur instead.")
+        inc.rows = rows(out, [name for _, name in inc.affected])
+        return inc
+    inc.verdicts = _verdicts(inventories, inc.affected, inc.fixed, _audit_hits(rep, ids),
+                             _incomplete(rep, inventories))
+    inc.warning = _stale_warning(record, rep, meta)
+    return inc
+
+
+def verdict_table(inc: Incident) -> str:
+    lines = ["| Project | Branch | Package | Version | Verdict | Evidence |", "|---|---|---|---|---|---|"]
+    for v in inc.verdicts:
+        lines.append(f"| {report.md(v.project)} | {v.branch} | {report.md(v.name) or '—'} | "
+                     f"{report.md(v.version) or '—'} | {v.verdict} | {report.md(v.evidence)} |")
+    return "\n".join(lines)
+
+
+def _affected_purl(eco: str, name: str, inventories: list[BranchInventory]) -> str:
+    for inv in inventories:
+        for c in inv.components:
+            if c.kind == "package" and c.ecosystem.lower() == eco.lower() and _norm(eco, c.name) == _norm(eco, name) and c.purl:
+                return vex.versionless(c.purl)
+    ptype = PURL_TYPE.get(eco.lower(), eco.lower())
+    pname = norm_py(name) if ptype == "pypi" else name
+    return f"pkg:{ptype}/{pname}"
+
+
+def record_absent(cfg: Config, inc: Incident, author: str | None = None) -> list[Path]:
+    """One `not_affected` / `component_not_present` statement per absent project and affected package."""
+    if not inc.verdicts:
+        return []
+    inventories, _ = scan.read_inventory(cfg.out)
+    from .pipeline import purl_of
+    purls = purl_of(cfg, inventories)
+    absent = sorted({v.project for v in inc.verdicts if v.verdict == VERDICT_ABSENT}
+                    - {v.project for v in inc.verdicts if v.verdict != VERDICT_ABSENT})
+    today = dt.date.today().isoformat()
+    written: list[Path] = []
+    for project in absent:
+        for eco, name in inc.affected:
+            path = vex.add(cfg.out, project, purls[project], inc.ident, "not_affected",
+                           justification="component_not_present",
+                           impact=f"{name} ({eco}) is not in the SBOM of any audited branch of {project} ({today})",
+                           subcomponent=_affected_purl(eco, name, inventories), author=author)
+            if path not in written:
+                written.append(path)
+    return written
+
+
+# --------------------------------------------------------------------------- CLI
+
+def cli_lookup(args) -> int:
+    try:
+        found = rows(args.out, args.names)
+    except FileNotFoundError:
+        print(f"{Path(args.out) / scan.INVENTORY_FILE} not found: run `scan` (or `run`) first.")
+        return 2
+    if not found:
+        print(f"no match for {', '.join(args.names)} in {Path(args.out) / scan.INVENTORY_FILE}")
+        return 1
+    print(rows_table(found))
+    return 0
+
+
+def cli_incident(args) -> int:
+    out = Path(args.out)
+    try:
+        inc = incident(out, args.ident, fetch=http_get_json)
+    except FileNotFoundError as exc:
+        print(f"no inventory in {out} ({Path(exc.filename or '').name or 'inventory.json'} missing): run /sbom-audit:run first.")
+        return 2
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"OSV lookup failed for {args.ident}: {exc}")
+        return 2
+    if inc.kind == "package":
+        print(f"`{inc.ident}` is not a vulnerability id; showing where it is used.\n")
+        print(rows_table(inc.rows) if inc.rows else "no match.")
+        return 0
+    if inc.unknown:
+        print(inc.note)
+        print(rows_table(inc.rows) if inc.rows else "no component of that name either.")
+        return 2
+    head = f"**{inc.id}**" + (f" ({', '.join(inc.aliases)})" if inc.aliases else "")
+    print(f"{head}: {inc.summary}\n")
+    affected = ", ".join(f"{name} ({eco})" + (f" fixed in {', '.join(inc.fixed[(eco, name)])}" if inc.fixed.get((eco, name)) else "")
+                         for eco, name in inc.affected) or "no affected packages listed"
+    print(f"Affected packages: {affected}\n")
+    if not inc.affected:
+        print(inc.note)
+        return 2
+    if inc.note:
+        print(inc.note + "\n")
+        print(rows_table(inc.rows) if inc.rows else "none of the affected packages is in any SBOM.")
+        return 2
+    if inc.warning:
+        print(f"Warning: {inc.warning}\n")
+    print(verdict_table(inc))
+    hits = [v for v in inc.verdicts if v.verdict == VERDICT_HIT]
+    unknown = [v for v in inc.verdicts if v.verdict == VERDICT_UNKNOWN]
+    absent = sorted({v.project for v in inc.verdicts if v.verdict == VERDICT_ABSENT})
+    print(f"\n{len(hits)} hit(s), {len(unknown)} branch(es) with an incomplete audit, "
+          f"{len(absent)} project(s) without the component.")
+    if getattr(args, "vex", False) and absent:
+        cfg = config.load(out)
+        files = record_absent(cfg, inc, author=getattr(args, "author", None))
+        for f in files:
+            print(f"wrote {f}")
+    elif absent:
+        print(f"Record the no-hits with: /sbom-audit:incident {inc.ident} --vex")
+    if unknown and not hits:
+        print(f"Re-run /sbom-audit:run to complete the audit for: "
+              + ", ".join(sorted({f'{v.project}@{v.branch}' for v in unknown})))
+    return 1 if hits else (2 if unknown else 0)

@@ -1,0 +1,6 @@
+schema_version: "1.0"
+name: lookup
+description: "Who uses lodash? Answered from the fixture inventory through the lookup CLI."
+tags: [lookup]
+context:
+  scaffold_script: scaffold.sh

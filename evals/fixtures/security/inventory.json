@@ -1,0 +1,140 @@
+{
+ "generated_at": "2026-11-07T02:58:00Z",
+ "root": ".",
+ "mode": "portfolio",
+ "branches": [
+  "main",
+  "dev"
+ ],
+ "inventories": [
+  {
+   "project": "shop-web",
+   "branch": "main",
+   "ref": "main",
+   "commit": "0000000000000000000000000000000000000001",
+   "behind": 0,
+   "components": [
+    {
+     "kind": "package",
+     "ecosystem": "npm",
+     "name": "lodash",
+     "version": "4.17.20",
+     "purl": "pkg:npm/lodash@4.17.20",
+     "scope": "required",
+     "locations": [
+      "package-lock.json"
+     ],
+     "direct": true,
+     "props": {}
+    },
+    {
+     "kind": "image",
+     "ecosystem": "docker",
+     "name": "node",
+     "version": "18-alpine",
+     "purl": "pkg:docker/node@18-alpine",
+     "scope": "required",
+     "locations": [
+      "Dockerfile"
+     ],
+     "direct": true,
+     "props": {
+      "image": "node:18-alpine",
+      "source": "Dockerfile",
+      "floating": false,
+      "own": false,
+      "digest": false,
+      "pin_level": "major"
+     }
+    },
+    {
+     "kind": "runtime",
+     "ecosystem": "nodejs",
+     "name": "nodejs",
+     "version": "18",
+     "purl": "pkg:generic/nodejs@18",
+     "scope": "required",
+     "locations": [
+      "package.json"
+     ],
+     "direct": true,
+     "props": {
+      "source": "package.json",
+      "detail": "engines.node >=18"
+     }
+    }
+   ],
+   "sbom_path": "sbom/shop-web/main.cdx.json",
+   "errors": []
+  },
+  {
+   "project": "billing-api",
+   "branch": "main",
+   "ref": "main",
+   "commit": "0000000000000000000000000000000000000001",
+   "behind": 0,
+   "components": [
+    {
+     "kind": "package",
+     "ecosystem": "PyPI",
+     "name": "requests",
+     "version": "2.31.0",
+     "purl": "pkg:pypi/requests@2.31.0",
+     "scope": "required",
+     "locations": [
+      "requirements.txt"
+     ],
+     "direct": true,
+     "props": {}
+    },
+    {
+     "kind": "image",
+     "ecosystem": "docker",
+     "name": "python",
+     "version": "3.12-slim",
+     "purl": "pkg:docker/python@3.12-slim",
+     "scope": "required",
+     "locations": [
+      "Dockerfile"
+     ],
+     "direct": true,
+     "props": {
+      "image": "python:3.12-slim",
+      "source": "Dockerfile",
+      "floating": false,
+      "own": false,
+      "digest": false,
+      "pin_level": "minor"
+     }
+    }
+   ],
+   "sbom_path": "sbom/billing-api/main.cdx.json",
+   "errors": []
+  },
+  {
+   "project": "docs-site",
+   "branch": "main",
+   "ref": "main",
+   "commit": "0000000000000000000000000000000000000001",
+   "behind": 0,
+   "components": [
+    {
+     "kind": "package",
+     "ecosystem": "npm",
+     "name": "lodash",
+     "version": "4.17.21",
+     "purl": "pkg:npm/lodash@4.17.21",
+     "scope": "required",
+     "locations": [
+      "package-lock.json"
+     ],
+     "direct": true,
+     "props": {}
+    }
+   ],
+   "sbom_path": "sbom/docs-site/main.cdx.json",
+   "errors": []
+  }
+ ],
+ "skipped": []
+}

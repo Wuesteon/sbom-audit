@@ -1,0 +1,89 @@
+{
+ "schema": 1,
+ "generated_at": "2026-11-07T10:00:00+01:00",
+ "duration_s": 12.5,
+ "exit_code": 0,
+ "plugin_version": "1.0.0",
+ "run_host": "mac",
+ "mode": "full",
+ "counts": {
+  "projects": 2,
+  "branches": 3,
+  "vulnerable": 0,
+  "kev": 0,
+  "critical_high_production": 0,
+  "eol": 0,
+  "floating_tags": 0,
+  "suppressed": 0,
+  "secrets": {
+   "A": 0,
+   "B": 0,
+   "C": 0
+  },
+  "hosts": {
+   "critical": 0,
+   "critical_hosts": [],
+   "failed": 0,
+   "checked": 1,
+   "last_checked": "2026-01-02",
+   "skipped": null
+  }
+ },
+ "open": {
+  "kev": [],
+  "critical_high_production": [],
+  "eol": [],
+  "secrets_a": [],
+  "secrets_b": [],
+  "hosts_critical": []
+ },
+ "deltas": {
+  "kev": {
+   "new": [],
+   "resolved": []
+  },
+  "critical_high_production": {
+   "new": [],
+   "resolved": []
+  },
+  "eol": {
+   "new": [],
+   "resolved": []
+  },
+  "secrets_a": {
+   "new": [],
+   "resolved": []
+  },
+  "secrets_b": {
+   "new": [],
+   "resolved": []
+  },
+  "hosts_critical": {
+   "new": [],
+   "resolved": []
+  }
+ },
+ "first_run": true,
+ "failed_sources": [],
+ "secrets_scan": {
+  "mode": "skipped",
+  "engine": null,
+  "repos": 0,
+  "oldest_open_days": 0,
+  "skipped_reason": "no secrets scan in this run"
+ },
+ "last_assessment": "2026-11-07",
+ "assessment_proposal": null,
+ "commit": {
+  "status": "skipped",
+  "sha": null,
+  "detail": "",
+  "pending_hand_edits": []
+ },
+ "push": {
+  "status": "skipped",
+  "detail": ""
+ },
+ "visibility": "unknown",
+ "cra_products_open": []
+}

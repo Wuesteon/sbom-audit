@@ -1,0 +1,3 @@
+/etc/sudoers	f5ba91605c1884f01ee414ac946652df349b28437c70cae1e2dc30ae714b2f36	root,%admin,%sudo
+/etc/sudoers.d/90-deploy	d7fa50cb8272905f286046d2e43b8a7aca5d5cf0599a3683f97663f343a392b3	deploy
+/etc/sudoers.d/README	2b7814d3fca2e99e56c51b6ff2aa313ea6e9da6424804240aa8ad891fdfe0900	

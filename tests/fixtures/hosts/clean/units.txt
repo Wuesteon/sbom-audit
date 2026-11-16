@@ -1,0 +1,7 @@
+apt-daily-upgrade.timer	/usr/lib/systemd/system/apt-daily-upgrade.timer	99ac6e0f72b759659cbcd8ac1ab095ed2c3324d03c59bb7275e8a16a62e00dbe
+containerd.service	/usr/lib/systemd/system/containerd.service	2b3d0a410473c30ec55ee353c51305df15d0ca6424853083a2dcd155df75a15f
+cron.service	/usr/lib/systemd/system/cron.service	5980609eecf3075a6deb44f67877fa3429dfa51493f7084cdf21e57bcf7dd2d6
+docker.service	/usr/lib/systemd/system/docker.service	3538035ad9649afabaad12e73dd0e6ce7558b0d9c98d8d1b48483254182a68f3
+ssh.service	/usr/lib/systemd/system/ssh.service	7b7c1859ea047d5585bc4d3f31839a677026ca85ea301b56a2ce4b97f2574010
+ufw.service	/usr/lib/systemd/system/ufw.service	c1a7d8ea95bb3f0f99cfd23492e7b0b3a7527034b5630c69cbccd0079acc614a
+unattended-upgrades.service	/usr/lib/systemd/system/unattended-upgrades.service	ff08b52f469ccdea43b1727dd3f07ba5c15b5b7ea6f030c46e1bb7f08ec429f1

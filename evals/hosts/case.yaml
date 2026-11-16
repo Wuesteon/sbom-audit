@@ -1,0 +1,6 @@
+schema_version: "1.0"
+name: hosts
+description: "Patch a named server with no confirmation given yet: the plan first, no --confirm call, the host named back for confirmation."
+tags: [hosts]
+context:
+  scaffold_script: scaffold.sh

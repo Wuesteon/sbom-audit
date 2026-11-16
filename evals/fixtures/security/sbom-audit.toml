@@ -1,0 +1,28 @@
+# sbom-audit configuration. Docs: https://github.com/Wuesteon/sbom-audit
+branches = ["main", "dev"]
+ignore_projects = []
+fetch = false
+# Commit the evidence repository after each run; push only to a private remote.
+commit = false
+push = false
+
+# Discover repositories on GitHub in addition to local folders.
+# [discovery]
+# github_owner = "..."
+# include_forks = false
+
+# Scheduled headless assessment (writes a proposal only, never a VEX statement).
+# [schedule]
+# assess = false
+# assess_budget_usd = 5.0
+
+# Secret scanning (gitleaks).
+# [secrets]
+# enabled = true
+
+# Per-project options: production = true puts CRITICAL/HIGH findings first;
+# ignore = ["path/"] drops subtrees from the inventory.
+[projects]
+# [projects."<name>"]
+# github = "owner/repo"
+"shop-web" = { production = true }

@@ -1,0 +1,6 @@
+schema_version: "1.0"
+name: run
+description: "The full pipeline on the fixture portfolio: started in the background, status screen shown, Source status read first."
+tags: [run]
+context:
+  scaffold_script: scaffold.sh

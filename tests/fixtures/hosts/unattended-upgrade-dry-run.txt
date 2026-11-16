@@ -1,0 +1,9 @@
+Starting unattended upgrades script
+Allowed origins are: o=Ubuntu,a=noble, o=Ubuntu,a=noble-security, o=UbuntuESMApps,a=noble-apps-security
+Initial blacklist: docker-ce docker-ce-cli docker-ce-rootless-extras docker-buildx-plugin docker-compose-plugin containerd.io docker.io containerd runc
+Initial whitelist (not strict):
+Option --dry-run given, *not* performing real actions
+Packages that will be upgraded: libssl3t64 openssl curl libcurl4t64:amd64
+Writing dpkg log to /var/log/unattended-upgrades/unattended-upgrades-dpkg.log
+/usr/bin/dpkg --status-fd 10 --no-triggers --unpack --auto-deconfigure --force-confold --simulate -- /var/cache/apt/archives/openssl_3.0.13-0ubuntu3.4_amd64.deb
+All upgrades installed

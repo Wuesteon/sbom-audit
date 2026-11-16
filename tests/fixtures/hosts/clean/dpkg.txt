@@ -1,0 +1,66 @@
+Package: base-files
+Status: install ok installed
+Version: 13ubuntu10.1
+Architecture: amd64
+Source: base-files (13ubuntu10.1)
+
+Package: libc6
+Status: install ok installed
+Version: 2.39-0ubuntu8.3
+Architecture: amd64
+Source: glibc (2.39-0ubuntu8.3)
+
+Package: openssl
+Status: install ok installed
+Version: 3.0.13-0ubuntu3.4
+Architecture: amd64
+Source: openssl (3.0.13-0ubuntu3.4)
+
+Package: libssl3t64
+Status: install ok installed
+Version: 3.0.13-0ubuntu3.4
+Architecture: amd64
+Source: openssl (3.0.13-0ubuntu3.4)
+
+Package: openssh-server
+Status: install ok installed
+Version: 1:9.6p1-3ubuntu13.5
+Architecture: amd64
+Source: openssh (1:9.6p1-3ubuntu13.5)
+
+Package: sudo
+Status: install ok installed
+Version: 1.9.15p5-3ubuntu5
+Architecture: amd64
+Source: sudo (1.9.15p5-3ubuntu5)
+
+Package: linux-image-6.8.0-45-generic
+Status: install ok installed
+Version: 6.8.0-45.45
+Architecture: amd64
+Source: linux-signed (6.8.0-45.45)
+
+Package: linux-image-6.8.0-31-generic
+Status: deinstall ok config-files
+Version: 6.8.0-31.31
+Architecture: amd64
+Source: linux-signed (6.8.0-31.31)
+
+Package: unattended-upgrades
+Status: install ok installed
+Version: 2.9.1+nmu4ubuntu1
+Architecture: all
+Source: unattended-upgrades (2.9.1+nmu4ubuntu1)
+
+Package: docker-ce
+Status: install ok installed
+Version: 5:27.2.0-1~ubuntu.24.04~noble
+Architecture: amd64
+Source: docker-ce (5:27.2.0-1~ubuntu.24.04~noble)
+
+Package: containerd.io
+Status: install ok installed
+Version: 1.7.22-1
+Architecture: amd64
+Source: containerd.io (1.7.22-1)
+

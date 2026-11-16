@@ -1,0 +1,34 @@
+# sbom-audit Lynis profile, installed as /usr/local/lib/sbom-audit/lynis.prf and passed to
+# `lynis audit system --cronjob --profile` by collect.sh (on top of Lynis's own default.prf).
+#
+# Measured 2026-11-09, Lynis 3.0.9 in the ubuntu:24.04 container: 51 s without this profile, 48 s with
+# it. The image's /etc/apt/apt.conf.d/docker-clean was removed and the apt caches emptied first, so
+# apt behaves as on a host: with this profile no file was written outside /var/log; without it, Lynis
+# rebuilt /var/cache/apt/pkgcache.bin and srcpkgcache.bin. The collector's budget is 150 s;
+# `timeout -k 5 200` stops a hang.
+#
+# Never refresh the package lists: by default PKGS-7392 runs `apt-get update`, which writes
+# /var/lib/apt/lists. Kept although PKGS-7392 is skipped below, in case a host profile re-enables it.
+refresh-repositories=no
+#
+# apt queries: as root, apt-get rebuilds /var/cache/apt/*.bin (a host write). The collector reports
+# pending and security updates itself (sections upgradable and origins).
+# APT database consistency (`apt-get check`)
+skip-test=PKGS-7390
+# Debian/Ubuntu security updates (`apt-get --dry-run upgrade`, update-notifier's apt-check)
+skip-test=PKGS-7392
+# Upgradable packages via apt-show-versions (writes its own cache in /var/cache/apt-show-versions)
+skip-test=PKGS-7394
+#
+# File-system scans: their run time grows with the data on the host, and they walk directories the
+# collector itself never reads.
+# Old files in /tmp (find over /tmp)
+skip-test=FILE-6354
+# Shell history files (find over every home directory)
+skip-test=HOME-9310
+# Expired SSL certificates (find over certificate directories, reads every file found)
+skip-test=CRYP-7902
+# lsof over every process: open log files, deleted files in use, empty log files
+skip-test=LOGG-2180
+skip-test=LOGG-2190
+skip-test=LOGG-2192

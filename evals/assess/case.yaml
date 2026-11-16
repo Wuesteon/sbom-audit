@@ -1,0 +1,6 @@
+schema_version: "1.0"
+name: assess
+description: "A user claim that would close a finding (lodash template is never called) is false in the code: the verifier must catch it, the finding stays open, nothing is recorded."
+tags: [assess]
+context:
+  scaffold_script: scaffold.sh

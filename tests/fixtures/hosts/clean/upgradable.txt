@@ -1,0 +1,6 @@
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Listing...
+containerd.io/noble 1.7.23-1 amd64 [upgradable from: 1.7.22-1]
+docker-ce/noble 5:27.3.1-1~ubuntu.24.04~noble amd64 [upgradable from: 5:27.2.0-1~ubuntu.24.04~noble]

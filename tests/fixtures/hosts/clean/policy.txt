@@ -1,0 +1,103 @@
+base-files:
+  Installed: 13ubuntu10.1
+  Candidate: 13ubuntu10.1
+  Version table:
+ *** 13ubuntu10.1 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+        100 /var/lib/dpkg/status
+     13ubuntu10 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+libc6:
+  Installed: 2.39-0ubuntu8.3
+  Candidate: 2.39-0ubuntu8.3
+  Version table:
+ *** 2.39-0ubuntu8.3 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+openssl:
+  Installed: 3.0.13-0ubuntu3.4
+  Candidate: 3.0.13-0ubuntu3.4
+  Version table:
+ *** 3.0.13-0ubuntu3.4 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+libssl3t64:
+  Installed: 3.0.13-0ubuntu3.4
+  Candidate: 3.0.13-0ubuntu3.4
+  Version table:
+ *** 3.0.13-0ubuntu3.4 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+openssh-server:
+  Installed: 1:9.6p1-3ubuntu13.5
+  Candidate: 1:9.6p1-3ubuntu13.5
+  Version table:
+ *** 1:9.6p1-3ubuntu13.5 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+sudo:
+  Installed: 1.9.15p5-3ubuntu5
+  Candidate: 1.9.15p5-3ubuntu5
+  Version table:
+ *** 1.9.15p5-3ubuntu5 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+linux-image-6.8.0-45-generic:
+  Installed: 6.8.0-45.45
+  Candidate: 6.8.0-45.45
+  Version table:
+ *** 6.8.0-45.45 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+linux-image-6.8.0-31-generic:
+  Installed: (none)
+  Candidate: 6.8.0-31.31
+  Version table:
+     6.8.0-31.31 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+unattended-upgrades:
+  Installed: 2.9.1+nmu4ubuntu1
+  Candidate: 2.9.1+nmu4ubuntu1
+  Version table:
+ *** 2.9.1+nmu4ubuntu1 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+docker-ce:
+  Installed: 5:27.2.0-1~ubuntu.24.04~noble
+  Candidate: 5:27.3.1-1~ubuntu.24.04~noble
+  Version table:
+     5:27.3.1-1~ubuntu.24.04~noble 500
+        500 https://download.docker.com/linux/ubuntu noble/stable amd64 Packages
+ *** 5:27.2.0-1~ubuntu.24.04~noble 500
+        500 https://download.docker.com/linux/ubuntu noble/stable amd64 Packages
+        100 /var/lib/dpkg/status
+containerd.io:
+  Installed: 1.7.22-1
+  Candidate: 1.7.23-1
+  Version table:
+     1.7.23-1 500
+        500 https://download.docker.com/linux/ubuntu noble/stable amd64 Packages
+ *** 1.7.22-1 500
+        500 https://download.docker.com/linux/ubuntu noble/stable amd64 Packages
+        100 /var/lib/dpkg/status
+Package files:
+ 100 /var/lib/dpkg/status
+     release a=now
+ 500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+     release v=24.04,o=Ubuntu,a=noble-updates,n=noble,l=Ubuntu,c=main,b=amd64
+     origin archive.ubuntu.com
+ 500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+     release v=24.04,o=Ubuntu,a=noble,n=noble,l=Ubuntu,c=main,b=amd64
+     origin archive.ubuntu.com
+ 500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+     release v=24.04,o=Ubuntu,a=noble-security,n=noble,l=Ubuntu,c=main,b=amd64
+     origin security.ubuntu.com
+ 500 https://download.docker.com/linux/ubuntu noble/stable amd64 Packages
+     release o=Docker,a=noble,l=Docker CE,c=stable,b=amd64
+     origin download.docker.com
+Pinned packages:

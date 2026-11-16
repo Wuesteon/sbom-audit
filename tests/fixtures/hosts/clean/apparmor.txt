@@ -1,0 +1,2 @@
+Y
+{"version": "2", "profiles": {"/usr/bin/man": "enforce", "/usr/sbin/tcpdump": "enforce", "docker-default": "enforce", "lsb_release": "enforce", "man_filter": "enforce", "unix-chkpwd": "enforce", "firefox": "unconfined"}, "processes": {}}

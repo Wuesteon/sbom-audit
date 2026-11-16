@@ -1,0 +1,675 @@
+"""Report writers: `audit.json`, `AUDIT.md`, `INVENTORY.md`, the dated copy and `log.md`.
+
+`build()` turns the pipeline's results into one JSON-able dict; the writers only format it.
+AUDIT.md keeps the fixed triage order (KEV → CRITICAL/HIGH in production → EOL → floating tags →
+dev-only) and carries every hand-written `## Assessment` section of the previous file over unchanged.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import re
+from collections import Counter, defaultdict
+from pathlib import Path
+
+from . import __version__
+from .config import Config
+from .cvss import SEV_ORDER, base_label
+from .enrich import fixed_in
+from .model import BranchInventory, Finding
+from .versions import ver_key
+from .vex import Suppressed
+
+AUDIT_FILE = "AUDIT.md"
+INVENTORY_FILE = "INVENTORY.md"
+JSON_FILE = "audit.json"
+LOG_FILE = "log.md"
+REPORTS_DIR = "reports"
+OUTDATED_CAP = 60
+
+SEVERITY_ROWS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
+ACTIONABLE = ("CRITICAL", "HIGH")
+EOL_ICON = {"EOL": "🔴 EOL", "EOL soon": "🟠 EOL soon", "supported": "🟢 supported", "unknown": "⚪ unknown"}
+EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3}
+# INVENTORY.md overview columns: (header, component kind, names)
+OVERVIEW_COLUMNS = [("Node", "runtime", ("nodejs",)), ("Python", "runtime", ("python",)),
+                    ("Deno", "runtime", ("deno",)), ("Expo/React Native", "package", ("expo", "react-native")),
+                    ("SvelteKit", "package", ("@sveltejs/kit",)), ("NestJS", "package", ("@nestjs/core",)),
+                    ("Astro", "package", ("astro",)), ("Vite", "package", ("vite",)),
+                    ("FastAPI", "package", ("fastapi",)), ("Postgres", "runtime", ("postgresql",))]
+
+LOG_HEADER = ("# sbom-audit log\n\nAppend-only. Each run appends one line with the fields: time, `run`, projects, "
+              "vulnerable package versions, KEV, CRITICAL, HIGH, EOL runtimes/images, floating images, suppressed by VEX. "
+              "Add your own lines for assessments and remediation.\n\n")
+
+
+def _now() -> str:
+    return dt.datetime.now().astimezone().replace(microsecond=0).isoformat()
+
+
+_LINE_BREAKS = re.compile("\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")   # every str.splitlines() separator
+# the rest of C0/C1 (ESC sequences, NUL, backspace) and the bidi overrides that reorder what a reader sees
+_CONTROLS = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+
+
+def md(s) -> str:
+    """One table-safe line from untrusted text (advisory summaries, paths, authors, host output)."""
+    return _CONTROLS.sub(" ", _LINE_BREAKS.sub(" ", str(s).replace("|", "\\|")))
+
+
+def _sev_label(v: dict) -> str:
+    label = base_label(v.get("severity") or "UNKNOWN").upper()
+    if label == "MODERATE":
+        return "MEDIUM"
+    return label if label in SEVERITY_ROWS else "UNKNOWN"
+
+
+def _sev_key(v: dict) -> tuple:
+    return (SEV_ORDER.get(_sev_label(v), 5), -(v.get("cvss") or 0), v.get("id", ""))
+
+
+def worst_advisory(advisories: list[dict]) -> dict | None:
+    """The advisory to read first: an actively exploited one, else the most severe (CVSS breaks ties).
+
+    `AUDIT.md` and `issues.json` both use this, so they always name the same one."""
+    return min(advisories, key=lambda a: (not a.get("kev"), *_sev_key(a)), default=None)
+
+
+def _actionable(v: dict) -> bool:
+    return bool(v.get("kev")) or v.get("max_severity") in ACTIONABLE
+
+
+def _scope_of(scopes: set[str]) -> str:
+    if "required" in scopes:
+        return "required"
+    if scopes and scopes <= {"optional"}:
+        return "optional"
+    return "unknown"
+
+
+def _manifest(c) -> str:
+    return "; ".join(c.locations) or "?"
+
+
+# --------------------------------------------------------------------------- build
+
+def failed_label(f: dict) -> str:
+    """What a failed-source entry is about: a project@branch (scanner) or a lookup key (`what`)."""
+    return f.get("what") or f"{f.get('project')}@{f.get('branch')}"
+
+
+def _sources(sources: dict | None) -> dict:
+    out = {}
+    for name, info in (sources or {}).items():
+        info = dict(info or {})
+        failed = info.get("failed")
+        if isinstance(failed, list):
+            info["failed"] = [f if isinstance(f, dict) else {"project": f[0], "branch": f[1], "error": str(f[2])}
+                              for f in failed]
+        out[name] = info
+    return out
+
+
+def _vulnerabilities(findings: list[Finding]) -> list[dict]:
+    groups: dict[tuple, dict] = {}
+    scopes: dict[tuple, set] = defaultdict(set)
+    ids: dict[tuple, dict] = defaultdict(dict)
+    for f in findings:
+        c = f.component
+        key = (c.ecosystem, c.name, c.version)
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"ecosystem": c.ecosystem, "name": c.name, "version": c.version,
+                               "scope": "unknown", "direct_anywhere": False, "locations": [], "vulns": []}
+        scopes[key].add(c.scope)
+        loc = {"project": f.project, "branch": f.branch, "manifest": _manifest(c),
+               "direct": bool(c.direct), "scope": c.scope}
+        if loc not in g["locations"]:
+            g["locations"].append(loc)
+        if c.direct:
+            g["direct_anywhere"] = True
+        for v in f.vulns:
+            vid = v.get("id", "")
+            if vid in ids[key]:
+                if v.get("kev"):
+                    ids[key][vid]["kev"] = True
+                continue
+            v = dict(v)
+            v["kev"] = bool(v.get("kev"))
+            v["fixed_in"] = v.get("fixed_in") or fixed_in(v, c.version)
+            ids[key][vid] = v
+            g["vulns"].append(v)
+    rows = []
+    for key, g in groups.items():
+        g["locations"].sort(key=lambda l: (l["project"], l["branch"], l["manifest"]))
+        g["vulns"].sort(key=_sev_key)
+        g["scope"] = _scope_of(scopes[key])
+        g["max_severity"] = _sev_label(g["vulns"][0]) if g["vulns"] else "UNKNOWN"
+        g["kev"] = any(v["kev"] for v in g["vulns"])
+        rows.append(g)
+    rows.sort(key=lambda g: (not g["kev"], SEV_ORDER.get(g["max_severity"], 5),
+                             -(g["vulns"][0].get("cvss") or 0) if g["vulns"] else 0, g["name"], g["version"]))
+    return rows
+
+
+def _runtimes(eol_rows: list[dict]) -> list[dict]:
+    groups: dict[tuple, dict] = {}
+    for r in eol_rows:
+        key = (r["product"], r.get("cycle", ""))
+        g = groups.setdefault(key, {"product": r["product"], "cycle": r.get("cycle", ""),
+                                    "status": r.get("status", "unknown"), "eol_date": r.get("eol_date"),
+                                    "latest": r.get("latest"), "locations": []})
+        g["locations"].append({"project": r["project"], "branch": r["branch"], "source": r.get("source", "")})
+    rows = list(groups.values())
+    for g in rows:
+        g["locations"].sort(key=lambda l: (l["project"], l["branch"]))
+    rows.sort(key=lambda g: (EOL_ORDER.get(g["status"], 2), g["product"], ver_key(g["cycle"] or "0")))
+    return rows
+
+
+def _unpinned_images(inventories: list[BranchInventory]) -> list[dict]:
+    rows = []
+    for inv in inventories:
+        for c in inv.components:
+            if c.kind == "image" and c.props.get("floating"):
+                rows.append({"project": inv.project, "branch": inv.branch, "image": c.props.get("image") or c.name,
+                             "source": c.props.get("source") or (c.locations[0] if c.locations else ""),
+                             "own": bool(c.props.get("own"))})
+    rows.sort(key=lambda r: (r["project"], r["branch"], r["image"], r["source"]))
+    return rows
+
+
+def _notes(inventories: list[BranchInventory]) -> list[str]:
+    notes = []
+    for inv in sorted(inventories, key=lambda i: (i.project.lower(), i.branch)):
+        tag = f"{inv.project}@{inv.branch}"
+        for err in inv.errors:
+            notes.append(f"{tag}: {err}")
+        for c in inv.components:
+            unpinned = c.props.get("unpinned_requirements")
+            if unpinned:
+                files = ", ".join(f"`{u}`" for u in unpinned)
+                notes.append(f"{tag}: `{c.props.get('image', c.name)}` ({_manifest(c)}) installs {files} with "
+                             "non-pinned requirements, so the image may run versions other than the lockfile "
+                             "audited here. Pin them (`uv export --format requirements-txt`) or install from the lockfile.")
+        unresolved = sorted({c.name for c in inv.components if c.kind == "package" and c.direct and not c.version})
+        if unresolved:
+            shown = ", ".join(f"`{n}`" for n in unresolved[:10]) + (" …" if len(unresolved) > 10 else "")
+            notes.append(f"{tag}: {len(unresolved)} direct dependencies have no lockfile version (unresolved, "
+                         f"not matched against OSV): {shown}")
+    return notes
+
+
+def build(cfg: Config, inventories: list[BranchInventory], findings: list[Finding],
+          suppressed: list[Suppressed], eol: list[dict], outdated: list[dict], sources: dict | None) -> dict:
+    """Everything the writers need, JSON-serialisable (this is `audit.json`)."""
+    packages = [c for inv in inventories for c in inv.components if c.kind == "package"]
+    stats = {
+        "projects": len({i.project for i in inventories}),
+        "branches": len(inventories),
+        "unique_package_versions": len({(c.ecosystem, c.name, c.version) for c in packages}),
+        "occurrences": len(packages),
+        "direct_dependencies": sum(1 for c in packages if c.direct),
+        "images": sum(1 for inv in inventories for c in inv.components if c.kind == "image"),
+        "runtimes": sum(1 for inv in inventories for c in inv.components if c.kind == "runtime"),
+    }
+    return {
+        "generated_at": _now(),
+        "sources": _sources(sources),
+        "vulnerabilities": _vulnerabilities(findings),
+        "runtimes": _runtimes(eol),
+        "outdated": [dict(o) for o in outdated],
+        "unpinned_images": _unpinned_images(inventories),
+        "suppressed": [s.to_dict() if isinstance(s, Suppressed) else dict(s) for s in suppressed],
+        "notes": _notes(inventories),
+        "stats": stats,
+        "production_projects": sorted(name for name, opts in cfg.projects.items() if opts.production),
+    }
+
+
+def write_json(rep: dict, out: Path) -> Path:
+    path = Path(out) / JSON_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rep, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
+# --------------------------------------------------------------------------- AUDIT.md
+
+def _source_status(sources: dict) -> list[str]:
+    L = ["## Source status", "", "A failed source means its section below is empty, not clean.", "",
+         "| Source | Status | Detail |", "|---|---|---|"]
+    if not sources:
+        L.append("| – | – | no sources recorded |")
+    for name, info in sources.items():
+        failed = info.get("failed") or []
+        counts = ", ".join(f"{k}={v}" for k, v in info.items()
+                           if k not in ("failed", "error", "skipped") and v is not None)
+        if info.get("skipped"):
+            status, detail = "skipped", md(info["skipped"]) if isinstance(info["skipped"], str) else "–"
+        elif info.get("error"):
+            status, detail = "**failed**", md(info["error"])
+        elif failed:
+            status = f"**partial** ({len(failed)} failed)"
+            detail = "; ".join(f"{failed_label(f)}: {md(f['error'])}" for f in failed)
+            if counts:
+                detail = f"{counts}; {detail}"
+        else:
+            status, detail = "ok", counts or "–"
+        L.append(f"| {name} | {status} | {detail} |")
+    L.append("")
+    return L
+
+
+def _summary(rep: dict) -> list[str]:
+    vulns = rep["vulnerabilities"]
+    st = rep["stats"]
+    production = set(rep.get("production_projects", []))
+    by_sev = Counter(v["max_severity"] for v in vulns)
+    prod_rows = [v for v in vulns if _actionable(v)
+                 and any(l["project"] in production and l.get("scope") != "optional" for l in v["locations"])]
+    dev_only = [v for v in vulns if v["scope"] == "optional"]
+    rows: list[tuple[str, object]] = [
+        ("Projects / branches scanned", f"{st['projects']} / {st['branches']}"),
+        ("Unique package versions checked", st["unique_package_versions"]),
+        ("Vulnerable package versions", len(vulns)),
+        ("… in CISA KEV (actively exploited)", sum(1 for v in vulns if v["kev"])),
+    ]
+    rows += [(f"… max severity {s}", by_sev[s]) for s in SEVERITY_ROWS if by_sev.get(s)]
+    rows += [
+        ("CRITICAL/HIGH in production projects (excluding dev-only)", len(prod_rows)),
+        ("Dev-only vulnerable package versions", len(dev_only)),
+        ("Vulnerable direct dependencies", sum(1 for v in vulns if v["direct_anywhere"])),
+        ("Runtimes / images past end-of-life", sum(1 for r in rep["runtimes"] if r["status"] == "EOL")),
+        ("Runtimes / images reaching EOL within 90 days", sum(1 for r in rep["runtimes"] if r["status"] == "EOL soon")),
+        ("Floating container images (unique)", len({u["image"] for u in rep["unpinned_images"]})),
+        ("Direct deps ≥1 major behind latest",
+         len({(o["project"], o["ecosystem"], o["name"]) for o in rep["outdated"]})),
+        ("Suppressed by VEX", len(rep["suppressed"])),
+    ]
+    L = ["## Summary", "", "| Metric | Count |", "|---|---|"]
+    L += [f"| {k} | {v} |" for k, v in rows]
+    L.append("")
+    if not production:
+        L += ["_No project is marked `production = true` in `sbom-audit.toml`, so the production row counts nothing; "
+              "mark the projects that serve traffic or hold keys._", ""]
+    L += ["MEDIUM, LOW and UNKNOWN advisories are not listed below; they are in `audit.json` under `vulnerabilities`.", ""]
+    return L
+
+
+def _fix_cells(v: dict) -> tuple[str, str, str]:
+    """(severity cell, fix target cell, worst advisory cell) for one vulnerable package version."""
+    fixes = [s.get("fixed_in") for s in v["vulns"]]
+    target = max((f for f in fixes if f), key=ver_key, default=None)
+    unfixed = sum(1 for f in fixes if not f)
+    fix_cell = (target or "–") + (f" ({unfixed} unfixed)" if unfixed and target else "")
+    worst = worst_advisory(v["vulns"]) or {"id": "?", "cves": [], "summary": ""}
+    adv = worst["id"] + (f" ({worst['cves'][0]})" if worst.get("cves") and worst["id"] not in worst["cves"] else "")
+    sev = v["max_severity"] + (f" {worst['cvss']}" if worst.get("cvss") is not None else "") + (" 🔴KEV" if v["kev"] else "")
+    return sev, fix_cell, f"{adv}: {md(worst.get('summary', '')[:90])}"
+
+
+def _kev_section(vulns: list[dict]) -> list[str]:
+    L = ["## 🔴 Actively exploited (CISA KEV)", ""]
+    rows = [v for v in vulns if v["kev"]]
+    if not rows:
+        return L + ["None of the vulnerable package versions is in the CISA Known Exploited Vulnerabilities catalog.", ""]
+    for v in rows:
+        ids = ", ".join(f"{s['id']} {' '.join(s.get('cves', []))}".strip() for s in v["vulns"] if s.get("kev"))
+        where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in v["locations"]}))
+        scope = "dev-only" if v["scope"] == "optional" else "runtime scope"
+        L.append(f"- **{md(v['name'])}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): {ids} — used by {where}")
+    return L + [""]
+
+
+def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
+    L = ["## Critical and high severity by project", "",
+         "KEV, CRITICAL and HIGH package versions with runtime scope; dev-only occurrences are listed further down. "
+         "Production projects come first. `Fix target` is the lowest version that closes every listed advisory "
+         "(`–` = no fix released). `direct` = the manifest declares the package itself; otherwise it is transitive "
+         "and the fix is a lockfile refresh of the parent.", ""]
+    per: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for v in vulns:
+        if not _actionable(v):
+            continue
+        for l in v["locations"]:
+            if l.get("scope") != "optional":
+                per[l["project"]][l["branch"]].append((v, l))
+    if not per:
+        return L + ["None.", ""]
+    for p in sorted(per, key=lambda p: (p not in production, p.lower())):
+        L += [f"### {p}" + (" (production)" if p in production else ""), ""]
+        for b in sorted(per[p]):
+            rows = sorted(per[p][b], key=lambda vl: (not vl[0]["kev"], SEV_ORDER.get(vl[0]["max_severity"], 5), vl[0]["name"]))
+            L += [f"**`{b}`** — {len(rows)} vulnerable package version{'' if len(rows) == 1 else 's'}", "",
+                  "| Sev | Package | Version | Advisories | Fix target | Direct | Manifest | Worst advisory |",
+                  "|---|---|---|---|---|---|---|---|"]
+            for v, l in rows:
+                sev, fix, worst = _fix_cells(v)
+                L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                         f"{'yes' if l['direct'] else 'no'} | `{md(l['manifest'])}` | {worst} |")
+            L.append("")
+    return L
+
+
+def _runtime_section(runtimes: list[dict]) -> list[str]:
+    L = ["## Runtimes and base images", ""]
+    if not runtimes:
+        return L + ["No runtime or base-image cycles were checked (none found, or endoflife.date was skipped).", ""]
+    L += ["| Status | Product | Cycle | EOL date | Latest in cycle | Where | Via |", "|---|---|---|---|---|---|---|"]
+    for r in runtimes:
+        where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in r["locations"]}))
+        via = "; ".join(sorted({l["source"] for l in r["locations"] if l.get("source")}))
+        L.append(f"| {EOL_ICON.get(r['status'], r['status'])} | {r['product']} | {r['cycle'] or '?'} | "
+                 f"{r.get('eol_date') or '–'} | {r.get('latest') or '–'} | {md(where)} | {md(via)} |")
+    L += ["", "_`engines` / `requires-python` give the lowest version the manifest allows (what runs depends on the "
+          "host); Dockerfile and compose images are what actually runs in containers; Supabase edge runtime and "
+          "Postgres are managed but still age out._", ""]
+    return L
+
+
+def _floating_section(unpinned: list[dict]) -> list[str]:
+    L = ["## Floating image tags", ""]
+    if not unpinned:
+        return L + ["None: every container image is pinned to at least a major version.", ""]
+    L += ["Rebuilds silently pull whatever is current; pin a major at least. `own image` = built by this project's "
+          "CI, so the tag is a deploy choice rather than an upstream risk.", ""]
+    grouped: dict[tuple, dict] = {}
+    for u in unpinned:
+        g = grouped.setdefault((u["project"], u["image"], u["source"]), {"own": u["own"], "branches": set()})
+        g["branches"].add(u["branch"])
+    for (project, image, source), g in sorted(grouped.items()):
+        own = " (own image)" if g["own"] else ""
+        L.append(f"- `{image}`{own} — {project}@{', '.join(sorted(g['branches']))} (`{source}`)")
+    return L + [""]
+
+
+def _outdated_section(outdated: list[dict]) -> list[str]:
+    L = ["## Outdated direct dependencies (≥1 major version behind)", ""]
+    if not outdated:
+        return L + ["None (or registry lookups were skipped).", ""]
+    merged: dict[tuple, dict] = {}
+    for o in outdated:
+        key = (o["project"], o["ecosystem"], o["name"], o["current"], o["latest"])
+        merged.setdefault(key, {**o, "branches": set()})["branches"].add(o["branch"])
+    rows = sorted(merged.values(), key=lambda o: (-o["major_behind"], o["project"], o["name"]))
+    L += [f"{len(rows)} direct dependencies are at least one major behind (branches merged). Showing the top "
+          f"{min(OUTDATED_CAP, len(rows))}; the full list is in `audit.json` under `outdated`.", "",
+          "| Behind | Package | Current | Latest | Project | Branches | Ecosystem | Scope |",
+          "|---|---|---|---|---|---|---|---|"]
+    for o in rows[:OUTDATED_CAP]:
+        L.append(f"| {o['major_behind']} | {md(o['name'])} | {o['current']} | {o['latest']} | {o['project']} | "
+                 f"{', '.join(sorted(o['branches']))} | {o['ecosystem']} | {o.get('scope') or ''} |")
+    L += ["", "_Major-version lag is not a vulnerability by itself, but EOL majors stop receiving security fixes. "
+          "Expo SDK packages (`expo-*`) use SDK-aligned version numbers, so a lag of 50+ majors there means one or "
+          "two SDK generations._", ""]
+    return L
+
+
+def _dev_only_section(vulns: list[dict]) -> list[str]:
+    L = ["## Dev-only findings", "",
+         "KEV, CRITICAL and HIGH package versions that occur here only as a devDependency or build-time tool "
+         "(SBOM scope `optional`, labelled dev-only). Fix them, but they are not a production exposure.", ""]
+    rows = [(v, l) for v in vulns if _actionable(v) for l in v["locations"] if l.get("scope") == "optional"]
+    if not rows:
+        return L + ["None.", ""]
+    L += ["| Sev | Package | Version | Advisories | Fix target | Direct | Project@branch | Manifest | Scope |",
+          "|---|---|---|---|---|---|---|---|---|"]
+    for v, l in rows:
+        sev, fix, _ = _fix_cells(v)
+        L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                 f"{'yes' if l['direct'] else 'no'} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
+    return L + [""]
+
+
+def _suppressed_section(suppressed: list[dict]) -> list[str]:
+    L = ["## Suppressed by VEX", "",
+         "Findings removed from the sections above by an OpenVEX statement in `vex/`. "
+         "Re-check them when the package version or the code path changes.", ""]
+    if not suppressed:
+        return L + ["None.", ""]
+    L += ["| Vulnerability | Package | Version | Project@branch | Status | Justification | Impact statement | File |",
+          "|---|---|---|---|---|---|---|---|"]
+    for s in suppressed:
+        f, st, c = s["finding"], s["statement"], s["finding"]["component"]
+        vid = f["vulns"][0]["id"] if f.get("vulns") else st["vuln"]
+        L.append(f"| {vid} | {md(c['name'])} | {c['version'] or 'unresolved'} | {f['project']}@{f['branch']} | "
+                 f"{st['status']} | {st.get('justification') or '–'} | {md(st.get('impact') or '–')} | "
+                 f"`{Path(st.get('path') or '').name or '–'}` |")
+    return L + [""]
+
+
+def _notes_section(notes: list[str]) -> list[str]:
+    L = ["## Notes", ""]
+    if not notes:
+        return L + ["None.", ""]
+    return L + [f"- {n}" for n in notes] + [""]
+
+
+def carried_over(previous: str) -> str:
+    """Every `## Assessment …` section of the previous AUDIT.md, verbatim, or ''."""
+    m = re.search(r"^## Assessment ", previous, re.M)
+    if not m:
+        return ""
+    return "\n" + previous[m.start():].rstrip("\n") + "\n"
+
+
+def write_audit_md(rep: dict, out: Path) -> Path:
+    out = Path(out)
+    production = set(rep.get("production_projects", []))
+    L = [f"# Dependency Audit — {rep['generated_at'][:10]}", "",
+         f"Generated {rep['generated_at']} by sbom-audit {__version__}. Sources: Syft SBOMs per project and branch "
+         "(committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), "
+         "endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements "
+         "in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.", ""]
+    L += _source_status(rep.get("sources") or {})
+    L += _summary(rep)
+    L += _kev_section(rep["vulnerabilities"])
+    L += _by_project_section(rep["vulnerabilities"], production)
+    L += _runtime_section(rep["runtimes"])
+    L += _floating_section(rep["unpinned_images"])
+    L += _outdated_section(rep["outdated"])
+    L += _dev_only_section(rep["vulnerabilities"])
+    L += _suppressed_section(rep["suppressed"])
+    L += _notes_section(rep["notes"])
+    text = "\n".join(L) + "\n"
+    path = out / AUDIT_FILE
+    if path.exists():
+        text += carried_over(path.read_text(encoding="utf-8"))
+    out.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def write_dated_copy(out: Path, date: dt.date | None = None) -> Path:
+    out = Path(out)
+    dated = out / REPORTS_DIR / f"{(date or dt.date.today()).isoformat()}-audit.md"
+    dated.parent.mkdir(parents=True, exist_ok=True)
+    dated.write_text((out / AUDIT_FILE).read_text(encoding="utf-8"), encoding="utf-8")
+    return dated
+
+
+def append_log(out: Path, rep: dict, inventories: list[BranchInventory]) -> Path:
+    path = Path(out) / LOG_FILE
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(LOG_HEADER, encoding="utf-8")
+    vulns = rep["vulnerabilities"]
+    fields = [rep["generated_at"], "run", len({i.project for i in inventories}), len(vulns),
+              sum(1 for v in vulns if v["kev"]), sum(1 for v in vulns if v["max_severity"] == "CRITICAL"),
+              sum(1 for v in vulns if v["max_severity"] == "HIGH"),
+              sum(1 for r in rep["runtimes"] if r["status"] == "EOL"),
+              len({u["image"] for u in rep["unpinned_images"]}), len(rep["suppressed"])]
+    line = " | ".join(str(f) for f in fields)
+    problems = []
+    for name, info in (rep.get("sources") or {}).items():
+        if info.get("error"):
+            problems.append(f"{name}: {info['error']}")
+        problems += [f"{name} {failed_label(f)}: {f['error']}" for f in info.get("failed") or []]
+    if problems:
+        line += " | failed: " + "; ".join(md(p) for p in problems)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    return path
+
+
+def append_secrets_log(out: Path, doc: dict) -> Path:
+    """One `secrets` line: time, `secrets`, mode, repos, open findings per class, then the skip reason or
+    the failed repositories. The document is redacted, so the line can hold no secret."""
+    path = Path(out) / LOG_FILE
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(LOG_HEADER, encoding="utf-8")
+    scan = doc.get("scan") or {}
+    open_ = [f for f in doc.get("findings") or [] if f.get("status") == "open"]
+    fields = [doc.get("generated_at"), "secrets", scan.get("mode"), f"repos {scan.get('repos', 0)}",
+              *(f"{cls} {sum(1 for f in open_ if f.get('class') == cls)}" for cls in "ABC")]
+    line = " | ".join(md(f) for f in fields)
+    if scan.get("mode") == "skipped" and scan.get("skipped_reason"):
+        line += f" | {md(scan['skipped_reason'])}"
+    failed = [f"{f.get('repo')}: {f.get('error')}" for f in scan.get("failed") or []]
+    if failed:
+        line += " | failed: " + "; ".join(md(f) for f in failed)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    return path
+
+
+def append_assess_log(out: Path, path: str, cost: float | None) -> Path:
+    """One `assess-proposal` line: time, `assess-proposal`, cost (or `cost unknown`), the proposal's relative
+    path. Never the proposal text."""
+    log = Path(out) / LOG_FILE
+    if not log.exists():
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(LOG_HEADER, encoding="utf-8")
+    fields = [_now(), "assess-proposal",
+              f"cost {cost:.2f}" if cost is not None else "cost unknown", path]
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(" | ".join(md(f) for f in fields) + "\n")
+    return log
+
+
+_RUN_LINE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def append_note(out: Path, text: str) -> Path:
+    """Append ` | <text>` to the last line of log.md when it is a run line (starts with a date);
+    otherwise (no file, empty file, header only, a hand-written line) the note becomes its own line."""
+    path = Path(out) / LOG_FILE
+    body = path.read_text(encoding="utf-8") if path.exists() else ""
+    if not body.strip():
+        body = LOG_HEADER
+    lines = body.rstrip("\n").split("\n")
+    if _RUN_LINE_RE.match(lines[-1]):
+        lines[-1] += f" | {md(text)}"
+        body = "\n".join(lines) + "\n"
+    else:
+        body = body + ("" if body.endswith("\n") else "\n") + md(text) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+# --------------------------------------------------------------------------- INVENTORY.md
+
+def _overview_cell(inv: BranchInventory, kind: str, names: tuple[str, ...]) -> str:
+    vals = set()
+    for c in inv.components:
+        if c.kind != kind or c.name.lower() not in names:
+            continue
+        if kind == "package" and not c.direct:
+            continue
+        version = c.version or "?"
+        vals.add(f"{c.name} {version}" if len(names) > 1 else version)
+    return ", ".join(sorted(vals)) or "–"
+
+
+def _branch_order(cfg: Config, branches: set[str]) -> list[str]:
+    return sorted(branches, key=lambda b: (cfg.branches.index(b) if b in cfg.branches else len(cfg.branches), b))
+
+
+def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -> list[str]:
+    L = [f"## {project}", ""]
+    for inv in invs:
+        pkgs = [c for c in inv.components if c.kind == "package"]
+        by_eco = Counter(c.ecosystem or "?" for c in pkgs)
+        n_images = sum(1 for c in inv.components if c.kind == "image")
+        n_runtimes = sum(1 for c in inv.components if c.kind == "runtime")
+        sync = f"{inv.behind} behind origin" if inv.behind else "in sync with origin"
+        ref = f", read `{inv.ref}`" if inv.ref != inv.branch else ""
+        eco = ", ".join(f"{e} {n}" for e, n in sorted(by_eco.items())) or "none"
+        L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {len(pkgs)} packages ({eco}; "
+                 f"{sum(1 for c in pkgs if c.direct)} direct, {sum(1 for c in pkgs if c.scope == 'optional')} dev-only), "
+                 f"{n_images} images, {n_runtimes} runtime pins")
+        for err in inv.errors:
+            L.append(f"  - error: {md(err)}")
+    L.append("")
+    # runtimes and images
+    rows: dict[tuple, set] = {}
+    for inv in invs:
+        for c in inv.components:
+            source = c.props.get("source") or (c.locations[0] if c.locations else "")
+            if c.kind == "runtime":
+                key = (c.name, c.version or "?", "runtime", c.props.get("detail", ""), source)
+            elif c.kind == "image":
+                level = c.props.get("pin_level") or ("none" if c.props.get("floating") else "?")
+                flags = ["floating tag" if level == "none" else f"pinned to {level}"]
+                if c.props.get("own"):
+                    flags.append("own image")
+                key = (c.props.get("image", c.name), c.version or "(untagged)", "image", ", ".join(flags), source)
+            else:
+                continue
+            rows.setdefault(key, set()).add(inv.branch)
+    if rows:
+        L += ["**Runtimes & images**", "", "| Product / image | Cycle / tag | Kind | Detail | Source | Branches |",
+              "|---|---|---|---|---|---|"]
+        for (name, cycle, kind, detail, source), branches in sorted(rows.items()):
+            L.append(f"| `{md(name)}` | {md(cycle)} | {kind} | {md(detail) or '–'} | `{md(source)}` | "
+                     f"{', '.join(f'`{b}`' for b in _branch_order(cfg, branches))} |")
+        L.append("")
+    # direct dependencies
+    direct: dict[tuple, dict] = {}
+    for inv in invs:
+        for c in inv.components:
+            if c.kind == "package" and c.direct:
+                d = direct.setdefault((c.ecosystem, c.name, _manifest(c)), {"versions": {}, "scopes": set()})
+                d["versions"][inv.branch] = c.version or "unresolved"
+                d["scopes"].add(c.scope)
+    branches = _branch_order(cfg, {inv.branch for inv in invs})
+    if direct:
+        L += [f"**Direct dependencies** ({len(direct)}; `⚠︎` = version differs between branches)", "",
+              "| Package | Ecosystem | Manifest | " + " | ".join(f"`{b}`" for b in branches) + " | Scope |",
+              "|---|---|---|" + "---|" * len(branches) + "---|"]
+        for (eco, name, manifest), d in sorted(direct.items(), key=lambda kv: (kv[0][2], kv[0][1].lower())):
+            present = {d["versions"][b] for b in branches if b in d["versions"]}
+            drift = " ⚠︎" if len(present) > 1 else ""
+            cells = [d["versions"].get(b, "–") for b in branches]
+            L.append(f"| {md(name)}{drift} | {eco} | `{md(manifest)}` | " + " | ".join(cells) + f" | {_scope_of(d['scopes'])} |")
+        L.append("")
+    return L
+
+
+def write_inventory_md(cfg: Config, inventories: list[BranchInventory], out: Path) -> Path:
+    invs = sorted(inventories, key=lambda i: (i.project.lower(), i.branch))
+    branches = ", ".join(f"`{b}`" for b in cfg.branches)
+    L = ["# Inventory", "",
+         f"Generated {_now()} from `{cfg.root}` ({cfg.mode} mode, branches {branches}). Components come from the "
+         "Syft SBOM of each branch's committed tree (`sbom/<project>/<branch>.cdx.json`) plus own readers for "
+         "images and runtime pins; the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.", "",
+         "## Overview", "",
+         "| Project | Branch | " + " | ".join(h for h, _, _ in OVERVIEW_COLUMNS) + " | Images |",
+         "|---|" * (len(OVERVIEW_COLUMNS) + 3)]
+    for inv in invs:
+        cells = [_overview_cell(inv, kind, names) for _, kind, names in OVERVIEW_COLUMNS]
+        images = ", ".join(sorted({f"`{c.props.get('image', c.name)}`" for c in inv.components if c.kind == "image"})) or "–"
+        L.append(f"| {md(inv.project)} | {inv.branch} | " + " | ".join(cells) + f" | {images} |")
+    L.append("")
+    by_project: dict[str, list[BranchInventory]] = defaultdict(list)
+    for inv in invs:
+        by_project[inv.project].append(inv)
+    for project, group in by_project.items():
+        L += _inventory_project(cfg, project, group)
+    path = Path(out) / INVENTORY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(L) + "\n", encoding="utf-8")
+    return path

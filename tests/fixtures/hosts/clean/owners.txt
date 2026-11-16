@@ -1,0 +1,11 @@
+apt: /usr/lib/systemd/system/apt-daily-upgrade.timer
+containerd.io: /usr/lib/systemd/system/containerd.service
+cron: /usr/lib/systemd/system/cron.service
+docker-ce: /usr/lib/systemd/system/docker.service
+openssh-server: /usr/lib/systemd/system/ssh.service
+ufw: /usr/lib/systemd/system/ufw.service
+unattended-upgrades: /usr/lib/systemd/system/unattended-upgrades.service
+cron: /etc/crontab
+e2fsprogs: /etc/cron.d/e2scrub_all
+apt: /etc/cron.daily/apt-compat
+dpkg-query: no path found matching pattern /lib/systemd/system/ssh.service

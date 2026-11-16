@@ -1,0 +1,84 @@
+{
+ "schema": 1,
+ "generated_at": "2026-11-07T10:00:00+01:00",
+ "duration_s": 12.5,
+ "exit_code": 0,
+ "plugin_version": "1.0.0",
+ "run_host": "mac",
+ "mode": "full",
+ "counts": {
+  "projects": 2,
+  "branches": 3,
+  "vulnerable": 1,
+  "kev": 1,
+  "critical_high_production": 1,
+  "eol": 0,
+  "floating_tags": 0,
+  "suppressed": 0,
+  "secrets": {
+   "A": 0,
+   "B": 0,
+   "C": 0
+  }
+ },
+ "open": {
+  "kev": [
+   "CVE-2026-0001 npm:lodash@4.17.20"
+  ],
+  "critical_high_production": [
+   "CVE-2026-0001 npm:lodash@4.17.20"
+  ],
+  "eol": [],
+  "secrets_a": [],
+  "secrets_b": []
+ },
+ "deltas": {
+  "kev": {
+   "new": [
+    "CVE-2026-0001 npm:lodash@4.17.20"
+   ],
+   "resolved": []
+  },
+  "critical_high_production": {
+   "new": [
+    "CVE-2026-0001 npm:lodash@4.17.20"
+   ],
+   "resolved": []
+  },
+  "eol": {
+   "new": [],
+   "resolved": []
+  },
+  "secrets_a": {
+   "new": [],
+   "resolved": []
+  },
+  "secrets_b": {
+   "new": [],
+   "resolved": []
+  }
+ },
+ "first_run": false,
+ "failed_sources": [],
+ "secrets_scan": {
+  "mode": "skipped",
+  "engine": null,
+  "repos": 0,
+  "oldest_open_days": 0,
+  "skipped_reason": "no secrets scan in this run"
+ },
+ "last_assessment": null,
+ "assessment_proposal": null,
+ "commit": {
+  "status": "skipped",
+  "sha": null,
+  "detail": "",
+  "pending_hand_edits": []
+ },
+ "push": {
+  "status": "skipped",
+  "detail": ""
+ },
+ "visibility": "unknown",
+ "cra_products_open": []
+}

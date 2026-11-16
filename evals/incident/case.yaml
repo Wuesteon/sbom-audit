@@ -1,0 +1,6 @@
+schema_version: "1.0"
+name: incident
+description: "Are we affected by CVE-2021-23337? A hit on shop-web from the fixture audit and the live OSV record."
+tags: [incident]
+context:
+  scaffold_script: scaffold.sh

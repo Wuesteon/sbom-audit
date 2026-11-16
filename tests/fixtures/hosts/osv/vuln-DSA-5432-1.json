@@ -1,0 +1,32 @@
+{
+ "affected": [
+  {
+   "package": {
+    "ecosystem": "Debian:12",
+    "name": "xmltooling",
+    "purl": "pkg:deb/debian/xmltooling?arch=source"
+   },
+   "ranges": [
+    {
+     "events": [
+      {
+       "introduced": "0"
+      },
+      {
+       "fixed": "3.2.3-1+deb12u1"
+      }
+     ],
+     "type": "ECOSYSTEM"
+    }
+   ]
+  }
+ ],
+ "id": "DSA-5432-1",
+ "modified": "2026-03-09T02:11:24.323400Z",
+ "published": "2023-06-18T00:00:00Z",
+ "summary": "xmltooling - security update",
+ "upstream": [
+  "CVE-2023-36661",
+  "DEBIAN-CVE-2023-36661"
+ ]
+}

@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sbom-audit explained</title>
+<meta name="description" content="What the sbom-audit Claude Code plugin does and how a run works: SBOMs per repository and branch, OSV.dev, CISA KEV, endoflife.date, a secrets scan, OpenVEX, and a written assessment.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Paper ledger: warm paper, ink, one clay accent for the plugin itself,
+       three semantic colours for what an audit finds. Single light theme by choice. */
+    --paper: #F4EFE6;
+    --paper-2: #FBF8F2;
+    --ink: #1E1B17;
+    --slate: #6E675D;
+    --mist: #E1D8C8;
+    --clay: #C8643F;
+    --clay-soft: #F2D9CC;
+    --moss: #4F7A5A;
+    --amber: #C4922A;
+    --oxblood: #9A2E2E;
+    --display: "Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --body: "Figtree", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    /* Layout: one left-aligned column, 1040px for diagrams, 66ch for reading text. */
+    --col: 1040px;
+    --measure: 66ch;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--clay); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--clay); outline-offset: 3px; }
+  main { max-width: var(--col); margin: 0 auto; padding: 0 20px 64px; }
+  h1, h2, h3 { font-family: var(--display); font-weight: 400; text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+  h1 { font-size: clamp(44px, 7vw, 76px); line-height: 1; font-variation-settings: "opsz" 72; }
+  h2 { font-size: clamp(30px, 4vw, 40px); line-height: 1.1; margin-bottom: 18px; }
+  h3 { font-size: 22px; line-height: 1.2; }
+  p { max-width: var(--measure); margin: 0 0 14px; }
+  code, pre, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--paper-2); border: 1px solid var(--mist); border-radius: 4px; padding: 1px 5px; }
+  pre {
+    background: var(--ink); color: var(--paper); border-radius: 8px; padding: 18px 20px;
+    overflow-x: auto; line-height: 1.6; margin: 0 0 14px; max-width: 760px;
+  }
+  pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; }
+  pre .c { color: #A39B8D; }
+  section { padding: 56px 0 24px; border-top: 1px solid var(--mist); }
+  section > p.lede { font-size: 20px; color: var(--slate); }
+  .lede { font-family: var(--display); font-size: 24px; line-height: 1.35; color: var(--ink); max-width: 34ch; }
+  .muted { color: var(--slate); }
+  table { border-collapse: collapse; width: 100%; font-size: 15.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--mist); vertical-align: top; }
+  th { font-weight: 600; color: var(--slate); font-size: 14px; }
+  .scroll { overflow-x: auto; max-width: 100%; }
+
+  /* Hero */
+  header.hero { padding: 48px 0 28px; }
+  .hero-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 28px; margin-bottom: 18px; }
+  .hero-top .ver { font-family: var(--mono); font-size: 14px; color: var(--slate); }
+  figure { margin: 0; }
+  figure.pipeline { background: var(--paper-2); border: 1px solid var(--mist); border-radius: 12px; padding: 12px 10px 4px; margin-top: 28px; }
+  figure.pipeline svg { width: 100%; height: auto; display: block; }
+  figcaption { font-size: 14.5px; color: var(--slate); padding: 10px 8px 8px; max-width: 70ch; }
+
+  /* SVG styling for the pipeline */
+  .pipe text { font-family: var(--mono); font-size: 12px; fill: var(--ink); }
+  .pipe text.small { font-size: 10.5px; fill: var(--slate); }
+  .pipe text.serif { font-family: var(--display); font-style: italic; font-size: 13px; fill: var(--slate); }
+  .pipe .card { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
+  .pipe .box { fill: var(--paper); stroke: var(--ink); stroke-width: 1.4; }
+  .pipe .station { fill: var(--paper); stroke: var(--mist); stroke-width: 1.5; animation: ping 8s cubic-bezier(.2,.7,.3,1) infinite; }
+  .pipe .station.s1 { animation-delay: .8s; }
+  .pipe .station.s2 { animation-delay: 2.35s; }
+  .pipe .station.s3 { animation-delay: 3.9s; }
+  .pipe .station.s4 { animation-delay: 5.5s; }
+  .pipe .tick { stroke: var(--mist); stroke-width: 1.5; }
+  .pipe .rail { stroke: var(--ink); stroke-width: 1.5; }
+  .pipe .pkg { fill: var(--ink); animation: pkg 8s linear infinite; }
+  .pipe .pkg.d1 { animation-delay: 0s; --rest: 60px; }
+  .pipe .pkg.d2 { animation-delay: .9s; --rest: 190px; animation-name: pkg, flagred; animation-duration: 8s, 8s; }
+  .pipe .pkg.d3 { animation-delay: 1.8s; --rest: 300px; }
+  .pipe .pkg.d4 { animation-delay: 2.7s; --rest: 390px; animation-name: pkg, flagamber; animation-duration: 8s, 8s; }
+  .pipe .pkg.d5 { animation-delay: 3.6s; --rest: 440px; }
+  .pipe .sheet { animation: sheet 8s ease-in-out infinite; }
+  .pipe .sheet rect { fill: var(--paper-2); stroke: var(--ink); stroke-width: 1.2; }
+  .pipe .sheet line { stroke: var(--slate); stroke-width: 1; }
+  .pipe .ledger { fill: var(--paper-2); stroke: var(--ink); stroke-width: 1.4; }
+  .pipe .chip { transform-box: fill-box; transform-origin: center; animation: stamp 8s cubic-bezier(.2,.9,.2,1.2) infinite; }
+  .pipe .chip.c1 { animation-delay: 6.0s; }
+  .pipe .chip.c2 { animation-delay: 6.4s; }
+  .pipe .chip.c3 { animation-delay: 6.8s; }
+  .pipe .chip.c4 { animation-delay: 7.2s; }
+  .pipe .chip text { fill: var(--paper-2); font-size: 11px; font-weight: 500; }
+  .pipe .chip.c1 rect { fill: var(--oxblood); }
+  .pipe .chip.c2 rect { fill: var(--clay); }
+  .pipe .chip.c3 rect { fill: var(--amber); }
+  .pipe .chip.c4 rect { fill: var(--slate); }
+  .pipe .ruled { stroke: var(--mist); stroke-width: 2; stroke-linecap: round; }
+
+  @keyframes pkg {
+    0%   { transform: translateX(0); opacity: 0; }
+    4%   { opacity: 1; }
+    71%  { opacity: 1; }
+    75%  { transform: translateX(460px); opacity: 0; }
+    100% { transform: translateX(460px); opacity: 0; }
+  }
+  @keyframes flagred   { 0%, 29% { fill: var(--ink); } 31%, 100% { fill: var(--oxblood); } }
+  @keyframes flagamber { 0%, 48% { fill: var(--ink); } 50%, 100% { fill: var(--amber); } }
+  @keyframes ping {
+    0%        { fill: var(--paper); stroke: var(--mist); }
+    3%        { fill: var(--clay-soft); stroke: var(--clay); }
+    12%, 100% { fill: var(--paper); stroke: var(--mist); }
+  }
+  @keyframes sheet {
+    0%   { transform: translateX(0); opacity: 0; }
+    6%   { opacity: 1; }
+    22%  { transform: translateX(26px); opacity: 1; }
+    30%  { transform: translateX(26px); opacity: 0; }
+    100% { transform: translateX(26px); opacity: 0; }
+  }
+  @keyframes stamp {
+    0%, 100% { transform: scale(1); }
+    2%  { transform: scale(1.16); }
+    6%  { transform: scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pipe * { animation: none !important; }
+    .pipe .pkg { opacity: 1; transform: translateX(var(--rest)); }
+    .pipe .pkg.d2 { fill: var(--oxblood); }
+    .pipe .pkg.d4 { fill: var(--amber); }
+    .pipe .sheet { opacity: 1; transform: translateX(26px); }
+  }
+
+  /* Commands */
+  .commands { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 28px 40px; margin-top: 8px; }
+  .cmd { display: grid; grid-template-columns: 28px 1fr; gap: 14px; align-items: start; }
+  .cmd svg { width: 28px; height: 28px; margin-top: 4px; }
+  .cmd svg * { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .cmd svg .fill { fill: var(--clay-soft); stroke: none; }
+  .cmd svg .accent { stroke: var(--clay); }
+  .cmd h3 { font-family: var(--mono); font-size: 16px; font-weight: 500; margin-bottom: 6px; word-break: break-word; }
+  .cmd p { font-size: 15.5px; margin: 0; color: var(--ink); }
+  .cmd p .muted { display: block; margin-top: 4px; font-size: 14px; }
+
+  /* Steps */
+  ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; display: grid; gap: 22px; max-width: 820px; }
+  ol.steps li { display: grid; grid-template-columns: 56px 1fr; gap: 14px; align-items: start; }
+  ol.steps li::before {
+    counter-increment: step; content: counter(step);
+    font-family: var(--display); font-size: 40px; line-height: 1; color: var(--clay);
+    font-variation-settings: "opsz" 72; padding-top: 2px;
+  }
+  ol.steps h3 { margin-bottom: 4px; }
+  ol.steps p { margin: 0; font-size: 16px; }
+
+  /* Triage ladder */
+  .ladder { list-style: none; padding: 0; margin: 18px 0 0; max-width: 820px; display: grid; gap: 8px; }
+  .ladder li { display: grid; grid-template-columns: minmax(120px, 36%) 1fr; gap: 16px; align-items: center; font-size: 15.5px; }
+  .ladder .bar { height: 26px; border-radius: 4px; display: flex; align-items: center; padding: 0 10px; color: var(--paper-2); font-weight: 500; font-size: 14px; white-space: nowrap; }
+  .ladder li:nth-child(1) .bar { background: var(--oxblood); width: 100%; }
+  .ladder li:nth-child(2) .bar { background: var(--clay); width: 88%; }
+  .ladder li:nth-child(3) .bar { background: var(--amber); width: 74%; }
+  .ladder li:nth-child(4) .bar { background: var(--slate); width: 60%; }
+  .ladder li:nth-child(5) .bar { background: var(--mist); color: var(--ink); width: 46%; }
+
+  /* Verdicts */
+  .chips { display: flex; flex-wrap: wrap; gap: 10px 14px; margin: 6px 0 22px; }
+  .chipx { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; }
+  .chipx i { display: inline-block; width: 14px; height: 14px; border-radius: 3px; }
+  .v-hit { background: var(--oxblood); }
+  .v-unknown { background: var(--amber); }
+  .v-present { background: var(--moss); }
+  .v-absent { background: var(--mist); border: 1px solid var(--slate); }
+  td .tag { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 13.5px; font-weight: 500; color: var(--paper-2); }
+  td .tag.hit { background: var(--oxblood); }
+  td .tag.absent { background: var(--mist); color: var(--ink); }
+  td .tag.present { background: var(--moss); }
+
+  /* Numbers */
+  .figures { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin: 8px 0 14px; max-width: 960px; }
+  @media (max-width: 820px) { .figures { grid-template-columns: repeat(3, 1fr); } }
+  .fig { border-top: 2px solid var(--ink); padding-top: 8px; }
+  .fig b { display: block; font-family: var(--display); font-size: 40px; line-height: 1; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .fig span { font-size: 14.5px; color: var(--slate); }
+  .fig.kev { border-color: var(--oxblood); }
+  .fig.kev b { color: var(--oxblood); }
+
+  footer { border-top: 1px solid var(--mist); padding: 28px 0 0; font-size: 14.5px; color: var(--slate); display: flex; flex-wrap: wrap; gap: 8px 28px; }
+
+  @media (max-width: 560px) {
+    body { font-size: 16px; }
+    .lede { font-size: 21px; }
+    ol.steps li { grid-template-columns: 40px 1fr; }
+    ol.steps li::before { font-size: 30px; }
+    .ladder li { grid-template-columns: 1fr; gap: 6px; }
+    .figures { grid-template-columns: repeat(2, 1fr); }
+    table { font-size: 14px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header class="hero">
+  <div class="hero-top">
+    <h1>sbom-audit</h1>
+    <span class="ver">Claude Code plugin, version 1.2.0</span>
+  </div>
+  <p class="lede">Know what every repository in a folder is built from, and whether today's advisory touches it.</p>
+  <p>It reads the committed branches of every repo (<code>main</code> and <code>dev</code> by default), never your working copy, writes one software bill of materials per project and branch, checks it against the public vulnerability databases, and leaves the evidence in a <code>security/</code> folder with its own history. Claude does the part the databases cannot: the sweep for incidents that are too fresh, the triage, and a written assessment with actions per project.</p>
+
+  <figure class="pipeline" aria-labelledby="pipecap">
+    <svg class="pipe" viewBox="0 0 960 330" role="img" aria-label="Animated diagram: three repositories become an SBOM through Syft, each package travels past OSV.dev, CISA KEV, endoflife.date and the registries, and the AUDIT.md ledger is stamped with the results.">
+      <!-- repositories -->
+      <rect class="card" x="16" y="104" width="186" height="34" rx="6"/>
+      <text x="30" y="126">shop-web / main</text>
+      <rect class="card" x="16" y="146" width="186" height="34" rx="6"/>
+      <text x="30" y="168">billing-api / main</text>
+      <rect class="card" x="16" y="188" width="186" height="34" rx="6"/>
+      <text x="30" y="210">docs-site / main</text>
+      <text class="serif" x="16" y="250">git archive, no checkout</text>
+
+      <!-- SBOM sheet moving into Syft -->
+      <g class="sheet">
+        <rect x="212" y="146" width="24" height="32" rx="2"/>
+        <line x1="217" y1="154" x2="231" y2="154"/>
+        <line x1="217" y1="160" x2="231" y2="160"/>
+        <line x1="217" y1="166" x2="227" y2="166"/>
+      </g>
+
+      <!-- Syft -->
+      <rect class="box" x="246" y="138" width="78" height="48" rx="8"/>
+      <text x="285" y="158" text-anchor="middle">Syft</text>
+      <text class="small" x="285" y="174" text-anchor="middle">CycloneDX</text>
+
+      <!-- rail -->
+      <line class="rail" x1="324" y1="162" x2="804" y2="162"/>
+      <line class="tick" x1="390" y1="118" x2="390" y2="158"/>
+      <line class="tick" x1="510" y1="118" x2="510" y2="158"/>
+      <line class="tick" x1="630" y1="118" x2="630" y2="158"/>
+      <line class="tick" x1="750" y1="118" x2="750" y2="158"/>
+
+      <!-- stations -->
+      <rect class="station s1" x="335" y="80" width="110" height="38" rx="7"/>
+      <text x="390" y="104" text-anchor="middle">OSV.dev</text>
+      <rect class="station s2" x="455" y="80" width="110" height="38" rx="7"/>
+      <text x="510" y="104" text-anchor="middle">CISA KEV</text>
+      <rect class="station s3" x="575" y="80" width="110" height="38" rx="7"/>
+      <text x="630" y="104" text-anchor="middle">endoflife.date</text>
+      <rect class="station s4" x="695" y="80" width="110" height="38" rx="7"/>
+      <text x="750" y="104" text-anchor="middle">registries</text>
+
+      <text class="small" x="390" y="194" text-anchor="middle">advisories</text>
+      <text class="small" x="510" y="194" text-anchor="middle">in the wild</text>
+      <text class="small" x="630" y="194" text-anchor="middle">end of life</text>
+      <text class="small" x="750" y="194" text-anchor="middle">majors behind</text>
+      <text class="serif" x="564" y="250" text-anchor="middle">every package version, once per run</text>
+
+      <!-- packages -->
+      <circle class="pkg d1" cx="332" cy="162" r="6"/>
+      <circle class="pkg d2" cx="332" cy="162" r="6"/>
+      <circle class="pkg d3" cx="332" cy="162" r="6"/>
+      <circle class="pkg d4" cx="332" cy="162" r="6"/>
+      <circle class="pkg d5" cx="332" cy="162" r="6"/>
+
+      <!-- ledger -->
+      <rect class="ledger" x="816" y="56" width="124" height="214" rx="6"/>
+      <text x="830" y="80">AUDIT.md</text>
+      <g class="chip c1"><rect x="828" y="94" width="100" height="22" rx="4"/><text x="878" y="109" text-anchor="middle">0 in KEV</text></g>
+      <g class="chip c2"><rect x="828" y="124" width="100" height="22" rx="4"/><text x="878" y="139" text-anchor="middle">1 vulnerable</text></g>
+      <g class="chip c3"><rect x="828" y="154" width="100" height="22" rx="4"/><text x="878" y="169" text-anchor="middle">0 past EOL</text></g>
+      <g class="chip c4"><rect x="828" y="184" width="100" height="22" rx="4"/><text x="878" y="199" text-anchor="middle">0 floating</text></g>
+      <line class="ruled" x1="830" y1="226" x2="922" y2="226"/>
+      <line class="ruled" x1="830" y1="238" x2="906" y2="238"/>
+      <line class="ruled" x1="830" y1="250" x2="914" y2="250"/>
+      <text class="serif" x="940" y="296" text-anchor="end">also INVENTORY.md, audit.json, log.md</text>
+    </svg>
+    <figcaption id="pipecap">One run. The committed trees become an SBOM, every package version passes four public databases, your OpenVEX decisions are applied, and the ledger is stamped. The counts are from the demo portfolio under <code>evals/fixtures/</code> (three made-up projects), audit of 2026-11-07.</figcaption>
+  </figure>
+</header>
+
+<section id="can">
+  <h2>What it can do</h2>
+  <p class="lede" style="font-size:20px; max-width:60ch;">Ten skills, one knowledge skill and a session reminder. Everything runs locally; the only things sent out are package names, versions and advisory ids, to the databases named above, plus repository names to GitHub, and SSH to the servers you list if you turn on host mode. No source code, no SBOM file and no secret value leaves the machine.</p>
+  <div class="commands">
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><rect class="fill" x="3" y="7" width="22" height="16" rx="2"/><path d="M3 10h22M3 9V8a2 2 0 0 1 2-2h5l2 2h11a2 2 0 0 1 2 2v1"/><path d="M3 10v11a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V10"/><circle class="accent" cx="19" cy="16" r="3"/><path class="accent" d="M21.5 18.5 24 21"/></svg>
+      <div>
+        <h3>/sbom-audit:setup</h3>
+        <p>Finds every repository under the folder you are in, writes <code>security/sbom-audit.toml</code> and starts the <code>security/</code> folder, as its own git repository if you ask. It can also turn on Dependabot alerts for your GitHub projects, but only after it has shown you the list and you rerun it with <code>--yes</code>.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M4 14h20"/><circle class="accent" cx="8" cy="14" r="2.5"/><circle cx="14" cy="14" r="2.5"/><circle cx="20" cy="14" r="2.5"/><path d="M5 6h4M12 6h4M19 6h4M5 22h4M12 22h4M19 22h4"/></svg>
+      <div>
+        <h3>/sbom-audit:run</h3>
+        <p>One SBOM per project and branch. Vulnerabilities from OSV.dev, the actively exploited ones marked from CISA KEV, end-of-life runtimes and base images, direct dependencies that are majors behind, and an incremental secrets scan. It writes <code>STATUS.md</code> and <code>issues.json</code>, the list of every open issue and where it occurs for whoever fixes it, then Claude reads the report and writes the assessment.<span class="muted">Minutes for ten repositories. Run it in the background.</span></p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><path class="fill" d="M14 3 25 23H3z"/><path d="M14 3 25 23H3z"/><path class="accent" d="M14 10v7"/><circle class="accent" cx="14" cy="20" r="0.8"/></svg>
+      <div>
+        <h3>/sbom-audit:incident CVE-2021-23337</h3>
+        <p>Fetches the affected versions from OSV and gives a verdict per project, branch and installed version. Takes a CVE, GHSA or PYSEC id (a bare package name lists where it is used, without a verdict) and is what “are we affected by …” should go to. Exits 1 on a hit, 2 when it cannot answer, so a script can key on it.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path class="accent" d="m17.5 17.5 6 6"/><path d="M9 12h6M12 9v6"/></svg>
+      <div>
+        <h3>/sbom-audit:lookup 'expo-*' nginx:alpine nodejs</h3>
+        <p>Who uses what, from the last scan, in a second. Package names, globs, container images and runtimes all work.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><rect class="fill" x="5" y="15" width="18" height="8" rx="2"/><rect x="5" y="15" width="18" height="8" rx="2"/><path d="M11 15V9a3 3 0 0 1 6 0v6"/><path class="accent" d="M9 25h10"/></svg>
+      <div>
+        <h3>/sbom-audit:vex</h3>
+        <p>Records why a finding does or does not apply, as an OpenVEX statement per project. Every later run honours it and lists what it suppressed, so the counts stay honest. <code>incident --vex</code> records the no-hits in one go.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><rect class="fill" x="5" y="4" width="18" height="20" rx="2"/><rect x="5" y="4" width="18" height="20" rx="2"/><path d="M9 10h10M9 14h10"/><path class="accent" d="M9 18h6"/></svg>
+      <div>
+        <h3>/sbom-audit:status</h3>
+        <p>Prints <code>STATUS.md</code>, the one-screen summary of the last run: what failed, what is new since the run before, open secrets, the scheduler and whether an assessment is waiting. Writes nothing.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M6 22 20 8l2 2L8 24H6z"/><path class="accent" d="M17 11l2 2"/><path d="M4 26h20"/></svg>
+      <div>
+        <h3>/sbom-audit:assess</h3>
+        <p>Turns a run into a written <code>## Assessment</code>: an incident sweep for the runtimes and frameworks you use, the fixed triage order, actions per project, and one list of drafted VEX statements and secrets decisions. A second agent tries to disprove every decision that would close a finding, and the list is written only after you confirm it.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="10" cy="14" r="5"/><path d="M15 14h10M21 14v4M25 14v3"/><circle class="accent" cx="10" cy="14" r="1.5"/></svg>
+      <div>
+        <h3>/sbom-audit:secrets</h3>
+        <p>Scans every repository's git history with gitleaks, locally, and ranks findings in classes A, B and C. <code>SECRETS.md</code> names each finding by fingerprint, file and line, never by value; <code>resolve</code> records a decision after you confirm it.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><rect x="5" y="5" width="18" height="7" rx="1.5"/><rect x="5" y="16" width="18" height="7" rx="1.5"/><circle class="accent" cx="9" cy="8.5" r="1.2"/><circle cx="9" cy="19.5" r="1.2"/></svg>
+      <div>
+        <h3>/sbom-audit:hosts</h3>
+        <p>Optional. Checks the Debian and Ubuntu servers you list, installing nothing on them, over SSH with a forced-command audit login: open updates against OSV and CISA KEV, the patch automation itself, a state fingerprint against the baseline you accepted, SSH logins and a Lynis hardening index, written to <code>HOSTS.md</code>. <code>patch</code>, <code>bootstrap</code> and <code>unbootstrap</code> print a plan first and run only after you name the host and confirm it.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><rect class="fill" x="4" y="7" width="20" height="17" rx="2"/><rect x="4" y="7" width="20" height="17" rx="2"/><path d="M4 12h20M9 4v5M19 4v5"/><circle class="accent" cx="14" cy="18" r="2"/></svg>
+      <div>
+        <h3>/sbom-audit:schedule weekly</h3>
+        <p>Runs the audit every Saturday at 03:00 through launchd or a systemd user timer on this machine; <code>off</code> removes it. A missed week shows up in the session reminder.</p>
+      </div>
+    </div>
+    <div class="cmd">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="10"/><path class="accent" d="M14 8v6l4 2"/></svg>
+      <div>
+        <h3>Session reminder</h3>
+        <p>A hook prints one line from <code>security/status.json</code> when a session starts: a failed or overdue run, a missed weekly schedule, open class A secrets, new KEV or CRITICAL/HIGH findings. It never runs anything on its own.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <h2>How a run works</h2>
+  <ol class="steps">
+    <li>
+      <div>
+        <h3>Read, do not touch</h3>
+        <p>After a <code>git fetch</code>, each branch is exported with <code>git archive</code>. No checkout, nothing written into the audited repositories. The working tree is ignored on purpose: HEAD is often a feature branch, while <code>main</code> and <code>dev</code> are what ships.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Catalogue</h3>
+        <p>Syft writes a CycloneDX SBOM per project and branch. The plugin's own readers add what Syft cannot see: runtimes from <code>engines</code> and <code>requires-python</code>, images from Dockerfiles and compose files, the Supabase edge runtime and Postgres version from <code>config.toml</code>, and packages that a <code>deno.lock</code> pulls from esm.sh and similar CDNs.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Match</h3>
+        <p>osv-scanner checks every package version against OSV.dev, which aggregates GitHub advisories, PyPI advisories and the NVD.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Enrich</h3>
+        <p>The CISA catalogue of known exploited vulnerabilities marks what is used in real attacks. endoflife.date dates every runtime and base image. npm, PyPI and JSR say how many major versions behind each direct dependency is. A lookup that fails is reported as failed, retried next run, and never shown as clean.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Apply your decisions</h3>
+        <p>OpenVEX statements under <code>security/vex/</code> suppress what you have already judged. The report lists exactly what they suppressed.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Write it down</h3>
+        <p><code>AUDIT.md</code> for people, <code>audit.json</code> for scripts, <code>INVENTORY.md</code> and <code>inventory.json</code> for what is installed where, a dated copy under <code>reports/</code>, and one line in <code>log.md</code>. Earlier assessments are carried over. The first table in the report is the status of every source.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Assess</h3>
+        <p>Claude reads the source status first, searches the web for advisories of the last 30 days across every runtime and framework in your inventory, runs <code>incident</code> for each one, triages in a fixed order and appends an assessment with actions per project: manifest, package, current version, target version. Remediation is then one pull request per project, with that project's tests.</p>
+      </div>
+    </li>
+  </ol>
+
+  <h3 style="margin-top:40px;">The triage order never changes</h3>
+  <ul class="ladder">
+    <li><span class="bar">Class A secrets, then KEV</span><span>A leaked admin key or an exploit in the wild. Fix before anything else.</span></li>
+    <li><span class="bar">Critical and high in production</span><span>Projects marked <code>production = true</code> come first; class B secrets rank here too.</span></li>
+    <li><span class="bar">End-of-life runtimes and images</span><span>No more security patches, whatever the scanner says today.</span></li>
+    <li><span class="bar">Floating image tags</span><span><code>latest</code> and <code>alpine</code> rebuild to whatever is current.</span></li>
+    <li><span class="bar">Dev-only tooling</span><span>Labelled as such and counted separately, never inflated.</span></li>
+  </ul>
+</section>
+
+<section id="verdicts">
+  <h2>Verdicts you can act on</h2>
+  <p>An incident query answers per project, branch and installed version, with the evidence next to it. Four verdicts exist:</p>
+  <div class="chips">
+    <span class="chipx"><i class="v-hit"></i>hit: the vulnerable version is installed</span>
+    <span class="chipx"><i class="v-present"></i>present, not affected: installed outside the affected range, or a VEX statement covers it</span>
+    <span class="chipx"><i class="v-absent"></i>absent: not in that branch's SBOM</span>
+    <span class="chipx"><i class="v-unknown"></i>unknown: that branch's last audit was incomplete, run again before trusting it</span>
+  </div>
+  <p class="muted" style="font-size:15px;">From <code>incident CVE-2021-23337</code>, the lodash command injection, run against the demo portfolio (<code>evals/fixtures/</code>): three made-up projects, <code>main</code> rows shown.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Project</th><th>Branch</th><th>Version</th><th>Verdict</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr><td>shop-web</td><td class="mono">main</td><td class="mono">4.17.20</td><td><span class="tag hit">hit</span></td><td>GHSA-35jh-r3h4-6jhm HIGH, fix 4.17.21, package-lock.json</td></tr>
+      <tr><td>docs-site</td><td class="mono">main</td><td class="mono">4.17.21</td><td><span class="tag present">present, not affected</span></td><td>outside the affected range (fixed in 4.17.21), package-lock.json</td></tr>
+      <tr><td>billing-api</td><td class="mono">main</td><td class="mono">–</td><td><span class="tag absent">absent</span></td><td>not in SBOM</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="margin-top:14px;">The command also warns when the OSV record changed after your last audit, or when the inventory is newer than the audit, because a verdict is only as good as the scan behind it.</p>
+</section>
+
+<section id="numbers">
+  <h2>From the demo portfolio</h2>
+  <p>The demo portfolio under <code>evals/fixtures/</code>: three made-up projects (<code>shop-web</code>, <code>billing-api</code>, <code>docs-site</code>), one branch each, audit of 2026-11-07. Your own run fills the same summary.</p>
+  <div class="figures">
+    <div class="fig"><b>3</b><span>branches across 3 projects</span></div>
+    <div class="fig"><b>3</b><span>unique package versions checked</span></div>
+    <div class="fig"><b>1</b><span>with a known vulnerability</span></div>
+    <div class="fig kev"><b>0</b><span>in CISA KEV</span></div>
+    <div class="fig"><b>0</b><span>runtimes or images past end of life</span></div>
+    <div class="fig"><b>0</b><span>container images on floating tags</span></div>
+  </div>
+  <p class="muted" style="font-size:15px;">The one finding, lodash 4.17.20 in <code>shop-web</code> (GHSA-35jh-r3h4-6jhm HIGH, fix 4.17.21), sits in a production project. The report says which findings are production and which are dev-only.</p>
+</section>
+
+<section id="privacy">
+  <h2>What leaves your machine</h2>
+  <p>The plugin's own scripts send no source code, no SBOM file and no secret value anywhere. The outbound hosts are public databases, your own remotes and servers, and Anthropic; each gets only what the table says.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Host</th><th>When</th><th>What is sent</th></tr></thead>
+    <tbody>
+      <tr><td>your git remotes</td><td><code>git fetch --prune origin</code> before every scan (<code>fetch = false</code> disables it); the push of <code>security/</code> when <code>push = true</code></td><td>the usual fetch and push</td></tr>
+      <tr><td>osv.dev</td><td>osv-scanner during every run; <code>api.osv.dev/v1/vulns/&lt;id&gt;</code> during <code>incident</code></td><td>package names and versions; the advisory id; in host mode, each server's Debian/Ubuntu package names and versions</td></tr>
+      <tr><td>www.cisa.gov</td><td>once per 24 hours</td><td>nothing; the catalogue is downloaded</td></tr>
+      <tr><td>endoflife.date</td><td>once per runtime cycle per 24 hours; in host mode, once per server OS release</td><td>product and cycle, such as <code>nodejs/20</code></td></tr>
+      <tr><td>registry.npmjs.org, pypi.org, jsr.io</td><td>once per direct dependency per 24 hours</td><td>the package name</td></tr>
+      <tr><td>api.github.com</td><td>Dependabot and secret-scanning status reads, the visibility check of the evidence repository's remote, <code>[discovery]</code> listing and clones, <code>setup --enable-dependabot</code> after confirmation; in host mode, the releases endpoint for known binaries</td><td>the repository name</td></tr>
+      <tr><td>your configured servers</td><td><code>hosts check</code>, <code>bootstrap</code>, <code>unbootstrap</code>, <code>patch</code>, over SSH only</td><td>the SSH session; <code>bootstrap</code> makes the host download Lynis and <code>patch</code> runs <code>apt-get update</code></td></tr>
+      <tr><td>Anthropic, through Claude Code</td><td>the skills, like any Claude Code session; with <code>[schedule] assess = true</code>, a headless <code>claude -p</code> after the weekly run</td><td>what Claude reads: reports, inventory, code excerpts; the headless run is capped by <code>--max-budget-usd</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="margin-top:14px;">gitleaks runs locally and makes no network calls: no verification of found credentials, no telemetry. During the assessment Claude searches the web for incidents of the last 30 days; the queries name the runtimes and frameworks in your inventory, not your projects.</p>
+</section>
+
+<section id="install">
+  <h2>Install</h2>
+  <p>Claude Code, Python 3.11 or newer with the standard library only, and four tools from Homebrew. Git is assumed. Without gitleaks the secrets scan reports <code>skipped</code>, never clean.</p>
+<pre><code>brew install syft osv-scanner gitleaks gh
+claude plugin marketplace add Wuesteon/sbom-audit
+claude plugin install sbom-audit@wuesteon-plugins
+
+cd ~/projects &amp;&amp; claude       <span class="c"># the folder that holds your repositories</span>
+<span class="c"># then, inside Claude Code:</span>
+/sbom-audit:setup --init-git  <span class="c"># once</span>
+/sbom-audit:run               <span class="c"># a few minutes; ends with STATUS.md and an assessment</span></code></pre>
+  <p class="muted" style="font-size:15px;">Exit codes of <code>run</code>: 0 clean, 1 findings present, 2 a source failed and its section is empty rather than clean, 3 a malformed VEX file, 4 a required tool is missing, checked before anything is written, 5 read-only mode (<code>SBOM_AUDIT_READ_ONLY=1</code>), nothing written.</p>
+</section>
+
+<footer>
+  <span>sbom-audit 1.2.0, MIT licence</span>
+  <span><a href="https://github.com/Wuesteon/sbom-audit">github.com/Wuesteon/sbom-audit</a></span>
+  <span><a href="https://github.com/Wuesteon/sbom-audit/blob/main/docs/reference.md">Reference</a></span>
+  <span>Nils Weiser, <a href="https://waiser.dev">waiser.dev</a></span>
+</footer>
+
+</main>
+</body>
+</html>

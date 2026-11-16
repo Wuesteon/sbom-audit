@@ -1,0 +1,78 @@
+{
+ "schema": 1,
+ "generated_at": "2026-11-07T10:00:00+01:00",
+ "duration_s": 12.5,
+ "exit_code": 0,
+ "plugin_version": "1.0.0",
+ "run_host": "mac",
+ "mode": "full",
+ "counts": {
+  "projects": 2,
+  "branches": 3,
+  "vulnerable": 0,
+  "kev": 0,
+  "critical_high_production": 0,
+  "eol": 0,
+  "floating_tags": 0,
+  "suppressed": 0,
+  "secrets": {
+   "A": 1,
+   "B": 0,
+   "C": 0
+  }
+ },
+ "open": {
+  "kev": [],
+  "critical_high_production": [],
+  "eol": [],
+  "secrets_a": [
+   "fp-A-0"
+  ],
+  "secrets_b": []
+ },
+ "deltas": {
+  "kev": {
+   "new": [],
+   "resolved": []
+  },
+  "critical_high_production": {
+   "new": [],
+   "resolved": []
+  },
+  "eol": {
+   "new": [],
+   "resolved": []
+  },
+  "secrets_a": {
+   "new": [],
+   "resolved": []
+  },
+  "secrets_b": {
+   "new": [],
+   "resolved": []
+  }
+ },
+ "first_run": true,
+ "failed_sources": [],
+ "secrets_scan": {
+  "mode": "full",
+  "engine": "gitleaks",
+  "repos": 3,
+  "oldest_open_days": 12,
+  "skipped_reason": null
+ },
+ "last_assessment": "2026-11-07",
+ "assessment_proposal": null,
+ "commit": {
+  "status": "skipped",
+  "sha": null,
+  "detail": "",
+  "pending_hand_edits": []
+ },
+ "push": {
+  "status": "skipped",
+  "detail": ""
+ },
+ "visibility": "unknown",
+ "cra_products_open": []
+}

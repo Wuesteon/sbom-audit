@@ -1,0 +1,68 @@
+{
+ "generated_at": "2026-11-07T03:00:00Z",
+ "sources": {
+  "osv-scanner": {
+   "scanned": 3,
+   "failed": []
+  }
+ },
+ "vulnerabilities": [
+  {
+   "ecosystem": "npm",
+   "name": "lodash",
+   "version": "4.17.20",
+   "scope": "required",
+   "direct_anywhere": true,
+   "locations": [
+    {
+     "project": "shop-web",
+     "branch": "main",
+     "manifest": "package-lock.json",
+     "direct": true,
+     "scope": "required"
+    }
+   ],
+   "vulns": [
+    {
+     "id": "GHSA-35jh-r3h4-6jhm",
+     "aliases": [
+      "CVE-2021-23337"
+     ],
+     "cves": [
+      "CVE-2021-23337"
+     ],
+     "summary": "Command Injection in lodash",
+     "severity": "HIGH",
+     "cvss": 7.2,
+     "fixed": [
+      "4.17.21"
+     ],
+     "published": "2021-05-06",
+     "modified": "2024-02-01",
+     "withdrawn": false,
+     "kev": false,
+     "fixed_in": "4.17.21"
+    }
+   ],
+   "max_severity": "HIGH",
+   "kev": false
+  }
+ ],
+ "runtimes": [],
+ "outdated": [],
+ "unpinned_images": [],
+ "suppressed": [],
+ "notes": [],
+ "stats": {
+  "projects": 3,
+  "branches": 3,
+  "unique_package_versions": 3,
+  "occurrences": 3,
+  "direct_dependencies": 3,
+  "images": 2,
+  "runtimes": 1
+ },
+ "production_projects": [
+  "shop-web"
+ ]
+}

@@ -1,0 +1,22 @@
+# Binaries that are installed outside the distro's package manager, and where their upstream releases are
+# published. The table name is the binary name the collector reports. `version` is a regular expression
+# with one group: it pulls the version out of the binary's own `--version` output and out of the upstream tag.
+#
+#   source = "github"     latest release of <repo> (api.github.com, tag_name)
+#   source = "endoflife"  latest release of the installed major cycle of <product> (endoflife.date),
+#                         plus that cycle's end-of-life date
+
+[caddy]
+source = "github"
+repo = "caddyserver/caddy"
+version = 'v?(\d+\.\d+\.\d+)'
+
+[docker-compose]
+source = "github"
+repo = "docker/compose"
+version = 'v?(\d+\.\d+\.\d+)'
+
+[node]
+source = "endoflife"
+product = "nodejs"
+version = 'v(\d+\.\d+\.\d+)'

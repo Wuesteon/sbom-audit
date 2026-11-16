@@ -1,0 +1,6 @@
+Starting unattended upgrades script
+Allowed origins are: o=Ubuntu,a=noble, o=Ubuntu,a=noble-security, o=UbuntuESMApps,a=noble-apps-security
+Initial blacklist: docker-ce docker-ce-cli docker-ce-rootless-extras docker-buildx-plugin docker-compose-plugin containerd.io docker.io containerd runc
+Initial whitelist (not strict):
+Option --dry-run given, *not* performing real actions
+No packages found that can be upgraded unattended and no pending auto-removals
