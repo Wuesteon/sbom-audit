@@ -59,6 +59,10 @@ base_url = "https://openrouter.ai/api/v1"
 model = "openai/gpt-5.2"
 api_key_env = "OPENROUTER_API_KEY"    # the NAME of the variable that holds the key, never the key
 
+[report]                              # optional: REPORT.html, the management report
+organisation = "Example AG"           # shown in the title; omitted when absent
+language = "en"                       # or "de"
+
 [projects."shop-web"]
 production = true                     # moves the project up the triage order
 github = "owner/repo"                 # when the remote does not name the GitHub repository
@@ -406,6 +410,7 @@ security/
 ├── sbom-audit.toml          # configuration, committed with the evidence
 ├── STATUS.md / status.json  # one-screen summary of the last run: counts, deltas, scheduler, proposal
 ├── ISSUES.md / issues.json  # work list: every open issue and where it occurs, most urgent first
+├── REPORT.html              # management report: one printable page (A4), built from the JSON above
 ├── AUDIT.md / audit.json    # the audit, triage order fixed; assessments carried over
 ├── INVENTORY.md / inventory.json
 ├── SECRETS.md / secrets.json          # secrets findings: fingerprints and counts, never values
@@ -416,6 +421,7 @@ security/
 ├── sbom/<project>/<branch>.cdx.json   # CycloneDX, one per project and branch
 ├── vex/<project>.openvex.json         # OpenVEX 0.2.0 decisions
 ├── reports/<date>-audit.md            # dated copy of every run (and assessment proposals)
+├── reports/<date>-report.html         # dated copy of REPORT.html
 ├── log.md                   # append-only: one line per run, secrets scan and host action
 └── .cache/                  # KEV, endoflife.date and registry answers, 24 h; gitignored
 ```
@@ -424,6 +430,7 @@ security/
 |---|---|---|
 | `STATUS.md`, `status.json` | every `run`, `setup` | no; `/sbom-audit:status` prints it |
 | `ISSUES.md`, `issues.json` | every `run`, `issues`, and after `secrets resolve`, `hosts check`, `hosts accept` | no; derived from the reports |
+| `REPORT.html`, `reports/<date>-report.html` | every `run`, `report` | no; derived from the JSON |
 | `AUDIT.md`, `audit.json`, `INVENTORY.md`, `inventory.json` | `run` | only the `## Assessment` sections of `AUDIT.md` |
 | `SECRETS.md`, `secrets.json` | `run`, `secrets scan` | no |
 | `secrets-decisions.toml` | `secrets resolve` | through `/sbom-audit:secrets resolve` |
@@ -431,6 +438,16 @@ security/
 | `hosts-decisions.toml` | `hosts accept` | through `/sbom-audit:hosts accept` |
 | `vex/*.openvex.json` | `vex add`, `incident --vex` | through `/sbom-audit:vex` |
 | `reports/`, `log.md` | every run, secrets scan and host action | no |
+
+**Management report.** `REPORT.html` is a single self-contained page (inline CSS, no script, no
+external request) for people who do not read the Markdown: overall state with the change since the
+previous run, the priority 1 to 3 issues with their fix, the decisions on record (VEX, secrets,
+accepted host findings), coverage and limits with the data timestamps, and the Cyber Resilience Act
+mapping below. It prints to A4 from any browser (Print, Save as PDF). A number the run did not
+produce reads "not available", never 0, and a skipped secrets scan reads as skipped, never as
+clean. Secret values are never part of it. `sbom_audit_cli.py report [--lang en|de]` rebuilds it
+from the JSON already in the folder without scanning; `[report] language` and `organisation` set the
+defaults. Sample: [`evals/fixtures/security/REPORT.html`](../evals/fixtures/security/REPORT.html).
 
 Portfolio mode: the parent of `security/` is a plain folder whose direct subfolders with a
 `.git` are the projects; `security/` is outside every audited repository. Single-repo

@@ -9,8 +9,8 @@ from . import __version__, config
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
-            "assess")
-WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess")
+            "assess", "report")
+WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report")
 EXIT_READ_ONLY = 5
 SECRETS_STATUSES = ("open", "rotated", "false_positive", "test_fixture", "accepted")  # = secrets.store.STATUSES
 
@@ -87,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     issues_p.add_argument("--max-priority", type=int, default=None, choices=range(1, 7), metavar="1-6",
                           help="only issues of this priority or more urgent (1 is the most urgent)")
     issues_p.add_argument("--json", action="store_true", help="print the selection as JSON instead of one line each")
+    report_p = sub.add_parser("report", parents=[common],
+                              help="rebuild REPORT.html, the printable management report, from the JSON of the "
+                                   "last run (no scan)")
+    report_p.add_argument("--lang", default=None, choices=("en", "de"),
+                          help="report language (default: [report] language in the config, else en)")
     secrets_p = sub.add_parser("secrets", parents=[common],
                                help="scan git history for leaked credentials (gitleaks), record decisions")
     add_secrets_args(secrets_p, common)
@@ -255,6 +260,11 @@ def _issues(args) -> int:
     return issues.cli(args)
 
 
+def _report(args) -> int:
+    from . import management
+    return management.cli(args)
+
+
 def _secrets(args) -> int:
     from . import secrets
     return secrets.cli_secrets(args)
@@ -329,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
 HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run": _run,
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
-                               "code": _code, "settings": _settings, "assess": _assess}
+                               "code": _code, "settings": _settings, "assess": _assess, "report": _report}
 
 
 if __name__ == "__main__":

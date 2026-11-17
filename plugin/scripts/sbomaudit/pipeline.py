@@ -416,6 +416,8 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
         doc = build(None)
     written += [status.write(out, doc), status.write_md(out, doc)]
     written += issues.try_refresh(out, say, hosts_active=hosts_doc is not None)
+    from . import management
+    written += management.try_write(out, say, hosts_active=hosts_doc is not None)
     commit = _do_commit(cfg, doc["commit"], doc, written, say)
     push = _do_push(cfg, doc["push"], commit["status"], visibility, say)
     if commit != doc["commit"] or push != doc["push"]:
