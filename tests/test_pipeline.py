@@ -601,6 +601,29 @@ class RunTests(unittest.TestCase):
             self.assertEqual(git(cfg.out, "status", "--porcelain").strip(), "")
             self.assertNotIn("body", (cfg.out / "log.md").read_text())
 
+    def test_configured_provider_replaces_claude_in_the_scheduled_assessment(self):
+        """With `[assess]` base_url and model set, the run calls `draft.run`, never `claude -p`."""
+        from sbomaudit import draft
+        rel = "reports/2026-11-08-assessment-proposal.md"
+        def fake(cfg, out, **kw):
+            path = Path(out) / rel
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("<!-- proposal written by `assess draft` -->\nbody\n", encoding="utf-8")
+            return {"status": "written", "path": rel, "reason": None, "cost_usd": None, "model": "m-1"}
+        def prepare(cfg):
+            self.assess_prepare(cfg)
+            cfg.assess = config.AssessProvider(base_url="http://127.0.0.1:9/v1", model="m-1")
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(pipeline.assess, "run_headless") as headless, \
+             mock.patch.object(draft, "run", side_effect=fake) as drafted:
+            rc, cfg = self.run_with(Path(tmp), {"return_value": {"results": []}}, before=prepare)
+            self.assertEqual(rc, 0)
+            headless.assert_not_called()
+            drafted.assert_called_once()
+            self.assertEqual(json.loads((cfg.out / "status.json").read_text())["assessment_proposal"], rel)
+            self.assertIn("cost unknown", (cfg.out / "log.md").read_text())
+        self.assertIn(f"assess: proposal written to {rel} (model m-1)", self.said)
+
     def test_assess_log_line_is_its_own_line_after_the_secrets_line(self):
         rel = "reports/2026-11-08-assessment-proposal.md"
         def fake(cfg, out, plugin_root, **kw):

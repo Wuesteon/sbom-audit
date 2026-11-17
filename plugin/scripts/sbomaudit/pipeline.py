@@ -374,12 +374,17 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     proposal = None
     if cfg.schedule.assess:
         try:                                    # never changes the exit code; never echoes the proposal
-            res = assess.run_headless(cfg, out, scheduler.plugin_root())
+            if cfg.assess.configured:           # [assess] endpoint instead of `claude -p`
+                from . import draft
+                res = draft.run(cfg, out)
+            else:
+                res = assess.run_headless(cfg, out, scheduler.plugin_root())
             if res["status"] == "written":
                 proposal = res["path"]
                 written.append(out / proposal)
                 written.append(report.append_assess_log(out, proposal, res.get("cost_usd")))
-                say(f"assess: proposal written to {proposal}")
+                via = f" (model {res['model']})" if res.get("model") else ""
+                say(f"assess: proposal written to {proposal}{via}")
             else:
                 say(f"assess: {res['status']} ({res.get('reason') or 'no reason'})")
         except Exception as exc:

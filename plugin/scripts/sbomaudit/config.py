@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import os
 import re
 import subprocess
@@ -9,7 +10,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .errors import ConfigError
 
@@ -18,6 +19,10 @@ DEFAULT_BRANCHES = ["main", "dev"]
 SKIP_PROJECT_PATTERNS = ["*-local-backup-*"]
 PROTOCOLS = ("ssh", "https")
 PROTOCOL_ENV = "SBOM_AUDIT_GIT_PROTOCOL"
+# `[assess]`: an OpenAI-compatible chat completions endpoint for `assess draft`; each env var overrides its key
+ASSESS_ENV = {"base_url": "SBOM_AUDIT_ASSESS_BASE_URL", "model": "SBOM_AUDIT_ASSESS_MODEL",
+              "api_key_env": "SBOM_AUDIT_ASSESS_API_KEY_ENV"}
+_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
 @dataclass
@@ -43,6 +48,24 @@ class Schedule:
 @dataclass
 class SecretsOpts:
     enabled: bool = True
+
+
+@dataclass
+class AssessProvider:
+    """`[assess]`: where `assess draft` sends report excerpts. Off (`configured` False) until base_url and
+    model are set. The API key is read at call time from the env var `api_key_env` names, else from
+    `api_key_file`; it is never stored in the config."""
+    base_url: str | None = None
+    model: str | None = None
+    api_key_env: str | None = None
+    api_key_file: Path | None = None
+    timeout_seconds: int = 600
+    max_tokens: int | None = None
+    include_hosts: bool = False
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.model)
 
 
 DEFAULT_HOST_KEY = "~/.ssh/sbom-audit_ed25519"
@@ -85,6 +108,7 @@ class Config:
     schedule: Schedule = field(default_factory=Schedule)
     secrets: SecretsOpts = field(default_factory=SecretsOpts)
     hosts: HostsOpts = field(default_factory=HostsOpts)
+    assess: AssessProvider = field(default_factory=AssessProvider)
 
 
 @dataclass
@@ -186,9 +210,77 @@ def _protocol(value, source: str) -> str:
     return value
 
 
+def _loopback(host: str) -> bool:
+    host = host.lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def assess_url(value, source: str) -> str:
+    """A chat completions base URL: https, or http only to this machine (a local model server), with no
+    credentials, query or fragment. Errors never echo the value (it could hold credentials)."""
+    value = _str(value, source).strip().rstrip("/")
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+        has_userinfo = parts.username is not None or parts.password is not None
+    except ValueError:
+        raise ConfigError(f"{source} is not a valid URL") from None
+    if has_userinfo:
+        raise ConfigError(f"{source} must not contain user:password@; name the key's environment variable "
+                          "in api_key_env instead")
+    if parts.query or parts.fragment:
+        raise ConfigError(f"{source} must not contain a query or fragment")
+    if not host or parts.scheme not in ("https", "http"):
+        raise ConfigError(f"{source} must be an https:// URL such as https://openrouter.ai/api/v1")
+    if parts.scheme == "http" and not _loopback(host):
+        raise ConfigError(f"{source}: plain http is allowed only for localhost (a local model server); "
+                          "use https for any other host")
+    return value
+
+
+def _assess(data, env: Mapping[str, str], out: Path) -> AssessProvider:
+    if not isinstance(data, dict):
+        raise ConfigError("[assess] must be a table")
+    if "api_key" in data:
+        raise ConfigError("[assess] api_key is not supported: never put the key in the config; set "
+                          "api_key_env to the name of the environment variable that holds it")
+    raw = {key: data.get(key) for key in ASSESS_ENV}
+    source = {key: f"[assess] {key}" for key in ASSESS_ENV}
+    for key, var in ASSESS_ENV.items():
+        if env.get(var):
+            raw[key], source[key] = env[var], var
+    if bool(raw["base_url"]) != bool(raw["model"]):
+        raise ConfigError("[assess] base_url and model must be set together")
+    key_env = raw["api_key_env"]
+    if key_env is not None and not (isinstance(key_env, str) and _ENV_NAME_RE.fullmatch(key_env)):
+        raise ConfigError(f"{source['api_key_env']} must be the NAME of an environment variable "
+                          "(A-Z, 0-9, _), not the key itself")
+    key_file = data.get("api_key_file")
+    if key_file is not None:
+        key_file = Path(_str(key_file, "[assess] api_key_file")).expanduser().resolve()
+        if key_file == out or out in key_file.parents:
+            raise ConfigError("[assess] api_key_file must be outside the security/ folder (it is committed)")
+    max_tokens = data.get("max_tokens")
+    return AssessProvider(
+        base_url=assess_url(raw["base_url"], source["base_url"]) if raw["base_url"] else None,
+        model=_str(raw["model"], source["model"]).strip() if raw["model"] else None,
+        api_key_env=key_env,
+        api_key_file=key_file,
+        timeout_seconds=_int(data.get("timeout_seconds", 600), "[assess] timeout_seconds"),
+        max_tokens=_int(max_tokens, "[assess] max_tokens") if max_tokens is not None else None,
+        include_hosts=_bool(data.get("include_hosts", False), "[assess] include_hosts"),
+    )
+
+
 def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = None) -> Config:
     """Read `<out>/sbom-audit.toml`; `SBOM_AUDIT_GIT_PROTOCOL` in `env` (default `os.environ`) overrides
-    `[discovery] protocol`. ConfigError for a value of the wrong kind."""
+    `[discovery] protocol` and the `ASSESS_ENV` variables override their `[assess]` keys. ConfigError for a
+    value of the wrong kind."""
     env = os.environ if env is None else env
     out = out.resolve()
     data: dict = {}
@@ -233,6 +325,7 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
                                                    "[schedule] assess_budget_usd", positive=True)),
         secrets=SecretsOpts(enabled=_bool(secrets.get("enabled", True), "[secrets] enabled")),
         hosts=_hosts(data.get("hosts", {})),
+        assess=_assess(data.get("assess", {}), env, out),
     )
 
 
@@ -365,6 +458,13 @@ def write_default(out: Path, cfg: Config, discovered: list[Project] | None = Non
         "# [schedule]",
         "# assess = false",
         "# assess_budget_usd = 5.0",
+        "",
+        "# Assessment drafts by an OpenAI-compatible endpoint (`assess draft`); off until base_url and model",
+        "# are set. Sends report excerpts to that endpoint. The key stays in the named environment variable.",
+        "# [assess]",
+        '# base_url = "https://openrouter.ai/api/v1"',
+        '# model = "..."',
+        '# api_key_env = "OPENROUTER_API_KEY"',
         "",
         "# Secret scanning (gitleaks).",
         "# [secrets]",

@@ -29,7 +29,8 @@ hands you a prioritised work list instead.
 
 ## Quickstart
 
-Requirements: Claude Code, Python 3.11+ (standard library only), macOS or Linux, and these tools:
+Requirements: Claude Code (or see [Without Claude Code](#without-claude-code)), Python 3.11+
+(standard library only), macOS or Linux, and these tools:
 
 ```bash
 brew install syft osv-scanner gitleaks gh   # git is assumed
@@ -126,8 +127,37 @@ package names, versions or advisory ids, plus your own git remotes and, if you e
 own servers. gitleaks runs locally. The evidence repository lists your open vulnerabilities, so the
 plugin refuses to push it to a public remote. In host mode your servers' installed package names and
 versions also go to osv.dev, and with `[schedule] assess = true` the weekly run starts a headless
-`claude -p` session that sends the audit results to Anthropic like any Claude Code session. Full table:
+`claude -p` session that sends the audit results to Anthropic like any Claude Code session. Only if
+you configure `[assess]`, `assess draft` (and the scheduled assessment) sends report excerpts to the
+endpoint you name instead: the source status, summary and VEX-suppressed sections of `AUDIT.md`, the
+inventory overview and the open work list (projects, branches, packages, versions, advisories, file
+paths and lines, secret fingerprints but never secret values, no host issues unless you include them).
+`assess draft --dry-run` prints the exact request. Full table:
 [Privacy](docs/reference.md#privacy-what-leaves-your-machine).
+
+## Without Claude Code
+
+Everything the skills do runs through one stdlib Python CLI; other coding agents and plain shells can
+call it directly. Install syft, osv-scanner and gitleaks as above, clone this repository, and run from
+the folder that holds your repositories (or pass `--out <path>/security`):
+
+```bash
+CLI=/path/to/sbom-audit/plugin/scripts/sbom_audit_cli.py
+python3 $CLI setup                         # discover repositories, write security/sbom-audit.toml
+python3 $CLI run                           # SBOMs, audit, secrets scan, reports (exit 1: findings present)
+python3 $CLI status                        # the one-screen summary; writes nothing
+python3 $CLI issues --max-priority 3       # the most urgent open issues
+python3 $CLI lookup lodash                 # who uses a package, image or runtime
+python3 $CLI incident CVE-2021-23337       # are we affected, per project and branch
+python3 $CLI vex add shop-web GHSA-35jh-r3h4-6jhm under_investigation --impact "checking the call sites"
+```
+
+For a written assessment without Claude, point `[assess]` at any OpenAI-compatible endpoint
+(OpenRouter, OpenAI, Gemini's OpenAI-compatible endpoint, Moonshot/Kimi or a local Ollama) and run
+`python3 $CLI assess draft`. It writes `reports/<date>-assessment-proposal.md` and records nothing: every
+decision in it is an unverified proposal for you to check and then record with `vex add` or
+`secrets resolve`. Setup and providers: [Assessment drafts](docs/reference.md#assessment-drafts-without-claude-code-assess-draft).
+Instructions for coding agents: [AGENTS.md](AGENTS.md).
 
 ## Documentation
 

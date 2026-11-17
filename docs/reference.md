@@ -9,6 +9,7 @@ mapping, what leaves your machine and the known limitations. For installation an
 - [The loop: setup → run → incident → vex](#the-loop-setup--run--incident--vex)
 - [The work list: `issues.json`](#the-work-list-issuesjson)
 - [Scheduler](#scheduler)
+- [Assessment drafts without Claude Code: `assess draft`](#assessment-drafts-without-claude-code-assess-draft)
 - [Secrets](#secrets)
 - [Hosts](#hosts)
 - [Modes, the session line and reading code](#modes-the-session-line-and-reading-code)
@@ -52,6 +53,11 @@ assess_budget_usd = 5.0
 
 [secrets]
 enabled = true
+
+[assess]                              # optional: assessment drafts by an OpenAI-compatible endpoint
+base_url = "https://openrouter.ai/api/v1"
+model = "openai/gpt-5.2"
+api_key_env = "OPENROUTER_API_KEY"    # the NAME of the variable that holds the key, never the key
 
 [projects."shop-web"]
 production = true                     # moves the project up the triage order
@@ -189,6 +195,70 @@ fork.
   `STATUS.md` lists it as `proposal waiting: reports/<date>-assessment-proposal.md`, and you
   review and apply it with `/sbom-audit:assess`. `log.md` records it as
   `<time> | assess-proposal | cost <usd> | reports/<date>-assessment-proposal.md`.
+- When `[assess]` names a `base_url` and a `model`, `[schedule] assess = true` uses that endpoint
+  instead of `claude -p` (see the next section); `claude` is then not needed. The cost is not
+  known to the plugin and is logged as `cost unknown`. The launchd/systemd job does not see the
+  variables of your shell, so for a scheduled draft put the key in `api_key_file` (below).
+
+## Assessment drafts without Claude Code: `assess draft`
+
+`assess draft` asks any OpenAI-compatible chat completions endpoint for an assessment proposal of
+the last run. It is off until `[assess]` sets `base_url` and `model`, and it is the only command
+that sends report content to a model provider.
+
+```bash
+export OPENROUTER_API_KEY=...                    # the key stays in the environment
+python3 plugin/scripts/sbom_audit_cli.py assess draft --dry-run   # print the exact request; sends nothing
+python3 plugin/scripts/sbom_audit_cli.py assess draft             # send it, write the proposal
+```
+
+| Key in `[assess]` | Environment override | Meaning |
+|---|---|---|
+| `base_url` | `SBOM_AUDIT_ASSESS_BASE_URL` | the endpoint up to `/v1` (or the provider's equivalent); `/chat/completions` is appended. https only; plain http only for `localhost`/`127.0.0.1`/`::1` |
+| `model` | `SBOM_AUDIT_ASSESS_MODEL` | the provider's model id |
+| `api_key_env` | `SBOM_AUDIT_ASSESS_API_KEY_ENV` | the name of the environment variable that holds the key; sent as `Authorization: Bearer <key>`. Leave it out for a local server without a key |
+| `api_key_file` | – | a file outside `security/` that holds only the key, mode 600 (group/other access is refused); read when the variable is not set. For scheduled runs |
+| `timeout_seconds` | – | default 600 |
+| `max_tokens` | – | sent only when set; a cut-off answer is discarded |
+| `include_hosts` | – | default false: host issues (server names, users, ports) are not sent |
+
+A key written into the config (`api_key = ...`), a `base_url` with `user:password@`, a query or a
+fragment, and a value of `api_key_env` that is not a variable name are refused. Errors name the
+key or variable, never its value. Base URLs per provider (check the provider's documentation for
+current model ids):
+
+| Provider | `base_url` | `model`, for example |
+|---|---|---|
+| OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-5.2`, `anthropic/claude-sonnet-4.6` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.5` |
+| Google Gemini (OpenAI compatibility) | `https://generativelanguage.googleapis.com/v1beta/openai` | a Gemini model id from Google's model list |
+| Moonshot / Kimi | `https://api.moonshot.ai/v1` | `kimi-k3` |
+| Ollama on this machine | `http://localhost:11434/v1` | a pulled model, e.g. `gpt-oss:20b`; no key |
+
+**What happens.** One request, with no tools: the model cannot read code, search the web or run
+commands. It receives a fixed instruction text and the documents listed under
+[Privacy](#privacy-what-leaves-your-machine), and answers with the same three parts as the headless
+proposal: `## Assessment <date>` (with the incident sweep as a to-do list of `incident` commands,
+since the model has no web access), `## Proposed decisions (unverified)` and `## GitHub issue drafts`.
+The answer is written atomically to `reports/<date>-assessment-proposal.md` under a header that names
+the model, the endpoint and the time and says that nothing was applied. The run records
+`assess-proposal | cost unknown` in `log.md` and, when `status.json` exists, lists the file as
+`proposal waiting` in `STATUS.md`. The command prints the path and the token counts, never the
+proposal text.
+
+**What it never does.** It writes no VEX statement, no secrets decision and nothing into `AUDIT.md`;
+every decision in the draft is marked `unverified` and is a command for you to run after checking it.
+The instructions forbid presenting a code-based `not_affected` (code not present, not reached, not
+controllable, mitigated) as settled and the secrets status `rotated`; a draft that names such a
+justification anyway gets a warning line in its header. An answer that contains the fingerprint key
+from `.cache/`, or the API key, is discarded. HTTP errors are reported as the status code only (the
+response body is never read or printed), redirects are not followed, so the key is sent only to
+`base_url`. Exit codes: 0 written, 2 not configured or failed, 5 in read-only mode (`--dry-run` is
+allowed there).
+
+In Claude Code, review a draft with `/sbom-audit:assess`, which verifies each decision before
+recording it. Without Claude Code, check each entry against the advisory and the audited branch
+(`code grep`, `code show`) and run the commands you confirm yourself.
 
 ## Secrets
 
@@ -389,7 +459,8 @@ product is in scope or compliant.
 ## Privacy: what leaves your machine
 
 The plugin's own scripts send no source code, no SBOM file and no secret value anywhere. The
-outbound hosts, all public databases except your own git remotes, servers and Anthropic, are:
+outbound hosts, all public databases except your own git remotes, servers, Anthropic and the
+`[assess]` endpoint you configure, are:
 
 | Host | When | What is sent |
 |---|---|---|
@@ -401,6 +472,7 @@ outbound hosts, all public databases except your own git remotes, servers and An
 | api.github.com | Dependabot and secret-scanning status reads, the visibility check of the evidence repository's remote, `[discovery]` listing and clones, `setup --enable-dependabot` after confirmation; with `[hosts]`, the releases endpoint for the binaries in the vendor table | the repository name |
 | your configured servers | `hosts check` (and the `run` that includes it), `bootstrap`, `unbootstrap` and `patch`, over SSH only | the SSH session; the collector makes no outbound calls of its own, but `bootstrap` makes the host download Lynis and its apt packages and `patch` runs `apt-get update` on the host |
 | Anthropic, through Claude Code | the interactive skills, like any Claude Code session; with `[schedule] assess = true`, a headless `claude -p` after the weekly run | what Claude reads: reports, inventory and the code excerpts the verifier opens; the headless run is capped by `--max-budget-usd` |
+| the `[assess]` `base_url`, only when configured | `assess draft`; with `[schedule] assess = true`, after the weekly run | one POST to `<base_url>/chat/completions` with the model id, a fixed instruction text and, as documents: from `AUDIT.md` the sections Source status, Summary and Suppressed by VEX and the latest `## Assessment` section; the Overview table of `INVENTORY.md` (project, branch, runtime versions, base images); the open work list as `issues.json` would hold it (project names, branches, manifest paths, package names and versions, advisory ids, severities and summaries, fix targets; for secrets the fingerprint, rule, provider, class, commit, file and line, never the value; host issues only with `include_hosts = true`), at most 300 issues and 20,000 characters per section. The key goes in the `Authorization` header. No source code, SBOM file or secret value. `--dry-run` prints the whole body |
 
 `HOSTS.md` and `hosts.json` contain IP addresses, open ports and user names of your servers, so the private evidence repository rule applies to them in particular.
 

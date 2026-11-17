@@ -8,8 +8,9 @@ from pathlib import Path
 from . import __version__, config
 from .errors import ConfigError
 
-COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings")
-WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts")
+COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
+            "assess")
+WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess")
 EXIT_READ_ONLY = 5
 SECRETS_STATUSES = ("open", "rotated", "false_positive", "test_fixture", "accepted")  # = secrets.store.STATUSES
 
@@ -103,6 +104,15 @@ def build_parser() -> argparse.ArgumentParser:
     hosts_p = sub.add_parser("hosts", parents=[common],
                              help="read-only audit of servers over ssh: check, accept, bootstrap, patch")
     add_hosts_args(hosts_p, common)
+    assess_p = sub.add_parser("assess", parents=[common],
+                              help="assessment proposal by an OpenAI-compatible endpoint ([assess] in the config)")
+    assess_sub = assess_p.add_subparsers(dest="assess_command", metavar="action")
+    assess_sub.required = True
+    draft_p = assess_sub.add_parser("draft", parents=[common],
+                                    help="send report excerpts, write reports/<date>-assessment-proposal.md "
+                                         "(records no decision)")
+    draft_p.add_argument("--dry-run", action="store_true",
+                         help="print the request body (no key) and exit; sends and writes nothing")
     return parser
 
 
@@ -265,6 +275,11 @@ def _settings(args) -> int:
     return integration.cli(args)
 
 
+def _assess(args) -> int:
+    from . import draft
+    return draft.cli(args)
+
+
 def _refresh_integration() -> None:
     """After a plugin update, keep opted-in rules and the hook script on the current version (best effort)."""
     import os
@@ -284,6 +299,8 @@ def _writes(args) -> bool:
         return False
     if args.command == "settings":
         return bool(args.autonomy or args.session_hook)
+    if args.command == "assess":
+        return not args.dry_run
     if args.command == "issues":
         from . import issues
         return not issues.is_query(args)
@@ -312,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
 HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run": _run,
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
-                               "code": _code, "settings": _settings}
+                               "code": _code, "settings": _settings, "assess": _assess}
 
 
 if __name__ == "__main__":
