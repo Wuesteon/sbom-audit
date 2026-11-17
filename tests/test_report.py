@@ -244,6 +244,60 @@ class FilesTests(unittest.TestCase):
         self.assertIn("| lodash | npm | `package.json` |", text)
         self.assertIn("esbuild", text)
         self.assertNotIn("| left-pad", text)
+        self.assertNotIn("Java/JDK", text)               # optional columns only when a branch has a value
+        assert_tables_well_formed(self, text)
+
+    def test_inventory_overview_has_java_go_dotnet_and_other_runtimes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            invs = [inv("jvm", "main", [runtime_component("eclipse-temurin", "21", "pom.xml", "java.version")]),
+                    inv("gosvc", "main", [runtime_component("go", "1.23", "go.mod", "go directive")]),
+                    inv("api", "main", [runtime_component("dotnet", "8.0", "global.json", "sdk.version"),
+                                        runtime_component("ruby", "3.3", ".ruby-version", "pin"),
+                                        runtime_component("redis", "7", "compose.yml", "image", image="redis:7")])]
+            cfg.out.mkdir(parents=True)
+            text = report.write_inventory_md(cfg, invs, cfg.out).read_text(encoding="utf-8")
+        header = next(l for l in text.splitlines() if l.startswith("| Project | Branch |"))
+        self.assertTrue(header.endswith("| Postgres | Java/JDK | Go | .NET | ruby | Images |"), header)
+        self.assertNotIn("redis |", header)              # derived from an image: the Images column shows it
+        self.assertIn("| jvm | main |", text)
+        jvm = next(l for l in text.splitlines() if l.startswith("| jvm | main |"))
+        self.assertIn("| eclipse-temurin 21 |", jvm)     # several names in the column: the name is shown
+        go = next(l for l in text.splitlines() if l.startswith("| gosvc | main |"))
+        self.assertIn("| 1.23 |", go)
+        api = next(l for l in text.splitlines() if l.startswith("| api | main |"))
+        self.assertIn("dotnet 8.0", api)
+        self.assertIn("| 3.3 |", api)
+        assert_tables_well_formed(self, text)
+
+    def test_github_actions_are_counted_as_not_checked(self):
+        action = Component(kind="package", ecosystem="github", name="actions/checkout", version="v4",
+                           purl="pkg:github/actions/checkout@v4", scope="required",
+                           locations=[".github/workflows/ci.yml"], direct=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            invs = [inv("zeta", "main", [LODASH, action]), inv("zeta", "dev", [action])]
+            rep = report.build(cfg, invs, [], [], [], [], SOURCES_OK)
+            self.assertEqual(rep["stats"]["github_actions_unchecked"], 2)
+            self.assertIn("zeta@main: 1 GitHub Actions are inventoried but not checked for vulnerabilities (OSV does "
+                          "not match versions for this ecosystem): `actions/checkout`", rep["notes"])
+            cfg.out.mkdir(parents=True)
+            text = report.write_audit_md(rep, cfg.out).read_text(encoding="utf-8")
+            self.assertIn("| GitHub Actions inventoried, not checked for vulnerabilities | 2 |", text)
+            assert_tables_well_formed(self, text)
+            rep = report.build(cfg, [inv("zeta", "main", [LODASH])], [], [], [], [], SOURCES_OK)
+            self.assertEqual(rep["stats"]["github_actions_unchecked"], 0)
+            self.assertNotIn("GitHub Actions", report.write_audit_md(rep, cfg.out).read_text(encoding="utf-8"))
+
+
+def assert_tables_well_formed(case: unittest.TestCase, text: str) -> None:
+    """Every Markdown table's delimiter row has one `---` cell per header cell and starts with `|`."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines[1:], 1):
+        if line.startswith("|") and set(line.replace("|", "").replace(" ", "")) <= {"-", ":"} and "---" in line:
+            header = lines[i - 1]
+            cells = header.strip().strip("|").split(" | ")
+            case.assertEqual(line, "|" + "---|" * len(cells), f"delimiter under {header!r}")
 
 
 

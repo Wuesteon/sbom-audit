@@ -37,6 +37,12 @@ OVERVIEW_COLUMNS = [("Node", "runtime", ("nodejs",)), ("Python", "runtime", ("py
                     ("SvelteKit", "package", ("@sveltejs/kit",)), ("NestJS", "package", ("@nestjs/core",)),
                     ("Astro", "package", ("astro",)), ("Vite", "package", ("vite",)),
                     ("FastAPI", "package", ("fastapi",)), ("Postgres", "runtime", ("postgresql",))]
+# shown only when a branch has a value in them (a JavaScript portfolio keeps the table above unchanged); the
+# names are endoflife.date products, as the readers write a runtime component's name
+OVERVIEW_OPTIONAL = [("Java/JDK", "runtime", ("java", "jdk", "openjdk", "eclipse-temurin", "amazon-corretto",
+                                              "oracle-jdk", "azul-zulu", "microsoft-build-of-openjdk",
+                                              "redhat-build-of-openjdk", "sapmachine", "graalvm")),
+                     ("Go", "runtime", ("go",)), (".NET", "runtime", ("dotnet", "dotnetfx"))]
 
 LOG_HEADER = ("# sbom-audit log\n\nAppend-only. Each run appends one line with the fields: time, `run`, projects, "
               "vulnerable package versions, KEV, CRITICAL, HIGH, EOL runtimes/images, floating images, suppressed by VEX. "
@@ -216,7 +222,33 @@ def _notes(inventories: list[BranchInventory]) -> list[str]:
                 notes.append(f"{tag}: `{c.props.get('image', c.name)}` ({_manifest(c)}) installs {files} with "
                              "non-pinned requirements, so the image may run versions other than the lockfile "
                              "audited here. Pin them (`uv export --format requirements-txt`) or install from the lockfile.")
-    return notes                             # packages without a version: `unresolved_versions` (coverage.py)
+    # packages without a version: `unresolved_versions` (coverage.py)
+    return notes + _unchecked_actions_notes(inventories)
+
+
+def is_github_action(c) -> bool:
+    """A GitHub Action used in a workflow (`pkg:github/<owner>/<repo>@<ref>`, Syft's workflow catalogers)."""
+    return c.kind == "package" and (c.ecosystem == "github" or (c.purl or "").startswith("pkg:github/"))
+
+
+def unchecked_actions(inventories: list[BranchInventory]) -> int:
+    """GitHub Actions in the branches' inventories (one per action and branch). They are inventoried but not
+    checked for vulnerabilities: OSV's "GitHub Actions" advisories carry only ECOSYSTEM ranges, which OSV
+    does not match against a version, and workflows mostly pin a floating major tag (`v4`) or a commit."""
+    return sum(1 for inv in inventories if not inv.release for c in inv.components if is_github_action(c))
+
+
+def _unchecked_actions_notes(inventories: list[BranchInventory]) -> list[str]:
+    notes = []
+    for inv in sorted(inventories, key=lambda i: (i.project.lower(), i.branch)):
+        if inv.release:
+            continue
+        names = sorted({c.name for c in inv.components if is_github_action(c)})
+        if names:
+            shown = ", ".join(f"`{md(n)}`" for n in names[:10]) + (" …" if len(names) > 10 else "")
+            notes.append(f"{inv.project}@{inv.branch}: {len(names)} GitHub Actions are inventoried but not checked "
+                         f"for vulnerabilities (OSV does not match versions for this ecosystem): {shown}")
+    return notes
 
 
 def build(cfg: Config, inventories: list[BranchInventory], findings: list[Finding],
@@ -236,6 +268,7 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "direct_dependencies": sum(1 for c in packages if c.direct),
         "images": sum(1 for inv in inventories for c in inv.components if c.kind == "image"),
         "runtimes": sum(1 for inv in inventories for c in inv.components if c.kind == "runtime"),
+        "github_actions_unchecked": unchecked_actions(inventories),
     }
     unresolved = coverage.unresolved_versions(inventories, releases)
     stats["unresolved_versions"] = sum(r["count"] for r in unresolved)
@@ -328,6 +361,8 @@ def _summary(rep: dict) -> list[str]:
          len({(o["project"], o["ecosystem"], o["name"]) for o in rep["outdated"]})),
         ("Suppressed by VEX", len(rep["suppressed"])),
     ]
+    if st.get("github_actions_unchecked"):
+        rows.append(("GitHub Actions inventoried, not checked for vulnerabilities", st["github_actions_unchecked"]))
     L = ["## Summary", "", "| Metric | Count |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in rows]
     L.append("")
@@ -657,6 +692,19 @@ def _overview_cell(inv: BranchInventory, kind: str, names: tuple[str, ...]) -> s
     return ", ".join(sorted(vals)) or "–"
 
 
+def overview_columns(invs: list[BranchInventory]) -> list[tuple[str, str, tuple[str, ...]]]:
+    """The overview table's columns: `OVERVIEW_COLUMNS` always, `OVERVIEW_OPTIONAL` when some branch has a
+    value there, then one column per other runtime pinned in a manifest (not derived from an image, which
+    the Images column shows), named by its endoflife.date product, so a runtime a reader learns to detect
+    shows up without a change here."""
+    cols = list(OVERVIEW_COLUMNS)
+    cols += [col for col in OVERVIEW_OPTIONAL if any(_overview_cell(i, col[1], col[2]) != "–" for i in invs)]
+    covered = {n for _, kind, names in cols + OVERVIEW_OPTIONAL if kind == "runtime" for n in names}
+    extra = sorted({c.name.lower() for i in invs for c in i.components
+                    if c.kind == "runtime" and c.name and "image" not in c.props and c.name.lower() not in covered})
+    return cols + [(name, "runtime", (name,)) for name in extra]
+
+
 def _branch_order(cfg: Config, branches: set[str]) -> list[str]:
     return sorted(branches, key=lambda b: (cfg.branches.index(b) if b in cfg.branches else len(cfg.branches), b))
 
@@ -746,15 +794,16 @@ def write_inventory_md(cfg: Config, inventories: list[BranchInventory], out: Pat
     releases = [i for i in inventories if i.release]
     invs = sorted((i for i in inventories if not i.release), key=lambda i: (i.project.lower(), i.branch))
     branches = ", ".join(f"`{b}`" for b in cfg.branches)
+    columns = overview_columns(invs)
     L = ["# Inventory", "",
          f"Generated {_now()} from `{cfg.root}` ({cfg.mode} mode, branches {branches}). Components come from the "
          "Syft SBOM of each branch's committed tree (`sbom/<project>/<branch>.cdx.json`) plus own readers for "
          "images and runtime pins; the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.", "",
          "## Overview", "",
-         "| Project | Branch | " + " | ".join(h for h, _, _ in OVERVIEW_COLUMNS) + " | Images |",
-         "|---|" * (len(OVERVIEW_COLUMNS) + 3)]
+         "| Project | Branch | " + " | ".join(md(h) for h, _, _ in columns) + " | Images |",
+         "|" + "---|" * (len(columns) + 3)]
     for inv in invs:
-        cells = [_overview_cell(inv, kind, names) for _, kind, names in OVERVIEW_COLUMNS]
+        cells = [_overview_cell(inv, kind, names) for _, kind, names in columns]
         images = ", ".join(sorted({f"`{c.props.get('image', c.name)}`" for c in inv.components if c.kind == "image"})) or "–"
         L.append(f"| {md(inv.project)} | {inv.branch} | " + " | ".join(cells) + f" | {images} |")
     L.append("")

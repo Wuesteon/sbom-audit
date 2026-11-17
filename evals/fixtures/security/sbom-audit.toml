@@ -41,6 +41,7 @@ push = false
 # keep = 3
 # support_months = 60
 # support_until = 2031-12-31
+# prereleases = false             # true also audits pre-release tags (-rc.1, -beta, -SNAPSHOT)
 
 # Per-project options: production = true puts CRITICAL/HIGH findings first;
 # ignore = ["path/"] drops subtrees from the inventory.

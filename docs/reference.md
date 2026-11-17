@@ -63,7 +63,7 @@ api_key_env = "OPENROUTER_API_KEY"    # the NAME of the variable that holds the 
 
 [report]                              # optional: REPORT.html, the management report
 organisation = "Example AG"           # shown in the title; omitted when absent
-language = "en"                       # or "de"
+language = "en"                       # or "de": REPORT.html and the cra init templates only
 
 [projects."shop-web"]
 production = true                     # moves the project up the triage order
@@ -255,6 +255,7 @@ tags = "v*"                   # glob over local tag names (required)
 keep = 3                      # the newest N matching tags are audited
 support_months = 60           # support period: months from each release's tag date ...
 support_until = 2031-12-31    # ... and/or an end date; with both, the later one counts
+prereleases = false           # default; true also audits pre-release tags (-rc.1, -beta, -SNAPSHOT)
 
 [projects."shop-web"]
 releases = { tags = "shop-v*", keep = 5 }   # overrides key by key
@@ -268,9 +269,19 @@ from `[releases]`. Unknown keys are refused.
 - **Which tags.** Local tags only, read from git objects (`git for-each-ref refs/tags`); the normal
   `git fetch` brings tags along, nothing extra is fetched or checked out. A tag that points at a tree
   or a blob is skipped. When every matching tag, with the pattern's literal prefix removed, reads as a
-  version (`1.2.3`, `2.0.0-rc.1`), they are ordered by version (a pre-release before its release);
-  otherwise by tag date (the tagger date of an annotated tag, else the commit date). The run log names
-  the order used, and so do `releases.json` (`order`) and `RELEASES.md`.
+  version (`1.2.3`, `2.0.0-rc.1`), they are ordered by version with semver precedence: numeric parts
+  compare as numbers (`rc.10` after `rc.9`, `1.10.0` after `1.9.0`), a pre-release ranks below its own
+  release (`2.0.0-rc.10` before `2.0.0`), and build metadata after `+` only breaks ties. Otherwise
+  they are ordered by tag date (the tagger date of an annotated tag, else the commit date). The run
+  log names the order used, and so do `releases.json` (`order`) and `RELEASES.md`.
+- **Pre-releases.** `prereleases = false` (the default) leaves pre-release tags out before the newest
+  `keep` are chosen: the releases a manufacturer supports are its final releases, and a release
+  candidate would otherwise take one of the `keep` slots and its findings would rank like production.
+  A tag counts as a pre-release when its version carries a suffix after the numbers (`-rc.1`, `-beta`,
+  `-SNAPSHOT`, `alpha1`, `.M1`); `.RELEASE`, `.Final`, `-ga` and build metadata (`+build.5`) do not
+  make a pre-release. Set `prereleases = true` in `[releases]` or on one project when you ship and
+  support pre-releases. Configs without the key keep working; a project that used to audit an
+  `-rc` tag among its newest `keep` now audits the next final release instead.
 - **Where the results go.** The SBOM is `sbom/<project>/tags__<tag>.cdx.json` (its version is the
   tag). In `inventory.json`, `audit.json` and `issues.json` a release appears with branch
   `tags/<tag>`; an `audit.json` location in a release carries `release: <tag>` and an issue lists its
@@ -283,7 +294,13 @@ from `[releases]`. Unknown keys are refused.
   release past its support period is listed in `releases.json`, `RELEASES.md` and `AUDIT.md`, but its
   findings are not in `audit.json`, `issues.json` or the exit code. A runtime or base image whose
   endoflife.date end of life falls before the end of the support period is listed under
-  `eol_before_support_end`.
+  `eol_before_support_end`. One whose end of life cannot be compared is listed apart under
+  `eol_unknown`, with the reason: `(no endoflife.date data)` (the product or cycle is not on
+  endoflife.date, or the lookup failed), `(no end-of-life date published)` (a cycle without an
+  announced end) or `(version unknown)` (no version to look up). An empty `eol_before_support_end`
+  therefore never hides a runtime without a date; `RELEASES.md` has an "EOL unknown" column, and
+  `REPORT.html` and `CRA.md` name them per release. Both lists are empty when the release has no
+  support period to compare with.
 - **Remediation evidence.** For each release, `fixed_since_previous` lists the advisories that matched
   a package in the SBOM of the previous kept release and match none in the SBOM of this one, with
   `first_seen` (the earliest kept release of the unbroken run that held it;
@@ -324,13 +341,14 @@ may be added, never renamed or removed. Releases are listed newest first.
 {"schema": 1, "generated": "2026-11-18T09:00:00+01:00", "plugin_version": "…",
  "projects": {"shop-web": {
    "support": {"period_months": 60, "until": null},
-   "tags": "shop-v*", "keep": 3, "order": "version",
+   "tags": "shop-v*", "keep": 3, "order": "version", "prereleases": false,
    "releases": [
      {"tag": "shop-v2.4.0", "commit": "<sha>", "date": "2026-10-01T12:00:00+02:00",
       "supported": true, "support_until": "2031-10-01",
       "sbom": "sbom/shop-web/tags__shop-v2.4.0.cdx.json",
       "open": {"kev": 0, "critical": 1, "high": 2},
       "eol_before_support_end": ["nodejs 20 (EOL 2026-04-30)"],
+      "eol_unknown": ["caddy 2 (no endoflife.date data)"],
       "fixed_since_previous": [{"id": "GHSA-…", "package": "lodash", "ecosystem": "npm",
                                 "versions_before": ["4.17.20"], "versions_after": ["4.17.21"],
                                 "removed_versions": ["4.17.20"], "remaining_versions": [],
@@ -628,7 +646,21 @@ mapping below and, with `[cra.products]`, the readiness table per product from `
 produce reads "not available", never 0, and a skipped secrets scan reads as skipped, never as
 clean. Secret values are never part of it. `sbom_audit_cli.py report [--lang en|de]` rebuilds it
 from the JSON already in the folder without scanning; `[report] language` and `organisation` set the
-defaults. Sample: [`evals/fixtures/security/REPORT.html`](../evals/fixtures/security/REPORT.html).
+defaults. By design, `language` applies only to `REPORT.html` and the `cra init` templates:
+`AUDIT.md`, `INVENTORY.md`, `RELEASES.md`, `ISSUES.md`, `CRA.md`, `STATUS.md`, `SECRETS.md` and the JSON
+files stay in English, so agents, diffs and tools read one vocabulary (the German report says so under
+its limits). Times in the report are shown in the run's time zone (the offset of `audit.json`
+`generated_at`, which also names `reports/<date>-…`): a timestamp another file records in UTC, such as
+`secrets.json` or the KEV cache, is converted, so every day in the report is the run's day; a value
+recorded as a day only (an issue's or a secret's `first_seen`, a decision date) is shown as recorded,
+and `secrets.json` records UTC days. The report states the zone above its timestamp table.
+Sample: [`evals/fixtures/security/REPORT.html`](../evals/fixtures/security/REPORT.html).
+
+**Inventory overview.** The Overview table of `INVENTORY.md` always has the columns Node, Python,
+Deno, Expo/React Native, SvelteKit, NestJS, Astro, Vite, FastAPI and Postgres. Java/JDK (`java`,
+`openjdk`, `eclipse-temurin`, `amazon-corretto` and other JDK distributions), Go and .NET appear
+when some branch has a value there, and any other runtime pinned in a manifest gets a column
+named by its endoflife.date product; runtimes read from a base image are in the Images column.
 
 Portfolio mode: the parent of `security/` is a plain folder whose direct subfolders with a
 `.git` are the projects; `security/` is outside every audited repository. Single-repo
@@ -825,6 +857,18 @@ it is not a dependency.
 
 - Ecosystems OSV does not cover (CocoaPods, Swift packages, system packages) are listed
   in the inventory but not matched against vulnerabilities.
+- GitHub Actions used in workflows (`pkg:github/<owner>/<repo>@<ref>`) are inventoried but not
+  checked for vulnerabilities. OSV's "GitHub Actions" advisories carry only ECOSYSTEM ranges, and a
+  query with a version returns nothing even for an affected one (tried with `tj-actions/changed-files`
+  35.0.0 against GHSA-mrrh-fwg8-r2c3 and `actions/download-artifact` 4.1.2 against GHSA-cxww-7g56-2vh6,
+  with and without the `v`); workflows also mostly pin a floating major tag (`v4`) or a commit SHA,
+  which no range comparison resolves. `AUDIT.md` counts them in the summary ("GitHub Actions
+  inventoried, not checked for vulnerabilities") and names them per branch under Notes,
+  `audit.json` has the count as `stats.github_actions_unchecked`, and `REPORT.html` states it under
+  limits.
+- Dependencies are read from the configured branches (and the release tags under audit); the secrets
+  scan reads the whole git history of every branch of each repository, so a secret on an
+  unconfigured branch is found while that branch's dependencies are not audited.
 - `requirements.txt` with ranges is read best effort; a `package.json` without a lockfile
   lists its direct dependencies with their range and marks them unresolved.
 - A package without a resolved version (Maven `UNKNOWN` from an external BOM or parent, a manifest

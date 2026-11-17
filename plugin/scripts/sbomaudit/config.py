@@ -30,11 +30,14 @@ _ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 @dataclass
 class ReleasesOpts:
     """Release scanning for one project: tags matching `tags` (a glob), the newest `keep` of them, and the
-    support period of each release (`support_months` from its date and/or an explicit `support_until`)."""
+    support period of each release (`support_months` from its date and/or an explicit `support_until`).
+    Pre-release tags (`-rc.1`, `-beta`) are left out unless `prereleases` is true: a release candidate is
+    not a release the manufacturer supports."""
     tags: str
     keep: int = 3
     support_months: int | None = None
     support_until: date | None = None
+    prereleases: bool = False
 
 
 @dataclass
@@ -315,7 +318,7 @@ def _report(data) -> ReportOpts:
                       language=language)
 
 
-RELEASES_KEYS = ("tags", "keep", "support_months", "support_until")
+RELEASES_KEYS = ("tags", "keep", "support_months", "support_until", "prereleases")
 
 
 def _release_keys(data, where: str) -> dict:
@@ -342,6 +345,8 @@ def _release_keys(data, where: str) -> dict:
         if not isinstance(value, date) or hasattr(value, "hour"):
             raise ConfigError(f"{where} support_until must be a date YYYY-MM-DD")
         keys["support_until"] = value
+    if "prereleases" in data:
+        keys["prereleases"] = _bool(data["prereleases"], f"{where} prereleases")
     return keys
 
 
@@ -644,6 +649,7 @@ def write_default(out: Path, cfg: Config, discovered: list[Project] | None = Non
         "# keep = 3",
         "# support_months = 60",
         "# support_until = 2031-12-31",
+        "# prereleases = false             # true also audits pre-release tags (-rc.1, -beta, -SNAPSHOT)",
         "",
         "# Per-project options: production = true puts CRITICAL/HIGH findings first;",
         "# ignore = [\"path/\"] drops subtrees from the inventory.",

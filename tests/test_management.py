@@ -404,6 +404,73 @@ class TestLanguageAndConfig(ManagementTestCase):
         self.assertIn('# language = "en"', text)
 
 
+class TestWordingAndTimes(ManagementTestCase):
+    def cra_folder(self) -> Path:
+        from sbomaudit import cra
+        out = full_folder(self.tmp / "security")
+        obligations = [{"id": k, "ref": ref, "status": "missing", "evidence": []}
+                       for k, (ref, _) in {**cra.OBLIGATIONS, **cra.MANUFACTURER}.items()]
+        write_json(out / "cra.json", {"generated_at": "2026-11-10T10:00:00Z",
+                                      "products": {"shop": {"name": "Shop", "branch": "main",
+                                                            "obligations": obligations}}})
+        return out
+
+    def test_german_cra_references_cite_the_same_provisions_in_german(self):
+        from sbomaudit import cra
+        self.assertEqual(set(management.STRINGS["de"]["cra_ref"]), set(cra.ORDER))
+        out = self.cra_folder()
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertIn("Anhang I Teil II Nr. 6; Anhang II Nr. 2 (RFC 9116 ist ein verbreiteter Weg, keine "
+                      "Anforderung des CRA)", de)
+        for english in ("Annex", "RFC 9116 is one common way", " point ", "Art. 13(", "Teil II (", "Nummer"):
+            self.assertNotIn(english, de)
+        en = text_of(management.render(management.load(out), lang="en"))
+        self.assertIn(cra.OBLIGATIONS["security_txt"][0], en)
+        # the same article, paragraph and point numbers: only the words around them differ
+        digits = lambda s: set(re.findall(r"\d+", s))
+        roman = lambda s: set(re.findall(r"\b[IVX]+\b", s))
+        for key, ref in management.STRINGS["de"]["cra_ref"].items():
+            en_ref = {**cra.OBLIGATIONS, **cra.MANUFACTURER}[key][0]
+            self.assertEqual(digits(ref), digits(en_ref), key)
+            self.assertEqual(roman(ref), roman(en_ref), key)
+
+    def test_times_are_shown_in_the_run_zone(self):
+        out = full_folder(self.tmp / "security")
+        doc = json.loads((out / "audit.json").read_text())
+        doc["generated_at"] = "2026-11-18T02:47:00+08:00"
+        (out / "audit.json").write_text(json.dumps(doc))
+        doc = json.loads((out / "secrets.json").read_text())
+        doc["generated_at"] = "2026-11-17T18:46:00Z"            # the same run, recorded in UTC
+        (out / "secrets.json").write_text(json.dumps(doc))
+        for lang, needle in (("en", "run's time zone (UTC+08:00)"), ("de", "Zeitzone des Laufs (UTC+08:00)")):
+            page = management.render(management.load(out), lang=lang)
+            text = text_of(page).replace("&#x27;", "'")
+            self.assertIn(needle, text)
+            self.assertIn("2026-11-18T02:46:00+08:00", text)     # secrets.json converted
+            self.assertNotIn("2026-11-17T18:46", text)
+            self.assertIn("2026-11-18T02:47:00+08:00", text)
+        self.assertEqual(management._in_zone("2026-11-17", None), "2026-11-17")      # a day stays as recorded
+
+    def test_limits_name_the_secrets_history_and_unchecked_actions(self):
+        out = full_folder(self.tmp / "security")
+        en = text_of(management.render(management.load(out)))
+        self.assertIn("the secrets scan reads the whole git history of every branch", en)
+        self.assertNotIn("Only the configured branches are read", en)
+        self.assertNotIn("GitHub Actions", en)                    # none in this run: no line
+        doc = json.loads((out / "audit.json").read_text())
+        doc["stats"] = {"github_actions_unchecked": 7}
+        (out / "audit.json").write_text(json.dumps(doc))
+        en = text_of(management.render(management.load(out)))
+        self.assertIn("GitHub Actions used in workflows are inventoried but not checked for vulnerabilities "
+                      "(OSV does not match versions for this ecosystem): 7 in this run", en)
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertIn("der Secrets-Scan liest die gesamte git-Historie aller Branches", de)
+        self.assertIn("nicht auf Schwachstellen geprüft (OSV gleicht für dieses Ökosystem keine Versionen ab): 7", de)
+        self.assertIn("RELEASES.md, ISSUES.md, CRA.md und die übrigen Markdown- und JSON-Dateien sind immer "
+                      "englisch", de)
+        self.assertIn("Scan (vollständig)", de)
+
+
 class TestWiring(ManagementTestCase):
     def test_read_only_mode_refuses(self):
         out = self.fixture_copy()
@@ -424,10 +491,27 @@ class TestWiring(ManagementTestCase):
         out.mkdir()
         said = []
         self.assertEqual(management.try_write(out, said.append), [])
-        self.assertEqual(said, ["management report: not written (FileNotFoundError)"])
+        self.assertRegex(said[0], r"^management report: not written \(FileNotFoundError: audit\.json "
+                                  r"\(management\.py:\d+ in write\)\)$")
         with mock.patch.object(management, "render", side_effect=RuntimeError(PLANTED)):
             self.assertEqual(management.try_write(self.fixture_copy("fixture"), said.append), [])
-        self.assertEqual(said[-1], "management report: not written (RuntimeError)")
+        self.assertRegex(said[-1], r"^management report: not written \(RuntimeError \(\w+\.py:\d+ in \w+\)\)$")
+        self.assertNotIn(PLANTED, said[-1])          # a message may quote report data: only the place is logged
+
+    def test_describe_error_names_the_raising_frame(self):
+        def boom():
+            raise ValueError("x\ny")
+        try:
+            boom()
+        except ValueError as exc:
+            text = management.describe_error(exc)
+        self.assertRegex(text, r"^ValueError \(test_management\.py:\d+ in boom\)$")
+        self.assertEqual(management.describe_error(KeyError("k")), "KeyError")      # never raised: no frame
+        long = OSError(13, "Permission denied " * 30, "/a/b/secret-dir/file.json")
+        text = management.describe_error(long)                  # OSError(13, ...) is a PermissionError
+        self.assertTrue(text.startswith("PermissionError: Permission denied"), text)
+        self.assertEqual(len(text), len("PermissionError: ") + 200)
+        self.assertNotIn("secret-dir", text)                     # the file name only, not its directory
 
 
 if __name__ == "__main__":
