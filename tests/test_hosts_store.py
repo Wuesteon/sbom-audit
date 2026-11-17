@@ -172,6 +172,19 @@ class StoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown change-id"):
             store.accept(self.out, "other.example", SUDOERS_ID, "", None, TODAY)
 
+    def test_key_login_decision_before_the_key_logged_in(self):
+        # a new deploy key in the host's current authorized_keys can be accepted for logins ahead of time
+        doc = store.read(self.out)
+        doc["hosts"][HOST]["fingerprint"]["authorized_keys"] = {"ci/SHA256:newcikey": "ED25519"}
+        store.write(self.out, doc)
+        paths = self.accept("login:ci/SHA256:newcikey")
+        self.assertEqual([p.name for p in paths], [store.DECISIONS_FILE])
+        self.assertIn("login:ci/SHA256:newcikey", store.accepted_ids(store.read_decisions(self.out), HOST, TODAY))
+        for id_ in ("login:ci/SHA256:otherkey", "login:deploy/SHA256:newcikey", "login:ci/password",
+                    "login:ci@2026-11-08T10:12:03Z/SHA256:newcikey"):
+            with self.subTest(id_=id_), self.assertRaisesRegex(ValueError, "unknown change-id"):
+                self.accept(id_)
+
     def test_accept_hostkey_points_to_bootstrap(self):
         with self.assertRaisesRegex(ValueError, "re-pin with hosts bootstrap <host>"):
             self.accept("hostkey:changed")

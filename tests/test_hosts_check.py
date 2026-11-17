@@ -631,12 +631,17 @@ class CriticalGroupTest(CheckCase):
         text = logins_text(login_line("2026-11-09T09:30:00+00:00", "203.0.113.66", unknown))
         doc, _ = self.check({"box-a": [ok(collector_doc(logins=text))]}, now=LATER)
         crit = self.entry(doc)["critical"]
-        self.assertEqual(crit, [f"login:deploy@2026-11-09T09:30:00Z/{unknown}"])
+        self.assertEqual(crit, [f"login:deploy/{unknown}"])
         # carried while open, even when the event is outside the next window
         doc, _ = self.check({"box-a": [ok(collector_doc(uu_log=FRESH_UU))]}, now=NEXT_WEEK)
         self.assertEqual(self.entry(doc)["critical"], crit)
         self.accept(crit[0], today=NEXT_WEEK.date())
         doc, _ = self.check({"box-a": [ok(collector_doc(uu_log=FRESH_UU))]}, now=NEXT_WEEK)
+        self.assertEqual(self.entry(doc)["critical"], [])
+        # the one decision covers later logins with the same key from another address
+        later = logins_text(login_line("2026-11-16T09:30:00+00:00", "198.51.100.200", unknown))
+        doc, _ = self.check({"box-a": [ok(collector_doc(logins=later, uu_log=FRESH_UU))]},
+                            now=NEXT_WEEK + dt.timedelta(days=1))
         self.assertEqual(self.entry(doc)["critical"], [])
 
     def test_new_sudoers_rule_cleared_by_accept(self):

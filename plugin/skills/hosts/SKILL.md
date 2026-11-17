@@ -37,7 +37,7 @@ Claude never records a host decision on its own.
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py" hosts accept <host> <change-id> "<note>" [--review-by YYYY-MM-DD]
 ```
 
-Accepting moves the state into the baseline (for a KEV finding: until the `--review-by` date; login and origin decisions are only recorded and do not expire). Do not accept a login from an unknown key, a new `authorized_keys` entry or a new listening port just to make the report quiet: ask whether the user recognises it.
+Accepting moves the state into the baseline (for a KEV finding: until the `--review-by` date; login and origin decisions are only recorded and do not expire). A login finding is one per user and key (`login:<user>/<fingerprint>`); accepting it covers that user's later logins with that key, so a known deploy key needs one decision, not one per login. Do not accept a login from an unknown key, a new `authorized_keys` entry or a new listening port just to make the report quiet: ask whether the user recognises it.
 
 ## Admin actions: patch, bootstrap, unbootstrap
 
