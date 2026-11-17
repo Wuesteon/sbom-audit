@@ -176,6 +176,11 @@ def _known(finding: dict) -> dict:
     return {name: finding.get(name) for name in FIELDS}
 
 
+def sort_findings(items: list[dict]) -> list[dict]:
+    """By class, then commit date descending (None last), then fingerprint."""
+    return _sorted(items)
+
+
 def _sorted(items: list[dict]) -> list[dict]:
     """By class, then commit date descending (None last), then fingerprint."""
     items.sort(key=lambda f: f["fingerprint"])

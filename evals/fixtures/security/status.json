@@ -32,6 +32,14 @@
   "secrets_b": [],
   "hosts_critical": []
  },
+ "open_rules": {
+  "kev": 1,
+  "critical_high_production": 2,
+  "eol": 1,
+  "secrets_a": 1,
+  "secrets_b": 1,
+  "hosts_critical": 1
+ },
  "deltas": {
   "kev": {
    "new": [],

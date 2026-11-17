@@ -21,6 +21,7 @@ from . import __version__
 from .cache import atomic_write
 from .cvss import SEV_ORDER
 from .report import ACTIONABLE, JSON_FILE as AUDIT_JSON, counts_as_production, md, worst_advisory
+from .secrets.classify import context_text, ranked_lower
 from .versions import ver_key
 
 ISSUES_JSON = "issues.json"
@@ -29,11 +30,14 @@ SCHEMA = 1
 MD_BRANCHES = 3                                  # ISSUES.md names this many branches; issues.json has all
 KINDS = ("secret", "vulnerability", "eol", "floating_tag", "host")
 PRIORITY_REASONS = {1: ("secret_a",), 2: ("kev", "host_critical"), 3: ("critical_high_production", "secret_b"),
-                    4: ("eol",), 5: ("floating_tag",), 6: ("other",)}
+                    4: ("eol", "secret_context"), 5: ("floating_tag",), 6: ("other",)}
 # host finding groups a fixer can act on; logins, Lynis suggestions and `info` are not work items
 HOST_GROUPS = ("change", "patch", "permissive", "lynis_warning", "lynis_index", "third_party")
 ROTATE_HINT = ("rotate the credential at the provider, redeploy what uses it, verify the old value is dead, "
                "then `secrets resolve <fingerprint> rotated`; removing the line does not un-leak it")
+CHECK_HINT = ("{context}, so ranked one class lower: check whether the value is a real credential. If it is, "
+              "rotate it like any leak (`secrets resolve <fingerprint> rotated`); if not, "
+              "`secrets resolve <fingerprint> test_fixture` or `false_positive`")
 
 
 def _now() -> str:
@@ -120,17 +124,24 @@ def _secrets(doc: dict | None, production: set[str]) -> list[dict]:
             continue
         cls = f.get("class")
         priority, reason = {"A": (1, "secret_a"), "B": (3, "secret_b")}.get(str(cls), (6, "other"))
+        lower = ranked_lower(f)                 # a test, docs, vendored, ... file: below production work
+        if lower and cls == "B":
+            priority, reason = 4, "secret_context"
+        fix = ({"action": "review", "target": None, "hint": CHECK_HINT.format(context=context_text(f["context"]).capitalize())}
+               if lower else {"action": "rotate", "target": None, "hint": ROTATE_HINT})
         issues.append({
             "id": f"secret:{f['fingerprint']}",
             "kind": "secret", "priority": priority, "reason": reason, "severity": f"class {cls}",
-            "production": f.get("repo") in production,
-            "title": f"{f.get('rule_id')} ({f.get('provider')}) in {f.get('file')}:{f.get('line')}",
+            "production": f.get("repo") in production and not lower,
+            "title": f"{f.get('rule_id')} ({f.get('provider')}) in {f.get('file')}:{f.get('line')}"
+                     + (f" ({context_text(f['context'])})" if f.get("context") else ""),
             "where": {"project": f.get("repo"), "branches": sorted(f.get("branches") or []),
                       "path": f.get("file"), "line": f.get("line")},
             "details": {"fingerprint": f["fingerprint"], "rule_id": f.get("rule_id"), "provider": f.get("provider"),
                         "class": cls, "commit": f.get("commit"), "live_in_tree": bool(f.get("live_in_tree")),
-                        "age_days": f.get("age_days")},
-            "fix": {"action": "rotate", "target": None, "hint": ROTATE_HINT},
+                        "age_days": f.get("age_days"), "context": f.get("context"),
+                        "base_class": f.get("base_class") or cls},
+            "fix": fix,
             "_first_seen": f.get("first_seen"),
         })
     return issues
@@ -341,7 +352,7 @@ def render_md(doc: dict) -> str:
          "informational findings are not listed.", "",
          f"{counts['total']} open: " + (", ".join(f"{n} {k}" for k, n in counts["by_kind"].items()) or "nothing") + ".",
          "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production or a supported "
-         "release, class B secret · 4 end of life · 5 floating tag · 6 other.", ""]
+         "release, class B secret · 4 end of life, a secret ranked lower by its context (test, docs, ...) · 5 floating tag · 6 other.", ""]
     split = dependency_split(doc["issues"])
     if split["total"]:
         L += [f"Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "

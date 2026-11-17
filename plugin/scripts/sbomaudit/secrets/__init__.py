@@ -45,6 +45,14 @@ def _skipped(previous: dict | None, now: dt.datetime, reason: str, error: str | 
             "repos": previous.get("repos") or {}, "findings": kept}
 
 
+def _rank(items: list[dict], cfg: config.Config, classes: classify.Classes) -> list[dict]:
+    """Path context and class of every finding (`classify.apply_context`), sorted again by class."""
+    opts = getattr(cfg, "secrets", None)
+    classify.apply_context(items, classes, enabled=getattr(opts, "rank_by_context", True),
+                           extra=getattr(opts, "context", None))
+    return store.sort_findings(items)
+
+
 def _stored_path(path: Path, cfg: config.Config, out: Path) -> str | None:
     """A repository's path for secrets.json, never absolute: relative to `out` for bare clones kept there,
     to the portfolio root for local projects, else None."""
@@ -144,6 +152,7 @@ def scan(cfg: config.Config, *, full: bool, log=None, now: dt.datetime | None = 
     merged, dropped = store.merge(previous, new, decisions, mode=mode, today=now.date().isoformat(),
                                   scanned_repos=scanned)
     findings.refresh_ages(merged, now)
+    merged = _rank(merged, cfg, classes)
     if dropped:
         say(f"secrets: {dropped} open findings no longer found")
     doc = {"schema": store.SCHEMA, "generated_at": generated_at,
@@ -173,6 +182,9 @@ def summary(doc: dict) -> str:
         head = f"secrets: {scan_.get('skipped_reason')}; previous findings kept ({counts} open)"
     else:
         head = f"secrets: {scan_.get('mode')}, {scan_.get('repos', 0)} repos, open {counts}"
+    lower = sum(1 for f in doc.get("findings") or [] if f.get("status") == "open" and classify.ranked_lower(f))
+    if lower:
+        head += f" ({lower} ranked lower by context)"
     failed = scan_.get("failed") or []
     return head + (f", {len(failed)} repos failed" if failed else "") + f" — {secrets_report.SECRETS_FILE}"
 

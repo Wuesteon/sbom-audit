@@ -30,7 +30,7 @@ Record hit or no hit with the version as evidence. `unknown` is not "no hit": th
 
 ## 3. Triage
 
-Open class A secrets (they own the platform: rotate before anything else) → KEV → CRITICAL/HIGH in production projects (`production = true` in `sbom-audit.toml`) and open class B secrets → EOL runtimes and base images → floating image tags → dev-only tooling. Mark dev-only (devDependencies, build stages) explicitly. Do not inflate counts.
+Open class A secrets (they own the platform: rotate before anything else) → KEV → CRITICAL/HIGH in production projects (`production = true` in `sbom-audit.toml`) and open class B secrets → EOL runtimes and base images, and secrets ranked lower by their context (test, docs, vendored: confirm whether the value is real) → floating image tags → dev-only tooling. Mark dev-only (devDependencies, build stages) explicitly. Do not inflate counts.
 
 ## 4. Write the assessment
 
