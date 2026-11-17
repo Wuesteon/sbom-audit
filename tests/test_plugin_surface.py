@@ -361,6 +361,19 @@ class SessionHookTests(unittest.TestCase):
                 evidence(tmp, doc=doc, scheduler=scheduler)
                 self.assertIn(needles[name], run_hook(Path(tmp))["systemMessage"])
 
+    def test_hook_reports_a_set_counted_by_other_rules_as_not_comparable(self):
+        doc, _ = fixture_doc("clear")
+        doc["first_run"] = False
+        doc["deltas"]["critical_high_production"] = {"new": [], "resolved": [], "not_comparable": "other rules"}
+        doc["deltas"]["kev"] = {"new": [], "resolved": ["CVE-1 npm:b@1"], "not_counted": ["CVE-2 npm:a@1"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence(tmp, doc=doc)
+            context = run_hook(Path(tmp))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("critical_high_production: not comparable with the previous run", context)
+        self.assertNotIn("other rules)", context.replace("(counted by other rules)", ""))
+        self.assertIn("1 no longer counted", context)
+        self.assertIn("CVE-2 npm:a@1", context)
+
     def test_hook_open_keys_match_status(self):
         source = HOOK.read_text(encoding="utf-8")
         m = re.search(r"^OPEN_KEYS = (\(.*?\))$", source, re.M)

@@ -4,7 +4,7 @@ Exit codes: 0 clean, 1 findings present, 2 a source failed (a branch could not b
 matched, or a database could not be reached), 3 an OpenVEX file could not be read, 4 a required
 tool is missing (checked before anything is written). After the audit, `run` prunes stale sbom/ folders,
 scans for secrets, refreshes the folder docs, writes status.json / STATUS.md and commits (and optionally
-pushes) exactly the files it wrote. Of all that, only a failed secrets scan (a repository, the decisions
+pushes) exactly the files it wrote, plus the `sbom-audit.toml` it read (`config.commit_refusal` says when not). Of all that, only a failed secrets scan (a repository, the decisions
 file or a crash of the step) changes the exit code, to 2; a missing secrets engine is reported as skipped
 and changes nothing. The host step (`[hosts]` active) sets 2 for a failed host or a crash of the step, 1 for an
 open critical host finding on an otherwise clean run, and changes nothing when skipped (no audit key here).
@@ -271,6 +271,14 @@ def _expected_commit(cfg: Config, own: bool) -> dict:
     return {"status": "committed", "sha": None, "detail": "this commit"}
 
 
+def _config_refusal(cfg: Config, out: Path) -> str | None:
+    """Why the run's commit leaves `sbom-audit.toml` out (`config.commit_refusal`), or None to commit it."""
+    try:
+        return config.commit_refusal(out, cfg.digest)
+    except Exception as exc:                    # never breaks the run; the config then stays a pending hand edit
+        return type(exc).__name__
+
+
 def _expected_push(cfg: Config, own: bool, visibility: str, commit: dict) -> dict:
     """The push outcome knowable before pushing; only `pushed` means push_run will be called."""
     if not cfg.push:
@@ -401,9 +409,17 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     own = cfg.mode == "portfolio" and evidence.is_own_repo(out)
     visibility = evidence.remote_visibility(out) if own else "unknown"
     status_paths = [out / status.STATUS_JSON, out / status.STATUS_FILE]
+    expected_commit = _expected_commit(cfg, own)
+    if expected_commit["status"] == "committed":
+        refusal = _config_refusal(cfg, out)
+        if refusal is None:
+            written.append(out / config.CONFIG_NAME)    # the configuration this run read goes into its commit
+        elif (out / config.CONFIG_NAME).exists():
+            expected_commit["config"] = f"{config.CONFIG_NAME} not committed: {refusal}"
+            say(f"commit: {expected_commit['config']}")
     pending = (evidence.pending_hand_edits(out, set(written + status_paths))
                if own or cfg.mode == "single" else [])
-    expected_commit = {**_expected_commit(cfg, own), "pending_hand_edits": pending}
+    expected_commit["pending_hand_edits"] = pending
     expected_push = _expected_push(cfg, own, visibility, expected_commit)
 
     hosts_doc = _hosts_for_status(cfg, hosts_result)
@@ -478,7 +494,7 @@ def _write_failed_status(cfg: Config, exc: Exception, started: float, say) -> No
         if previous and previous.get("schema") == status.SCHEMA:
             # nothing was read: keep the last known open sets and counts so the next run's deltas stay right
             doc.update(open=previous.get("open") or doc["open"], counts=previous.get("counts") or doc["counts"],
-                       first_run=False)
+                       open_rules=status.open_rules_of(previous), first_run=False)   # the rules those sets were built by
         status.write(cfg.out, doc)
         status.write_md(cfg.out, doc)
     except Exception as inner:

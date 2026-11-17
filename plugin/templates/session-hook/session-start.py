@@ -210,8 +210,13 @@ def facts(line, status):
         d = status["deltas"][key]
         if key == "hosts_critical" and not status["counts"].get("hosts") and not (d["new"] or d["resolved"]):
             continue
-        out.append("- %s: %d new, %d resolved" % (key, len(d["new"]), len(d["resolved"])))
-        out += _items("new", d["new"]) + _items("resolved", d["resolved"])
+        if d.get("not_comparable"):     # a fixed text: the reason string is not echoed
+            out.append("- %s: not comparable with the previous run (counted by other rules)" % key)
+            continue
+        not_counted = d.get("not_counted") if isinstance(d.get("not_counted"), list) else []
+        out.append("- %s: %d new, %d resolved%s" % (key, len(d["new"]), len(d["resolved"]),
+                   ", %d no longer counted but still in AUDIT.md" % len(not_counted) if not_counted else ""))
+        out += _items("new", d["new"]) + _items("resolved", d["resolved"]) + _items("no longer counted", not_counted)
     if status.get("assessment_proposal"):
         out.append("Assessment proposal waiting: %s" % _clean(status["assessment_proposal"]))
     if needs_assessment(status):
