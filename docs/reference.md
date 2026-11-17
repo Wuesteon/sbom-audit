@@ -128,6 +128,24 @@ file), 4 a required tool is missing (checked before anything is written; `scan` 
 when it cannot answer. 5 means read-only mode (`SBOM_AUDIT_READ_ONLY=1`): nothing was written.
 `status` prints `STATUS.md` and writes nothing.
 
+**What a run commits.** With `commit = true` and `security/` as its own repository, a run commits
+exactly the files it wrote plus `sbom-audit.toml`, the configuration it read, so the evidence commit
+names the settings it was produced with. The configuration stays out of the commit, and `STATUS.md`
+says why under Commit, when it changed while the run was going (the next run commits it) or when a
+key name or value looks like a credential (`token`, `password`, `user:password@` in a URL, a known
+token prefix): the configuration holds names and paths (`api_key_env`, `api_key_file`, `[hosts] key`),
+never a key value. Everything else that changed by hand, such as `vex/`, `secrets-decisions.toml`,
+`hosts-decisions.toml` or your own notes, is left uncommitted and listed under Pending hand edits.
+
+**Deltas between runs.** `STATUS.md`, the session line and `REPORT.html` compare each open set with
+the previous run only when both were counted by the same rule (`open_rules` in `status.json`). After
+an upgrade that changed a rule, that set reads "not comparable with the previous run" for one run
+instead of new and resolved numbers (from 1.1.x, CRITICAL/HIGH in production: 1.1.x put every
+advisory of an affected package into it, 1.2.0 and later only its KEV and CRITICAL/HIGH ones). An
+advisory that left the KEV or CRITICAL/HIGH set while `AUDIT.md` still reports it (its severity or
+KEV flag or the production scope changed, or a VEX decision covers only some projects) is listed as
+"no longer counted", never as resolved.
+
 ## The work list: `issues.json`
 
 The plugin reports and never fixes. What it hands to whoever does fix, a person or an agent, is
@@ -521,7 +539,7 @@ nothing, so the headless assessment may call it too.
 ```
 security/
 ├── CLAUDE.md / README.md    # how to work in this folder; refreshed by the plugin
-├── sbom-audit.toml          # configuration, committed with the evidence
+├── sbom-audit.toml          # configuration, committed with each run's evidence
 ├── STATUS.md / status.json  # one-screen summary of the last run: counts, deltas, scheduler, proposal
 ├── ISSUES.md / issues.json  # work list: every open issue and where it occurs, most urgent first
 ├── REPORT.html              # management report: one printable page (A4), built from the JSON above

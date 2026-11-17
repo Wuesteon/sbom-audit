@@ -145,6 +145,16 @@ class TestFixture(ManagementTestCase):
         self.assertNotIn("url(", page)
         self.assertIn("@page { size: A4", page)
 
+    def test_set_counted_by_other_rules_is_not_comparable(self):
+        out = full_folder(self.tmp / "security")
+        doc = json.loads((out / "status.json").read_text())
+        doc["deltas"]["critical_high_production"] = {"new": [], "resolved": [], "not_comparable": "other rules"}
+        (out / "status.json").write_text(json.dumps(doc))
+        for lang, needle in (("en", "not comparable"), ("de", "nicht vergleichbar")):
+            text = text_of(management.render(management.load(out), lang=lang))
+            self.assertIn(needle, text)
+            self.assertNotIn("1 resolved", text)          # the fixture's crit delta reported 1 resolved
+
     def test_deterministic(self):
         out = self.fixture_copy()
         self.assertEqual(management.render(management.load(out)), management.render(management.load(out)))

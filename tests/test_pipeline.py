@@ -238,6 +238,50 @@ class RunTests(unittest.TestCase):
             self.assertEqual(doc["commit"]["pending_hand_edits"], [])
             self.assertEqual(git(cfg.out, "status", "--porcelain"), "")
 
+    def _config_run(self, text: str, edit_during_run: str | None = None):
+        """A run whose config was read by `config.load` (it carries a digest); returns (doc, committed, porcelain)."""
+        def prepare(cfg):
+            git_init(cfg.out)
+            (cfg.out / config.CONFIG_NAME).write_text("branches = ['main']\n")
+            git(cfg.out, "add", config.CONFIG_NAME)
+            git(cfg.out, "commit", "-q", "-m", "setup")
+            (cfg.out / config.CONFIG_NAME).write_text(text)            # edited by hand since setup
+            cfg.digest = config.load(cfg.out).digest
+            if edit_during_run is not None:
+                (cfg.out / config.CONFIG_NAME).write_text(edit_during_run)
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, cfg = self.run_with(Path(tmp), {"return_value": {"results": []}}, before=prepare)
+            self.assertEqual(rc, 0)
+            doc = json.loads((cfg.out / "status.json").read_text())
+            committed = set(git(cfg.out, "show", "--name-only", "--format=", "HEAD").split())
+            return doc, committed, git(cfg.out, "status", "--porcelain"), (cfg.out / "STATUS.md").read_text()
+
+    def test_run_commits_the_config_it_read(self):
+        doc, committed, porcelain, md = self._config_run("branches = ['main', 'dev']\ncommit = true\n")
+        self.assertIn(config.CONFIG_NAME, committed)
+        self.assertEqual(porcelain, "")
+        self.assertEqual(doc["commit"]["pending_hand_edits"], [])
+        self.assertNotIn("config", doc["commit"])
+        self.assertNotIn("- configuration:", md)
+
+    def test_run_leaves_a_config_edited_during_the_run(self):
+        doc, committed, porcelain, md = self._config_run("branches = ['main', 'dev']\n",
+                                                         edit_during_run="branches = ['dev']\n")
+        self.assertNotIn(config.CONFIG_NAME, committed)
+        self.assertIn(f" M {config.CONFIG_NAME}", porcelain)
+        self.assertEqual(doc["commit"]["pending_hand_edits"], [config.CONFIG_NAME])
+        self.assertIn("changed during the run", doc["commit"]["config"])
+        self.assertIn("- configuration: sbom-audit.toml not committed: changed during the run", md)
+
+    def test_run_never_commits_a_config_that_looks_like_it_holds_a_credential(self):
+        token = "gh" + "p_" + "x" * 36                      # built at runtime: no token-like literal in the repo
+        doc, committed, porcelain, md = self._config_run(f"branches = ['main']\n[extra]\nnote = '{token}'\n")
+        self.assertNotIn(config.CONFIG_NAME, committed)
+        self.assertIn(f" M {config.CONFIG_NAME}", porcelain)
+        self.assertIn("extra.note looks like it holds a credential", doc["commit"]["config"])
+        self.assertIn("extra.note looks like it holds a credential", md)
+        self.assertNotIn(token, md + json.dumps(doc))
+
     def test_run_single_mode_skips_commit_with_note(self):
         def single(cfg):
             git_init(cfg.root)

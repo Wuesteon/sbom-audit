@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import os
 import tempfile
@@ -316,6 +317,64 @@ class ConfigTests(unittest.TestCase):
 
     def test_hosts_enabled_without_servers_is_inactive(self):
         self.assertFalse(self._load_hosts("[hosts]\nenabled = true\n").hosts.active)
+
+
+class CommitRefusalTests(unittest.TestCase):
+    """Whether a run may commit the sbom-audit.toml it read: never one that could hold a credential."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name).resolve() / "security"
+        self.out.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write(self, text: str) -> str:
+        (self.out / config.CONFIG_NAME).write_text(text)
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def test_the_config_read_by_the_run_may_be_committed(self):
+        self.write('branches = ["main"]\n[assess]\napi_key_env = "MY_KEY"\n')
+        cfg = config.load(self.out)
+        self.assertRegex(cfg.digest or "", r"^[0-9a-f]{64}$")
+        self.assertIsNone(config.commit_refusal(self.out, cfg.digest))
+
+    def test_not_read_changed_or_linked(self):
+        self.assertEqual(config.commit_refusal(self.out, None), "not read by this run")
+        digest = self.write('branches = ["main"]\n')
+        self.write('branches = ["dev"]\n')
+        self.assertIn("changed during the run", config.commit_refusal(self.out, digest))
+        real = self.out.parent / "elsewhere.toml"
+        real.write_text('branches = ["main"]\n')
+        (self.out / config.CONFIG_NAME).unlink()
+        (self.out / config.CONFIG_NAME).symlink_to(real)
+        self.assertEqual(config.commit_refusal(self.out, digest), "not read by this run")
+
+    def test_credential_like_keys_and_values_are_refused_by_name_only(self):
+        token = "gh" + "p_" + "x" * 36                      # built at runtime: no token-like literal in the repo
+        cases = {
+            f'[discovery]\ngithub_owner = "me"\n[extra]\ntoken = "{token}"\n': "extra.token",
+            '[extra]\ndb_password = "hunter"\n': "extra.db_password",
+            f'[extra]\nnote = "{token}"\n': "extra.note",
+            '[extra]\nmirror = "https://user:pa55@example.invalid/x"\n': "extra.mirror",
+        }
+        for text, key in cases.items():
+            reason = config.commit_refusal(self.out, self.write(text))
+            self.assertIsNotNone(reason, key)
+            self.assertIn(key, reason)
+            self.assertIn("credential", reason)
+            for secret in (token, "hunter", "pa55"):
+                self.assertNotIn(secret, reason)
+
+    def test_documented_names_are_not_mistaken_for_credentials(self):
+        data = {"branches": ["main"], "commit": True, "push": False,
+                "assess": {"api_key_env": "X", "api_key_file": "~/.config/key",
+                           "base_url": "https://api.example.invalid"},
+                "hosts": {"key": "~/.ssh/id_audit"}, "discovery": {"github_owner": "me", "protocol": "ssh"},
+                "projects": {"author": {"production": True}, "auth-service": {"production": True},
+                             "token-api": {"ignore": ["x"]}}}
+        self.assertEqual(config._secret_like(data), [])
 
 
 if __name__ == "__main__":

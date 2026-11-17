@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import ipaddress
 import os
 import re
@@ -133,6 +134,7 @@ class Config:
     assess: AssessProvider = field(default_factory=AssessProvider)
     report: ReportOpts = field(default_factory=ReportOpts)
     releases: ReleasesOpts | None = None  # [releases]: the portfolio default, off when absent
+    digest: str | None = None  # sha256 of the sbom-audit.toml bytes `load` read; None: no file was read
 
 
 @dataclass
@@ -384,10 +386,12 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
     env = os.environ if env is None else env
     out = out.resolve()
     data: dict = {}
+    digest = None
     path = out / CONFIG_NAME
     if path.exists():
-        with path.open("rb") as fh:
-            data = tomllib.load(fh)
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        data = tomllib.loads(raw.decode())      # as tomllib.load decodes: UTF-8, an error for anything else
     if root is not None:
         root = root.resolve()
         mode = "single" if (root / ".git").exists() else "portfolio"
@@ -430,7 +434,58 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
         assess=_assess(data.get("assess", {}), env, out),
         report=_report(data.get("report", {})),
         releases=releases,
+        digest=digest,
     )
+
+
+# A key name that holds a credential (the config takes only names and paths: api_key_env, api_key_file, key)
+_SECRET_KEY_RE = re.compile(r"(?i)(^|[_-])(api[_-]?key|apikey|token|secret|passw(or)?d|passphrase|"
+                            r"credentials?|private[_-]?key|auth|bearer)($|[_-])")
+_SECRET_KEY_OK = {"api_key_env", "api_key_file"}
+# A value that carries a credential: user:password@ in a URL, a private key block, well-known token prefixes
+_SECRET_VALUE_RE = re.compile(r"://[^/\s@:]*:[^/\s@]+@|-----BEGIN [A-Z ]*PRIVATE KEY|\b(gh[pousr]_|github_pat_|glpat-|"
+                              r"xox[abprs]-|sk-[A-Za-z0-9_-]{16}|AKIA[0-9A-Z]{16})")
+
+
+def _secret_like(data, where: str = "") -> list[str]:
+    """Dotted names of keys whose name or string value looks like it holds a credential (never the value)."""
+    found = []
+    items = data.items() if isinstance(data, dict) else enumerate(data) if isinstance(data, list) else ()
+    for key, value in items:
+        name = f"{where}.{key}" if where else str(key)
+        if isinstance(value, str) and (isinstance(key, str) and key not in _SECRET_KEY_OK
+                                       and _SECRET_KEY_RE.search(key) or _SECRET_VALUE_RE.search(value)):
+            found.append(name)
+        elif isinstance(value, (dict, list)):
+            found += _secret_like(value, name)
+    return found
+
+
+def commit_refusal(out: Path, digest: str | None) -> str | None:
+    """Why `<out>/sbom-audit.toml` must not go into a run's commit, or None when it may.
+
+    It may when it is a regular file (not a link) whose bytes are the ones `load` read (`digest`) and no key
+    looks like it holds a credential. The config holds names and paths, never a key value (`load` refuses
+    `[assess] api_key` and credentials in `base_url`); this check also catches a value pasted under a key the
+    loader does not know. A reason names keys, never values."""
+    path = Path(out) / CONFIG_NAME
+    if digest is None or path.is_symlink() or not path.is_file():
+        return "not read by this run"
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "unreadable"
+    if hashlib.sha256(raw).hexdigest() != digest:
+        return "changed during the run; the next run commits it"
+    try:
+        data = tomllib.loads(raw.decode())
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return "unreadable"
+    found = _secret_like(data)
+    if found:
+        return (f"{', '.join(found[:5])} looks like it holds a credential; keep keys out of the config "
+                "(api_key_env names the variable), then the next run commits it")
+    return None
 
 
 def remote_url(repo: Path) -> str | None:

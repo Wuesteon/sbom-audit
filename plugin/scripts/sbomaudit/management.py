@@ -89,6 +89,7 @@ STRINGS: dict[str, dict] = {
         "carried": "{n} finding(s) from an earlier scan are still open (A {a}, B {b}, C {c})",
         "delta": "{new} new, {resolved} resolved",
         "delta_first": "first run: no comparison",
+        "delta_rules": "not comparable: the previous run counted by other rules",
         "delta_none": "no previous run on record",
         "delta_untracked": "not tracked",
         "delta_note": "Changes are counted per advisory (KEV, CRITICAL/HIGH), per product cycle (end of life) "
@@ -348,6 +349,7 @@ STRINGS: dict[str, dict] = {
         "carried": "{n} Befund(e) aus einem früheren Scan sind weiterhin offen (A {a}, B {b}, C {c})",
         "delta": "{new} neu, {resolved} erledigt",
         "delta_first": "erster Lauf: kein Vergleich",
+        "delta_rules": "nicht vergleichbar: der vorige Lauf zählte nach anderen Regeln",
         "delta_none": "kein früherer Lauf erfasst",
         "delta_untracked": "nicht erfasst",
         "delta_note": "Veränderungen zählen je Advisory (KEV, CRITICAL/HIGH), je Produktzyklus (End of Life) und "
@@ -824,6 +826,8 @@ def _delta_text(data: dict, key: str | None, S: dict) -> str:
     d = (status.get("deltas") or {}).get(key)
     if not isinstance(d, dict):
         return f'<span class="na">{S["na"]}</span>'
+    if d.get("not_comparable"):         # the previous run counted this set by other rules (status.OPEN_RULES)
+        return f'<span class="na">{S["delta_rules"]}</span>'
     return S["delta"].format(new=len(d.get("new") or []), resolved=len(d.get("resolved") or []))
 
 
