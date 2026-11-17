@@ -4,7 +4,7 @@ Synthetic and deterministic: three fixture projects (see `projects/`), fixed tim
 real advisory (lodash 4.17.20, GHSA-35jh-r3h4-6jhm / CVE-2021-23337) so `incident` gets a `hit`
 from the live OSV record. No credentials, no host names, no absolute paths.
 
-    PYTHONPATH=scripts python3 evals/fixtures/build_security.py
+    PYTHONPATH=plugin/scripts python3 evals/fixtures/build_security.py
 """
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent.parent / "scripts"))
+sys.path.insert(0, str(HERE.parent.parent / "plugin" / "scripts"))
 
-from sbomaudit import report, scan, status  # noqa: E402
+from sbomaudit import management, report, scan, status  # noqa: E402
 from sbomaudit.config import Config, ProjectOpts, write_default  # noqa: E402
 from sbomaudit.model import BranchInventory, Component, Finding  # noqa: E402
 from sbomaudit.readers import image_component, runtime_component  # noqa: E402
@@ -70,6 +70,7 @@ def main() -> None:
     doc["generated_at"] = AUDIT_AT
     status.write(out, doc)
     status.write_md(out, doc, scheduler={})
+    management.write(out, dated=False)  # REPORT.html, the sample the README links
     for path in sorted(out.rglob("*")):
         text = path.read_text(encoding="utf-8")
         path.write_text(text.replace(str(HERE), "."), encoding="utf-8")

@@ -45,6 +45,16 @@ class SecretsOpts:
     enabled: bool = True
 
 
+REPORT_LANGUAGES = ("en", "de")
+
+
+@dataclass
+class ReportOpts:
+    """[report]: the management report (REPORT.html)."""
+    organisation: str | None = None
+    language: str = "en"  # one of REPORT_LANGUAGES
+
+
 DEFAULT_HOST_KEY = "~/.ssh/sbom-audit_ed25519"
 _HOST_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")   # the same rule as hosts.store.check_host
 
@@ -85,6 +95,7 @@ class Config:
     schedule: Schedule = field(default_factory=Schedule)
     secrets: SecretsOpts = field(default_factory=SecretsOpts)
     hosts: HostsOpts = field(default_factory=HostsOpts)
+    report: ReportOpts = field(default_factory=ReportOpts)
 
 
 @dataclass
@@ -186,6 +197,17 @@ def _protocol(value, source: str) -> str:
     return value
 
 
+def _report(data) -> ReportOpts:
+    if not isinstance(data, dict):
+        raise ConfigError("[report] must be a table")
+    org = data.get("organisation")
+    language = data.get("language", "en")
+    if language not in REPORT_LANGUAGES:
+        raise ConfigError('[report] language must be "en" or "de"')
+    return ReportOpts(organisation=None if org is None else _str(org, "[report] organisation").strip(),
+                      language=language)
+
+
 def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = None) -> Config:
     """Read `<out>/sbom-audit.toml`; `SBOM_AUDIT_GIT_PROTOCOL` in `env` (default `os.environ`) overrides
     `[discovery] protocol`. ConfigError for a value of the wrong kind."""
@@ -233,6 +255,7 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
                                                    "[schedule] assess_budget_usd", positive=True)),
         secrets=SecretsOpts(enabled=_bool(secrets.get("enabled", True), "[secrets] enabled")),
         hosts=_hosts(data.get("hosts", {})),
+        report=_report(data.get("report", {})),
     )
 
 
@@ -369,6 +392,11 @@ def write_default(out: Path, cfg: Config, discovered: list[Project] | None = Non
         "# Secret scanning (gitleaks).",
         "# [secrets]",
         "# enabled = true",
+        "",
+        "# Management report (REPORT.html): organisation name on the cover, language en or de.",
+        "# [report]",
+        '# organisation = "..."',
+        '# language = "en"',
         "",
         "# Per-project options: production = true puts CRITICAL/HIGH findings first;",
         "# ignore = [\"path/\"] drops subtrees from the inventory.",

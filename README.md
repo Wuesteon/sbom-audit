@@ -62,6 +62,7 @@ The run writes a `security/` folder next to your repositories:
 | `STATUS.md` / `status.json` | One-screen summary of the last run, with deltas since the previous one |
 | `AUDIT.md` / `audit.json` | The audit: KEV first, then CRITICAL/HIGH per project (production first), EOL runtimes, floating tags, outdated direct dependencies |
 | `ISSUES.md` / `issues.json` | Work list for a person or an agent: every open issue, most urgent first, with a fix target |
+| `REPORT.html` | Management report: one self-contained page that prints to A4/PDF, with the overall state, what needs action now, decisions on record, coverage and the CRA evidence mapping (English or German; [sample](evals/fixtures/security/REPORT.html)) |
 | `INVENTORY.md` / `inventory.json` | Every package, image and runtime per project and branch |
 | `SECRETS.md` / `secrets.json` | Leaked-credential findings by fingerprint, file and line, never the value |
 | `HOSTS.md` / `hosts.json` | Server audit, when enabled |
