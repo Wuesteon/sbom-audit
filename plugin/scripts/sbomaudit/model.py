@@ -2,6 +2,29 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from urllib.parse import unquote
+
+
+def purl_namespace(purl: str) -> str:
+    """'pkg:maven/org.postgresql/postgresql@42.7.1?type=jar' -> 'org.postgresql'; '' without a namespace."""
+    body = (purl or "").split("?", 1)[0].split("#", 1)[0]
+    if not body.startswith("pkg:"):
+        return ""
+    parts = body[4:].split("/")
+    if len(parts) < 3:                     # type/name only
+        return ""
+    return "/".join(unquote(p) for p in parts[1:-1])
+
+
+def qualified_name(ecosystem: str, name: str, purl: str = "") -> str:
+    """The package name as OSV writes it. Maven is `group:artifact` (Syft stores the bare artifact, the
+    group is the purl namespace); every other ecosystem already carries its full name (npm `@scope/x`,
+    Go module path)."""
+    if (ecosystem or "").lower() == "maven" and ":" not in name:
+        group = purl_namespace(purl)
+        if group:
+            return f"{group}:{name}"
+    return name
 
 
 @dataclass
@@ -18,6 +41,9 @@ class Component:
 
     def key(self) -> tuple[str, str, str, str]:
         return (self.kind, self.ecosystem, self.name, self.version)
+
+    def qualified_name(self) -> str:
+        return qualified_name(self.ecosystem, self.name, self.purl)
 
     def to_dict(self) -> dict:
         return asdict(self)

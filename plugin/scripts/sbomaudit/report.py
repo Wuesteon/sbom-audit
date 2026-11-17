@@ -12,7 +12,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import __version__
+from . import __version__, coverage
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import fixed_in
@@ -134,6 +134,7 @@ def _vulnerabilities(findings: list[Finding], releases: dict | None = None) -> l
         g = groups.get(key)
         if g is None:
             g = groups[key] = {"ecosystem": c.ecosystem, "name": c.name, "version": c.version,
+                               "package": c.qualified_name(), "purl": c.purl.split("?", 1)[0],
                                "scope": "unknown", "direct_anywhere": False, "locations": [], "vulns": []}
         scopes[key].add(c.scope)
         loc = {"project": f.project, "branch": f.branch, "manifest": _manifest(c),
@@ -215,12 +216,7 @@ def _notes(inventories: list[BranchInventory]) -> list[str]:
                 notes.append(f"{tag}: `{c.props.get('image', c.name)}` ({_manifest(c)}) installs {files} with "
                              "non-pinned requirements, so the image may run versions other than the lockfile "
                              "audited here. Pin them (`uv export --format requirements-txt`) or install from the lockfile.")
-        unresolved = sorted({c.name for c in inv.components if c.kind == "package" and c.direct and not c.version})
-        if unresolved:
-            shown = ", ".join(f"`{n}`" for n in unresolved[:10]) + (" …" if len(unresolved) > 10 else "")
-            notes.append(f"{tag}: {len(unresolved)} direct dependencies have no lockfile version (unresolved, "
-                         f"not matched against OSV): {shown}")
-    return notes
+    return notes                             # packages without a version: `unresolved_versions` (coverage.py)
 
 
 def build(cfg: Config, inventories: list[BranchInventory], findings: list[Finding],
@@ -241,6 +237,8 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "images": sum(1 for inv in inventories for c in inv.components if c.kind == "image"),
         "runtimes": sum(1 for inv in inventories for c in inv.components if c.kind == "runtime"),
     }
+    unresolved = coverage.unresolved_versions(inventories, releases)
+    stats["unresolved_versions"] = sum(r["count"] for r in unresolved)
     rep = {
         "generated_at": _now(),
         "sources": _sources(sources),
@@ -253,6 +251,8 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "stats": stats,
         "production_projects": sorted(name for name, opts in cfg.projects.items() if opts.production),
     }
+    if unresolved:                           # only when some package was not checked (coverage.py)
+        rep["unresolved_versions"] = unresolved
     if releases:                             # only with release scanning: audit.json is unchanged without it
         stats["releases"] = len(releases)
         rep["releases"] = [{"project": p, "branch": b, "tag": r["tag"], "date": r.get("date"),
@@ -312,10 +312,13 @@ def _summary(rep: dict) -> list[str]:
         ("Vulnerable package versions", len(vulns)),
         ("… in CISA KEV (actively exploited)", sum(1 for v in vulns if v["kev"])),
     ]
-    rows += [(f"… max severity {s}", by_sev[s]) for s in SEVERITY_ROWS if by_sev.get(s)]
+    rows += [(f"… max severity {coverage.severity_text(s)}", by_sev[s]) for s in SEVERITY_ROWS if by_sev.get(s)]
     rows += [
         ("CRITICAL/HIGH in production projects" + (" or supported releases" if st.get("releases") else "")
          + " (excluding dev-only)", len(prod_rows)),
+        ("Severity not rated in production" + (" or supported releases" if st.get("releases") else "")
+         + " (excluding dev-only, KEV)", sum(1 for v in vulns if unrated_in_production(v, production))),
+        ("Packages with version not resolved, not checked for vulnerabilities", st.get("unresolved_versions", 0)),
         ("Dev-only vulnerable package versions", len(dev_only)),
         ("Vulnerable direct dependencies", sum(1 for v in vulns if v["direct_anywhere"])),
         ("Runtimes / images past end-of-life", sum(1 for r in rep["runtimes"] if r["status"] == "EOL")),
@@ -331,8 +334,16 @@ def _summary(rep: dict) -> list[str]:
     if not production and not st.get("releases"):
         L += ["_No project is marked `production = true` in `sbom-audit.toml`, so the production row counts nothing; "
               "mark the projects that serve traffic or hold keys._", ""]
-    L += ["MEDIUM, LOW and UNKNOWN advisories are not listed below; they are in `audit.json` under `vulnerabilities`.", ""]
+    L += ["MEDIUM and LOW advisories are not listed below, nor not-rated ones outside production; they are in "
+          "`audit.json` under `vulnerabilities`.", ""]
     return L
+
+
+def unrated_in_production(v: dict, production: set[str]) -> bool:
+    """A package version with an advisory that has no severity, in runtime scope of a production project or
+    supported release, and not already ranked as KEV. Ranks with CRITICAL/HIGH (`coverage.py`)."""
+    return (not v.get("kev") and bool(coverage.unrated_advisories(v))
+            and any(counts_as_production(l, production) for l in v.get("locations") or []))
 
 
 def _fix_cells(v: dict) -> tuple[str, str, str]:
@@ -343,7 +354,7 @@ def _fix_cells(v: dict) -> tuple[str, str, str]:
     fix_cell = (target or "–") + (f" ({unfixed} unfixed)" if unfixed and target else "")
     worst = worst_advisory(v["vulns"]) or {"id": "?", "cves": [], "summary": ""}
     adv = worst["id"] + (f" ({worst['cves'][0]})" if worst.get("cves") and worst["id"] not in worst["cves"] else "")
-    sev = v["max_severity"] + (f" {worst['cvss']}" if worst.get("cvss") is not None else "") + (" 🔴KEV" if v["kev"] else "")
+    sev = coverage.severity_text(v["max_severity"]) + (f" {worst['cvss']}" if worst.get("cvss") is not None else "") + (" 🔴KEV" if v["kev"] else "")
     return sev, fix_cell, f"{adv}: {md(worst.get('summary', '')[:90])}"
 
 
@@ -523,12 +534,16 @@ def write_audit_md(rep: dict, out: Path) -> Path:
     L += _summary(rep)
     L += _kev_section(rep["vulnerabilities"])
     L += _by_project_section(rep["vulnerabilities"], production)
+    if any(unrated_in_production(v, production) for v in rep["vulnerabilities"]):
+        L += coverage.unrated_section(rep["vulnerabilities"], lambda v: unrated_in_production(v, production))
     L += _runtime_section(rep["runtimes"])
     L += _floating_section(rep["unpinned_images"])
     L += _outdated_section(rep["outdated"])
     L += _dev_only_section(rep["vulnerabilities"])
     L += _suppressed_section(rep["suppressed"])
     L += _releases_section(rep.get("releases") or [])
+    if rep.get("unresolved_versions"):
+        L += coverage.unresolved_section(rep["unresolved_versions"])
     L += _notes_section(rep["notes"])
     text = "\n".join(L) + "\n"
     path = out / AUDIT_FILE

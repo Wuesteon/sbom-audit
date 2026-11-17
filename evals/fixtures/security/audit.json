@@ -11,6 +11,8 @@
    "ecosystem": "npm",
    "name": "lodash",
    "version": "4.17.20",
+   "package": "lodash",
+   "purl": "pkg:npm/lodash@4.17.20",
    "scope": "required",
    "direct_anywhere": true,
    "locations": [
@@ -60,7 +62,8 @@
   "occurrences": 3,
   "direct_dependencies": 3,
   "images": 2,
-  "runtimes": 1
+  "runtimes": 1,
+  "unresolved_versions": 0
  },
  "production_projects": [
   "shop-web"

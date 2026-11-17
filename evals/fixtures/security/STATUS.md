@@ -6,7 +6,7 @@ Run host `eval-fixture`, sbom-audit 1.2.1, mode portfolio, duration 12.0 s, exit
 
 ## Since last run
 
-*Resolved* means no longer open: fixed, or closed by a VEX decision.
+*Resolved* means no longer open: fixed, or closed by a VEX decision. *No longer counted* means the advisory left this set (its severity, KEV flag or production scope changed, or a VEX decision covers only some projects) but AUDIT.md still reports it.
 
 Counts: 1 vulnerable package versions, 0 KEV, 1 CRITICAL/HIGH in production, 0 EOL, 0 floating tags, 0 suppressed by VEX.
 

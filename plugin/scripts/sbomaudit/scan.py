@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cyclonedx, gitio, preflight, readers, syft
+from . import config, cyclonedx, gitio, pomresolve, preflight, readers, syft
 from .config import Config, Project
 from .errors import ToolError
 from .model import BranchInventory, Component
@@ -87,6 +87,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
         except ToolError as exc:
             inv.errors.append(f"syft: {exc}")
             bom, packages = cyclonedx.empty_bom(), []
+        pomresolve.resolve_managed(src, bom, packages)   # Maven versions managed by poms in the same repo
         own_names = readers.self_packages(src)
         direct = readers.direct_deps(src, project.ignore)
         dev_only = readers.dev_only_deps(src, project.ignore)
