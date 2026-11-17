@@ -63,12 +63,13 @@ The run writes a `security/` folder next to your repositories:
 | `STATUS.md` / `status.json` | One-screen summary of the last run, with deltas since the previous one |
 | `AUDIT.md` / `audit.json` | The audit: KEV first, then CRITICAL/HIGH per project (production first), EOL runtimes, floating tags, outdated direct dependencies |
 | `ISSUES.md` / `issues.json` | Work list for a person or an agent: every open issue, most urgent first, with a fix target |
-| `REPORT.html` | Management report: one self-contained page that prints to A4/PDF, with the overall state, what needs action now, decisions on record, coverage and the CRA evidence mapping (English or German; [sample](evals/fixtures/security/REPORT.html)) |
+| `REPORT.html` | Management report: one self-contained page that prints to A4/PDF, with the overall state, what needs action now, decisions on record, coverage, the CRA evidence mapping and, for configured products, the CRA readiness per product (English or German; [sample](evals/fixtures/security/REPORT.html)) |
 | `INVENTORY.md` / `inventory.json` | Every package, image and runtime per project and branch |
 | `SECRETS.md` / `secrets.json` | Leaked-credential findings by fingerprint, file and line, never the value |
 | `HOSTS.md` / `hosts.json` | Server audit, when enabled |
 | `sbom/<project>/<branch>.cdx.json` | CycloneDX SBOMs |
 | `vex/<project>.openvex.json` | Your OpenVEX decisions |
+| `CRA.md` / `cra.json`, `cra/<product>/` | EU Cyber Resilience Act readiness for the projects you list as products under `[cra.products]`: per obligation, with its article reference, evidence present, missing, stale or the manufacturer's responsibility; starter documents you fill in. Evidence tooling, not legal advice |
 
 Sample from the committed demo fixture [`evals/fixtures/security/AUDIT.md`](evals/fixtures/security/AUDIT.md):
 
@@ -96,6 +97,7 @@ Sample from the committed demo fixture [`evals/fixtures/security/AUDIT.md`](eval
 | `/sbom-audit:secrets` | `scan`, `report` and `resolve` secrets findings |
 | `/sbom-audit:schedule` | Installs or removes a weekly run (launchd on macOS, systemd on Linux) |
 | `/sbom-audit:hosts` | Audits Debian/Ubuntu servers over a forced-command SSH key, installing nothing; `accept` writes after you confirm the list, `patch`, `bootstrap` and `unbootstrap` act only after you confirm the host by name |
+| `/sbom-audit:cra` | CRA readiness per configured product (`check`); starter documents for the risk assessment, reporting procedure and disclosure policy after you confirm the plan (`init`); never writes into your product repositories |
 | `/sbom-audit:settings` | Switches between ask-first and autonomous mode, and turns the session status line on or off |
 
 Skills that write anything show the whole list first and wait for one confirmation. Every skill calls
@@ -133,7 +135,8 @@ you configure `[assess]`, `assess draft` (and the scheduled assessment) sends re
 endpoint you name instead: the source status, summary and VEX-suppressed sections of `AUDIT.md`, the
 inventory overview and the open work list (projects, branches, packages, versions, advisories, file
 paths and lines, secret fingerprints but never secret values, no host issues unless you include them).
-`assess draft --dry-run` prints the exact request. Full table:
+`assess draft --dry-run` prints the exact request. With `[cra] check_well_known = true` (off by
+default), `cra check` fetches `/.well-known/security.txt` from each product `url` you configured. Full table:
 [Privacy](docs/reference.md#privacy-what-leaves-your-machine).
 
 ## Without Claude Code
@@ -163,7 +166,8 @@ Instructions for coding agents: [AGENTS.md](AGENTS.md).
 ## Documentation
 
 - **[Reference](docs/reference.md)**: configuration, the full pipeline, `issues.json`, scheduler,
-  secrets, hosts, the `security/` folder, the EU Cyber Resilience Act mapping, limitations.
+  secrets, hosts, the `security/` folder, the EU Cyber Resilience Act (what is covered, what is checked, what stays
+  with the manufacturer), limitations.
 - **[CHANGELOG](CHANGELOG.md)**: release notes.
 - **[CONTRIBUTING](CONTRIBUTING.md)**: layout, tests, plugin validation, evals and the release steps.
 

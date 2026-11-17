@@ -20,18 +20,19 @@ PLUGIN = ROOT / "plugin"
 # skill name -> disable-model-invocation (True: only the user starts it)
 SKILLS = {"setup": True, "run": True, "status": False, "assess": False, "lookup": False,
           "incident": False, "vex": True, "secrets": True, "schedule": True, "hosts": True,
-          "settings": True}
+          "settings": True, "cra": True}
 # skill name -> the CLI subcommand its body must call (`schedule` fronts `setup --schedule`; `assess` sweeps with `incident`)
 SKILL_CLI = {"setup": "setup", "run": "run", "status": "status", "assess": "incident", "lookup": "lookup",
              "incident": "incident", "vex": "vex add", "secrets": "secrets", "schedule": "setup --schedule",
-             "hosts": "hosts", "settings": "settings"}
+             "hosts": "hosts", "settings": "settings", "cra": "cra"}
 # skill name -> allowed-tools. Only Read/Grep/Glob are pre-approved (directory policy for unverified publishers):
 # every command asks, unless the user opted into autonomous mode (`settings --autonomy on`, integration.py).
 ALLOWED_TOOLS = {"setup": "Read", "run": "Read, Grep, Glob", "status": "Read", "assess": "Read, Grep, Glob",
                  "lookup": "Read", "incident": "Read, Grep, Glob", "vex": "Read", "secrets": "Read",
-                 "schedule": "Read", "hosts": "Read", "settings": "Read"}
+                 "schedule": "Read", "hosts": "Read", "settings": "Read", "cra": "Read"}
 CLI = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py" '
-WRITE_CALLS = (CLI + "vex add", CLI + "secrets resolve", CLI + "hosts accept", CLI + "hosts patch")
+WRITE_CALLS = (CLI + "vex add", CLI + "secrets resolve", CLI + "hosts accept", CLI + "hosts patch",
+               CLI + "cra init <project> --yes")
 # description first words; `Use` for the two skills the model picks between (incident vs lookup routing)
 VERBS = ("Set", "Run", "Print", "Assess", "Find", "Check", "Record", "Scan", "Schedule", "Switch", "Use")
 HOOK = PLUGIN / "templates" / "session-hook" / "session-start.py"
@@ -146,7 +147,7 @@ class ManifestTests(unittest.TestCase):
         self.assertFalse((ROOT / "commands").exists(), "commands/ is replaced by skills/<name>/SKILL.md")
 
     def test_writing_skills_require_confirmation_wording(self):
-        for name in ("vex", "secrets", "assess", "hosts"):
+        for name in ("vex", "secrets", "assess", "hosts", "cra"):
             body = body_of((PLUGIN / "skills" / name / "SKILL.md").read_text())
             writes = [body.find(call) for call in WRITE_CALLS if call in body]
             self.assertTrue(writes, f"{name}: no CLI write call")

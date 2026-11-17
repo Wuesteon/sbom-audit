@@ -418,6 +418,8 @@ security/
 ├── HOSTS.md / hosts.json              # server audit (when [hosts] is enabled); contains IPs, ports, user names
 ├── hosts-decisions.toml               # accepted host findings
 ├── hosts/                             # baseline/<host>.json, known_hosts, bootstrap/<host>.json
+├── CRA.md / cra.json                  # CRA readiness per product (only with [cra.products])
+├── cra/<product>/                     # starter documents; proposed-for-repo/ files you copy yourself
 ├── sbom/<project>/<branch>.cdx.json   # CycloneDX, one per project and branch
 ├── vex/<project>.openvex.json         # OpenVEX 0.2.0 decisions
 ├── reports/<date>-audit.md            # dated copy of every run (and assessment proposals)
@@ -437,13 +439,15 @@ security/
 | `HOSTS.md`, `hosts.json`, `hosts/` | `run`, `hosts check`, `hosts bootstrap` | no |
 | `hosts-decisions.toml` | `hosts accept` | through `/sbom-audit:hosts accept` |
 | `vex/*.openvex.json` | `vex add`, `incident --vex` | through `/sbom-audit:vex` |
+| `CRA.md`, `cra.json` | `run` (with `[cra.products]`), `cra check` | no; derived from the files it names |
+| `cra/<product>/` | `cra init <product> --yes` (new files only, never overwrites) | yes: these are your documents |
 | `reports/`, `log.md` | every run, secrets scan and host action | no |
 
 **Management report.** `REPORT.html` is a single self-contained page (inline CSS, no script, no
 external request) for people who do not read the Markdown: overall state with the change since the
 previous run, the priority 1 to 3 issues with their fix, the decisions on record (VEX, secrets,
-accepted host findings), coverage and limits with the data timestamps, and the Cyber Resilience Act
-mapping below. It prints to A4 from any browser (Print, Save as PDF). A number the run did not
+accepted host findings), coverage and limits with the data timestamps, the Cyber Resilience Act
+mapping below and, with `[cra.products]`, the readiness table per product from `cra.json`. It prints to A4 from any browser (Print, Save as PDF). A number the run did not
 produce reads "not available", never 0, and a skipped secrets scan reads as skipped, never as
 clean. Secret values are never part of it. `sbom_audit_cli.py report [--lang en|de]` rebuilds it
 from the JSON already in the folder without scanning; `[report] language` and `organisation` set the
@@ -457,21 +461,123 @@ committed SBOMs.
 
 ## Cyber Resilience Act
 
-The EU Cyber Resilience Act (Regulation (EU) 2024/2847) makes SBOMs and documented
-vulnerability handling mandatory for products with digital elements sold in the EU.
-Reporting obligations for actively exploited vulnerabilities apply from 2026-09-11; the
-regulation applies in full from 2027-12-11. The plugin is evidence tooling, not legal
-advice: it produces the artefacts an assessment asks for, it does not decide whether a
-product is in scope or compliant.
+Regulation (EU) 2024/2847 (the CRA) sets cybersecurity requirements for products with digital elements
+made available in the EU. **The plugin is evidence tooling, not legal advice.** It shows which evidence
+exists for the products you name; it does not decide whether a product is in scope, which category it
+belongs to, or whether it meets the regulation. No output of the plugin says a product is compliant.
+
+**Dates, as Art. 71(2) states them.** The regulation applies from 11 December 2027. Art. 14 (reporting)
+applies from 11 September 2026, and by Art. 69(3) also to products placed on the market before
+11 December 2027. Chapter IV (notification of conformity assessment bodies) applies from 11 June 2026.
+
+### What the plugin covers
+
+Only the projects you list as products. Nothing is assumed to be in scope:
+
+```toml
+[cra]
+review_interval_days = 365   # risk assessment older than this reads "stale"
+audit_max_age_days = 8       # last audit older than this reads "stale"
+check_well_known = false     # true: one HTTPS GET of <url>/.well-known/security.txt per product
+
+[cra.products."shop-api"]    # key = a project name as in INVENTORY.md
+name = "Shop API"            # optional display name
+branch = "main"              # optional; default: the first configured branch the repository has
+url = "https://shop.example" # optional, https origin only; used only with check_well_known
+```
+
+| Command | Writes |
+|---|---|
+| `cra check` | `CRA.md`, `cra.json`; also runs at the end of every `run` when a product is configured (it never changes the run's exit code) |
+| `cra init <product> [--lang en\|de]` | nothing: prints the plan |
+| `cra init <product> --yes` | new files in `cra/<product>/`, never overwrites; nothing in the product repository |
+
+`/sbom-audit:cra` wraps both and can walk you through the risk assessment question by question; it
+writes only your answers and leaves unanswered questions blank. `SBOM_AUDIT_READ_ONLY=1` makes `cra
+check` and `cra init --yes` exit 5.
+
+### What is checked, per product
+
+Each obligation gets one status: **evidence present** (the file is named), **evidence missing**,
+**stale**, or **manufacturer's responsibility**. "Present" means the document exists and its starter
+line is gone, not that its content is complete or right. Repository files are read from git objects of
+the configured branch (`git cat-file`), never from the working tree; the plugin writes nothing there.
+
+| Obligation | Reference | Evidence the check looks for |
+|---|---|---|
+| Risk assessment, documented and updated | Art. 13(2), 13(3), 13(7); Annex I Part I; Annex VII point 3 | `cra/<product>/risk-assessment.md` without the starter line, with `Last reviewed: YYYY-MM-DD` (de: `Zuletzt geprüft:`); older than `review_interval_days` reads stale |
+| Single point of contact, contact address | Art. 13(17); Annex I Part II (6); Annex II point 2 | `SECURITY.md`, `.github/SECURITY.md` or `docs/SECURITY.md` on the branch |
+| security.txt | Annex I Part II (6); Annex II point 2 | `.well-known/security.txt` (also under `public/`, `static/`, or `security.txt`) on the branch, and with `check_well_known` the served file: RFC 9116 needs `Contact` and exactly one `Expires`; a past `Expires` reads stale. RFC 9116 is one common way to publish the contact, not a CRA requirement |
+| Coordinated vulnerability disclosure policy | Annex I Part II (5); Art. 13(8); Annex VII point 2(b) | `cra/<product>/cvd-policy.md` without the starter line |
+| Reporting procedure | Art. 14(1)-(8); Art. 16; Art. 69(3); Art. 71(2) | `cra/<product>/art14-procedure.md` without the starter line; an open KEV finding in the product adds a note pointing to it |
+| SBOM | Annex I Part II (1); Annex VII point 2(b) | `sbom/<project>/<branch>.cdx.json` |
+| Vulnerabilities addressed, regular reviews | Annex I Part II (2), (3); Art. 13(8) | `audit.json`; older than `audit_max_age_days` reads stale |
+| Decisions and evidence trail | Art. 13(7); Annex VII point 2(b) | `log.md`, `reports/`, `vex/<project>.openvex.json` |
+| Support period and end date | Art. 13(8), 13(19); Annex II point 7; Annex VII point 4 | `support` of the product in `releases.json` |
+| Released versions under audit | Annex I Part II (2), (8); Art. 13(9) | `releases` of the product in `releases.json`; open KEV and end-of-life components per supported release. Without `releases.json`: "no released versions under audit" |
+
+### What stays with the manufacturer
+
+These rows always read "manufacturer's responsibility"; no file can show them.
+
+| Obligation | Reference |
+|---|---|
+| Whether the product is in scope, and its category (default, important, critical) | Art. 2, 3, 7; Annex III, IV |
+| The product properties of Annex I Part I (secure by default, access control, confidentiality, integrity, minimisation, availability, attack surface, logging, data removal, ...) | Annex I Part I (1), (2)(a)-(m) |
+| Publishing fixed vulnerabilities, secure update distribution, advisories | Annex I Part II (4), (7), (8) |
+| Reporting vulnerabilities in components to their maintainers | Art. 13(6) |
+| Information and instructions to the user | Art. 13(16), 13(18); Annex II |
+| Technical documentation, kept for 10 years | Art. 13(13), 31; Annex VII |
+| Conformity assessment, EU declaration of conformity, CE marking | Art. 28, 30, 32; Annex V |
+
+### Starter documents
+
+`cra init` copies these templates (English or German, `plugin/templates/cra/<lang>/`) into
+`cra/<product>/`. They ask questions and leave blanks (`____`); none states that a product is secure or
+meets a requirement. Each begins with a `sbom-audit cra starter` line: until you delete it, the document
+counts as missing.
+
+| File | Content |
+|---|---|
+| `risk-assessment.md` | questions along Annex I Part I (1), (2)(a)-(m) and Part II (1)-(8), Art. 13(3) |
+| `art14-procedure.md` | who reports, the deadlines below, the ENISA single reporting platform (Art. 16), the coordinator CSIRT, informing users (Art. 14(8)) |
+| `cvd-policy.md` | coordinated vulnerability disclosure policy (Annex I Part II (5)) |
+| `art14/early-warning.md`, `art14/notification.md`, `art14/final.md` | drafts with the content items of Art. 14(2) and (4) |
+| `proposed-for-repo/SECURITY.md`, `proposed-for-repo/security.txt` | proposals you copy into the product repository yourself (repository root or `.github/`; `/.well-known/security.txt` on your website) |
+
+Art. 14 deadlines as the text gives them: an early warning within 24 hours of becoming aware
+(Art. 14(2)(a), (4)(a)); a notification within 72 hours (Art. 14(2)(b), (4)(b)); a final report no later
+than 14 days after a corrective or mitigating measure is available for an actively exploited
+vulnerability (Art. 14(2)(c)), and within one month after the incident notification for a severe incident
+(Art. 14(4)(c)).
+
+### The other artefacts
 
 | Artefact | What it serves |
 |---|---|
 | `sbom/<project>/<branch>.cdx.json` (CycloneDX) | Annex I Part II (1): identify and document components and vulnerabilities, including an SBOM in a commonly used machine-readable format covering at least top-level dependencies |
 | `AUDIT.md`, `audit.json`, `STATUS.md`, the weekly schedule | Annex I Part II (2) and (3): address vulnerabilities without delay, regular tests and reviews |
-| The KEV section, class A secrets in `SECRETS.md` | Art. 14: the trigger for reporting actively exploited vulnerabilities and severe incidents to the CSIRT and ENISA |
-| `vex/<project>.openvex.json`, `secrets-decisions.toml` | Art. 13(1) and Annex I Part II: documented vulnerability handling decisions — which finding was assessed, by whom, with which justification |
-| `log.md`, `reports/`, the git history of `security/` | Art. 13(1): the evidence trail for the technical documentation — when the audit ran, what it found, what was decided |
-| `INVENTORY.md`, endoflife.date section | Support period (Art. 13(8)): which runtimes and images are past or near end of life during the product's support period |
+| The KEV section, class A secrets in `SECRETS.md` | Art. 14: the trigger to run the reporting procedure; whether a finding is reportable is the manufacturer's decision |
+| `vex/<project>.openvex.json`, `secrets-decisions.toml` | Art. 13(7) and Annex I Part II: documented vulnerability handling decisions: which finding was assessed, by whom, with which justification |
+| `log.md`, `reports/`, the git history of `security/` | Art. 13(7), Annex VII point 2(b): the evidence trail for the technical documentation |
+| `INVENTORY.md`, endoflife.date section, `releases.json` | Support period (Art. 13(8)): runtimes and images past or near end of life, released versions |
+
+### Sources
+
+Read for this section (consolidated text as published; the Art. 13(4) replacement by Regulation
+(EU) 2025/327 from 26 March 2027 was not read):
+
+- Regulation (EU) 2024/2847, OJ L, 20.11.2024, English and German:
+  <https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847>,
+  <https://eur-lex.europa.eu/legal-content/DE/TXT/HTML/?uri=OJ:L_202402847>
+- Its corrigenda (none changes a provision above): <https://eur-lex.europa.eu/legal-content/EN/ALL/?uri=CELEX:32024R2847>
+- Delegated Regulation (EU) 2026/881: <https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32026R0881>
+- ENISA, single reporting platform: <https://portal.cra-srp.enisa.europa.eu/>
+- RFC 9116 (security.txt): <https://www.rfc-editor.org/rfc/rfc9116>
+
+No implementing act under Art. 13(24) (SBOM format) or Art. 14(10) (reporting format) had been found
+when this section was written. The Commission's guidance C(2026) 6013 is non-binding and its annex was
+not read.
 
 ## Privacy: what leaves your machine
 
@@ -487,6 +593,7 @@ outbound hosts, all public databases except your own git remotes, servers, Anthr
 | endoflife.date | once per runtime cycle per 24 h; with `[hosts]`, once per server OS release and vendor-table binary per 24 h | product and cycle, e.g. `nodejs/20`, `ubuntu/22.04` |
 | registry.npmjs.org, pypi.org, jsr.io | once per direct dependency per 24 h | the package name |
 | api.github.com | Dependabot and secret-scanning status reads, the visibility check of the evidence repository's remote, `[discovery]` listing and clones, `setup --enable-dependabot` after confirmation; with `[hosts]`, the releases endpoint for the binaries in the vendor table | the repository name |
+| your product websites | only with `[cra] check_well_known = true`: `cra check` and the `run` that includes it | one HTTPS GET of `<url>/.well-known/security.txt` per configured product `url`; no redirects followed, at most 64 KiB read, User-Agent `sbom-audit` |
 | your configured servers | `hosts check` (and the `run` that includes it), `bootstrap`, `unbootstrap` and `patch`, over SSH only | the SSH session; the collector makes no outbound calls of its own, but `bootstrap` makes the host download Lynis and its apt packages and `patch` runs `apt-get update` on the host |
 | Anthropic, through Claude Code | the interactive skills, like any Claude Code session; with `[schedule] assess = true`, a headless `claude -p` after the weekly run | what Claude reads: reports, inventory and the code excerpts the verifier opens; the headless run is capped by `--max-budget-usd` |
 | the `[assess]` `base_url`, only when configured | `assess draft`; with `[schedule] assess = true`, after the weekly run | one POST to `<base_url>/chat/completions` with the model id, a fixed instruction text and, as documents: from `AUDIT.md` the sections Source status, Summary and Suppressed by VEX and the latest `## Assessment` section; the Overview table of `INVENTORY.md` (project, branch, runtime versions, base images); the open work list as `issues.json` would hold it (project names, branches, manifest paths, package names and versions, advisory ids, severities and summaries, fix targets; for secrets the fingerprint, rule, provider, class, commit, file and line, never the value; host issues only with `include_hosts = true`), at most 300 issues and 20,000 characters per section. The key goes in the `Authorization` header. No source code, SBOM file or secret value. `--dry-run` prints the whole body |

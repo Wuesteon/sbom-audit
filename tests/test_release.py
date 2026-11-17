@@ -74,7 +74,7 @@ class ReleaseTests(unittest.TestCase):
         text = readme + (ROOT / "docs" / "reference.md").read_text()
         for needle in ("## Scheduler", "## Secrets", "STATUS.md", "status.json", "SECRETS.md", "secrets.json",
                        "secrets-decisions.toml", "## Hosts", "HOSTS.md", "hosts-decisions.toml", "api.github.com", "sbom-audit@wuesteon-plugins",
-                       "Art. 13(1)", "Annex I Part II", "Art. 14", "assess_budget_usd", "proposal waiting:"):
+                       "Art. 13(7)", "Annex I Part II", "Art. 14", "assess_budget_usd", "proposal waiting:"):
             self.assertIn(needle, text, needle)
         for skill in ("setup", "run", "status", "assess", "lookup", "incident", "vex", "secrets", "schedule", "hosts"):
             self.assertIn(f"/sbom-audit:{skill}", text, skill)

@@ -27,6 +27,8 @@ into `security/` unless a command below says otherwise. Required tools: `git`, `
 | Record a decision | `vex add <project> <vuln-id> <status> [--justification …] --impact "…"` | `security/vex/<project>.openvex.json` |
 | Secrets | `secrets report`; `secrets resolve <fingerprint> <status> "<note>"` | `resolve` writes `secrets-decisions.toml` |
 | Read audited code | `code grep\|show\|files <project> <branch> …` | nothing |
+| CRA readiness per product | `cra check` (only products under `[cra.products]`; also part of `run`) | `security/CRA.md`, `security/cra.json` |
+| CRA starter documents | `cra init <project>` (plan), then `cra init <project> --yes` after confirmation | new files in `security/cra/<project>/`, never overwrites |
 | Assessment draft by a model | `assess draft --dry-run`, then `assess draft` (needs `[assess]`, see below) | `reports/<date>-assessment-proposal.md` |
 
 Exit codes: `run` 0 clean, 1 findings, 2 a source failed (that section is empty, not clean), 3 malformed
@@ -81,6 +83,25 @@ An agent without web access, or a scheduled job, can instead ask a model for a d
 endpoint in `[assess]` and writes `reports/<date>-assessment-proposal.md`. It records nothing; every
 decision in it is `unverified` and goes through steps 2 to 4 before anything is recorded. Configuration,
 providers and exactly what is sent: [docs/reference.md](docs/reference.md#assessment-drafts-without-claude-code-assess-draft).
+
+## CRA readiness
+
+The same flow as the `/sbom-audit:cra` skill (`plugin/skills/cra/SKILL.md`). It is a readiness overview
+from Regulation (EU) 2024/2847: evidence present, missing, stale, or the manufacturer's responsibility.
+Never call a product "compliant", "certified" or "CRA-conform"; this is evidence tooling, not legal advice.
+
+1. Only projects the user listed under `[cra.products]` are covered. Do not decide which projects are
+   products; ask.
+2. `cra check`, then read `security/CRA.md` and summarise what is missing or stale per product. An open KEV
+   finding in a product points to `cra/<project>/art14-procedure.md`; whether it is reportable is the
+   manufacturer's decision.
+3. `cra init <project>` prints the plan; show it, wait for one confirmation, then run it with `--yes`.
+   `SECURITY.md` and `security.txt` land in `cra/<project>/proposed-for-repo/`: the user copies them into
+   the product repository (rule 6).
+4. Filling in `risk-assessment.md`: ask the questions one at a time and write only the user's answers.
+   An unanswered question stays `____`; never infer answers from the code or the audit, never write that a
+   requirement is met. Show each section before saving it. The `sbom-audit cra starter` first line stays
+   until the user removes it; until then the document counts as missing.
 
 ## Working on this repository
 

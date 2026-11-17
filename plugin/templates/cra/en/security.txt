@@ -1,0 +1,10 @@
+# sbom-audit cra starter: delete this line once every blank is filled in
+# security.txt for {{product}} (RFC 9116). Serve it at https://<your host>/.well-known/security.txt over HTTPS.
+# Contact and Expires are required. Expires: an RFC 3339 date-time, less than a year ahead; renew it before then.
+# Replace each ____ and delete the lines you do not use.
+Contact: mailto:____
+Contact: https://____
+Expires: ____-__-__T00:00:00Z
+Policy: https://____
+Preferred-Languages: en
+Canonical: https://____/.well-known/security.txt

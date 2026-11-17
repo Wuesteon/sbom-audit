@@ -1,4 +1,4 @@
-<!-- sbom-audit-template v4 -->
+<!-- sbom-audit-template v5 -->
 # Evidence folder (written by sbom-audit)
 
 This folder is the output of the [sbom-audit](https://github.com/Wuesteon/sbom-audit) plugin: the
@@ -17,6 +17,8 @@ meant to be committed and kept as evidence. Read this file before you change any
 | `secrets.json` / `SECRETS.md` | Secrets scan results: counts and fingerprints only, never values | the plugin |
 | `HOSTS.md` / `hosts.json` | Server audit (only with `[hosts]`): critical findings, KEV, patch automation, logins, fingerprint changes, Lynis. Contains IP addresses, ports and user names | the plugin |
 | `hosts/` | `baseline/<host>.json` (the accepted state), `known_hosts` (pinned host keys), `bootstrap/<host>.json` (bootstrap records) | the plugin |
+| `CRA.md` / `cra.json` | CRA readiness per configured product (only with `[cra.products]`): one status per obligation with its article reference. Evidence, not a verdict | the plugin |
+| `cra/<product>/` | Starter documents (risk assessment, reporting procedure, disclosure policy, Art. 14 drafts) and `proposed-for-repo/` files to copy into the product repository yourself | `/sbom-audit:cra init`, then you |
 | `secrets-decisions.toml` | Decisions per secrets finding (revoked, false positive, accepted) | `/sbom-audit:secrets resolve` |
 | `hosts-decisions.toml` | Accepted host findings with date, note and review date | `/sbom-audit:hosts accept` |
 | `sbom/<project>/<branch>.cdx.json` | CycloneDX SBOM per project and branch | the plugin |
@@ -43,6 +45,8 @@ meant to be committed and kept as evidence. Read this file before you change any
   named that host in the conversation and confirmed the plan printed for it (run without `--confirm` first).
   `hosts accept` is written only after the user confirms the whole list. Never paste IP addresses,
   `authorized_keys` comments or sudoers content from `HOSTS.md` into issues or messages.
+- Under `cra/`, never fill in a blank (`____`) with an answer the user did not give, and never remove
+  the `sbom-audit cra starter` line for them: while it is there the document counts as missing.
 - Keep this repository private. It describes your dependencies and unfixed vulnerabilities. If the
   remote is public, the plugin refuses to push.
 - A secret value must never appear in any file, log line or commit message here. Reports carry counts
@@ -60,6 +64,7 @@ meant to be committed and kept as evidence. Read this file before you change any
 - `/sbom-audit:secrets resolve` records a secrets decision.
 - `/sbom-audit:schedule weekly|off` installs or removes the weekly run.
 - `/sbom-audit:hosts` checks the servers (`check`), records accepted findings (`accept`) and patches or bootstraps one named host after confirmation.
+- `/sbom-audit:cra` shows the CRA readiness per product (`check`) and writes starter documents after confirmation (`init`).
 - `/sbom-audit:setup` configures a new portfolio.
 
 This file is refreshed by the plugin when its template version changes. Delete the first line to take

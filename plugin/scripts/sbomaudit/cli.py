@@ -9,8 +9,8 @@ from . import __version__, config
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
-            "assess", "report")
-WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report")
+            "assess", "report", "cra")
+WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report", "cra")
 EXIT_READ_ONLY = 5
 SECRETS_STATUSES = ("open", "rotated", "false_positive", "test_fixture", "accepted")  # = secrets.store.STATUSES
 
@@ -118,7 +118,24 @@ def build_parser() -> argparse.ArgumentParser:
                                          "(records no decision)")
     draft_p.add_argument("--dry-run", action="store_true",
                          help="print the request body (no key) and exit; sends and writes nothing")
+    add_cra_args(sub.add_parser("cra", parents=[common],
+                                help="EU Cyber Resilience Act readiness per configured product ([cra.products]): "
+                                     "evidence present, missing or stale; starter documents"), common)
     return parser
+
+
+def add_cra_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
+    cra_sub = p.add_subparsers(dest="cra_command", metavar="action")
+    cra_sub.required = True
+    cra_sub.add_parser("check", parents=[common],
+                       help="check the evidence for every configured product, write CRA.md and cra.json")
+    init_p = cra_sub.add_parser("init", parents=[common],
+                                help="starter documents for one product in cra/<product>/ (plan without --yes; "
+                                     "never writes into the product repository, never overwrites)")
+    init_p.add_argument("product", help="a project listed under [cra.products]")
+    init_p.add_argument("--lang", default=None, choices=("en", "de"),
+                        help="template language (default: [report] language in the config, else en)")
+    init_p.add_argument("--yes", action="store_true", help="write the planned files (after the user confirmed)")
 
 
 def add_code_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
@@ -290,6 +307,11 @@ def _assess(args) -> int:
     return draft.cli(args)
 
 
+def _cra(args) -> int:
+    from . import cra
+    return cra.cli(args)
+
+
 def _refresh_integration() -> None:
     """After a plugin update, keep opted-in rules and the hook script on the current version (best effort)."""
     import os
@@ -311,6 +333,8 @@ def _writes(args) -> bool:
         return bool(args.autonomy or args.session_hook)
     if args.command == "assess":
         return not args.dry_run
+    if args.command == "cra" and args.cra_command == "init":
+        return bool(args.yes)
     if args.command == "issues":
         from . import issues
         return not issues.is_query(args)
@@ -339,7 +363,8 @@ def main(argv: list[str] | None = None) -> int:
 HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run": _run,
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
-                               "code": _code, "settings": _settings, "assess": _assess, "report": _report}
+                               "code": _code, "settings": _settings, "assess": _assess, "report": _report,
+                               "cra": _cra}
 
 
 if __name__ == "__main__":
