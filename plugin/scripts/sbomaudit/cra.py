@@ -455,6 +455,9 @@ def check_product(cfg, ccfg: CraConfig, product: Product, out: Path, *, audit: d
             if r.get("eol_before_support_end"):
                 notes.append(f"{r.get('tag')}: end of life before support ends: "
                              + ", ".join(str(x) for x in r["eol_before_support_end"][:5]))
+            if r.get("eol_unknown"):
+                notes.append(f"{r.get('tag')}: end of life unknown: "
+                             + ", ".join(str(x) for x in r["eol_unknown"][:5]))
         obs.append(_ob("released_versions", "present", [RELEASES_JSON], "; ".join(notes)))
     for oid in MANUFACTURER:
         obs.append(_ob(oid, "manufacturer"))

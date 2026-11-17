@@ -9,11 +9,13 @@ available", never 0; a skipped secrets scan never reads as clean. All user-facin
 """
 from __future__ import annotations
 
+import contextvars
 import html
 import json
 from pathlib import Path
 
 from . import __version__
+from .cra import MANUFACTURER, OBLIGATIONS
 from .cache import atomic_write
 
 REPORT_FILE = "REPORT.html"
@@ -168,6 +170,7 @@ STRINGS: dict[str, dict] = {
         "c_secrets_skipped": "Skipped: {reason}. Not the same as clean: no repository history was searched "
                              "for leaked credentials in this run.",
         "c_secrets_ran": "{mode} scan with {engine} over {repos} repositories.",
+        "secrets_modes": {"full": "full", "incremental": "incremental"},
         "c_secrets_failed": "{n} repository scan(s) failed; their history may hold findings this report does not show.",
         "c_secrets_unknown": "No secrets scan result is available.",
         "c_hosts": "Hosts",
@@ -176,6 +179,9 @@ STRINGS: dict[str, dict] = {
         "c_hosts_skipped": "Skipped: {reason}; last checked {last}.",
         "c_times": "Data timestamps",
         "c_times_head": ("File", "Written"),
+        "c_times_zone": "All times in this report are in the run's time zone ({zone}), converted where a file "
+                        "records another; a day without a time (first seen, decision dates) is shown as the file "
+                        "records it, and secrets.json records UTC days.",
         "t_inventory": "inventory.json (scan)",
         "t_audit": "audit.json (audit)",
         "t_status": "status.json (end of run)",
@@ -188,15 +194,20 @@ STRINGS: dict[str, dict] = {
         "t_unreadable": "present but unreadable",
         "c_limits": "Limits",
         "limits": [
-            "Only the configured branches are read, from git objects; working trees, unpushed changes and "
-            "repositories outside the portfolio are not.",
+            "Dependencies are read from git objects of the configured branches (and of the release tags under "
+            "audit); the secrets scan reads the whole git history of every branch of each repository. Working "
+            "trees, unpushed changes and repositories outside the portfolio are not read.",
             "Vulnerabilities are matched against published advisories (OSV). Ecosystems OSV does not cover are "
             "inventoried but not matched, and code written in-house is not reviewed.",
             "There is no reachability analysis: a vulnerable package counts as a finding until a decision says "
             "otherwise.",
             "The secrets scan finds what the gitleaks rules match. It does not check whether a credential still "
             "works and cannot see secrets that never reached git.",
+            "RELEASES.md, ISSUES.md, CRA.md and the other Markdown and JSON files are always in English; the "
+            "language setting applies only to this report and the cra init templates.",
         ],
+        "limit_actions": "GitHub Actions used in workflows are inventoried but not checked for vulnerabilities "
+                         "(OSV does not match versions for this ecosystem): {n} in this run's branches.",
         "e_intro": "Where the artefacts of this folder serve the EU Cyber Resilience Act (Regulation (EU) "
                    "2024/2847).",
         "e_caveat": "Evidence tooling, not legal advice: the plugin produces the artefacts an assessment asks for; "
@@ -260,6 +271,7 @@ STRINGS: dict[str, dict] = {
             "technical_documentation": "Technical documentation",
             "conformity": "Conformity assessment, declaration, CE marking",
         },
+        "cra_ref": {k: ref for k, (ref, _) in {**OBLIGATIONS, **MANUFACTURER}.items()},     # as cra.json has them
         "c_releases": "Releases under audit",
         "c_releases_head": ("Project", "Release", "Date", "Support", "Open: KEV / critical / high",
                             "No longer present vs previous"),
@@ -276,6 +288,8 @@ STRINGS: dict[str, dict] = {
                          "package_gone": "{n} package no longer in the SBOM",
                          "no_longer_matched": "{n} still in the SBOM, no longer matched"},
         "c_rel_eol": "end of life before the support period ends: {list}",
+        "c_rel_eol_unknown": "end of life unknown (endoflife.date gives no date; check yourself): {list}",
+        "c_rel_eol_terms": (),                          # releases.json wording is English already
         "c_rel_note": "Each release has its own SBOM and is audited like a branch. Releases past their support period "
                       "are listed but not counted as open work. \"No longer present\" means exactly: the advisory "
                       "matched a package in the SBOM of the previous release and matches none in the SBOM of this "
@@ -433,6 +447,7 @@ STRINGS: dict[str, dict] = {
         "c_secrets_skipped": "Übersprungen: {reason}. Das ist nicht dasselbe wie unbedenklich: In diesem Lauf wurde "
                              "keine Repository-Historie nach offengelegten Zugangsdaten durchsucht.",
         "c_secrets_ran": "Scan ({mode}) mit {engine} über {repos} Repositories.",
+        "secrets_modes": {"full": "vollständig", "incremental": "inkrementell"},
         "c_secrets_failed": "{n} Repository-Scan(s) fehlgeschlagen; deren Historie kann Befunde enthalten, die dieser "
                             "Bericht nicht zeigt.",
         "c_secrets_unknown": "Kein Ergebnis eines Secrets-Scans verfügbar.",
@@ -443,6 +458,9 @@ STRINGS: dict[str, dict] = {
         "c_hosts_skipped": "Übersprungen: {reason}; zuletzt geprüft {last}.",
         "c_times": "Zeitstempel der Daten",
         "c_times_head": ("Datei", "Geschrieben"),
+        "c_times_zone": "Alle Zeiten in diesem Bericht stehen in der Zeitzone des Laufs ({zone}), umgerechnet, wo "
+                        "eine Datei eine andere festhält; ein Tag ohne Uhrzeit (erstmals gesehen, Datum einer "
+                        "Entscheidung) steht so da, wie die Datei ihn festhält, und secrets.json hält Tage in UTC fest.",
         "t_inventory": "inventory.json (Scan)",
         "t_audit": "audit.json (Prüfung)",
         "t_status": "status.json (Ende des Laufs)",
@@ -455,15 +473,22 @@ STRINGS: dict[str, dict] = {
         "t_unreadable": "vorhanden, aber nicht lesbar",
         "c_limits": "Grenzen",
         "limits": [
-            "Gelesen werden nur die konfigurierten Branches, aus git-Objekten; Arbeitskopien, nicht gepushte "
-            "Änderungen und Repositories außerhalb des Portfolios nicht.",
+            "Abhängigkeiten werden aus den git-Objekten der konfigurierten Branches (und der geprüften "
+            "Release-Tags) gelesen; der Secrets-Scan liest die gesamte git-Historie aller Branches jedes "
+            "Repositorys. Arbeitskopien, nicht gepushte Änderungen und Repositories außerhalb des Portfolios "
+            "werden nicht gelesen.",
             "Schwachstellen werden mit veröffentlichten Advisories (OSV) abgeglichen. Ökosysteme, die OSV nicht "
             "abdeckt, werden inventarisiert, aber nicht abgeglichen; selbst geschriebener Code wird nicht geprüft.",
             "Es gibt keine Erreichbarkeitsanalyse: Ein verwundbares Paket zählt als Befund, bis eine Entscheidung "
             "etwas anderes festhält.",
             "Der Secrets-Scan findet, was die gitleaks-Regeln erkennen. Er prüft nicht, ob Zugangsdaten noch gültig "
             "sind, und sieht keine Geheimnisse, die nie in git gelandet sind.",
+            "RELEASES.md, ISSUES.md, CRA.md und die übrigen Markdown- und JSON-Dateien sind immer englisch; die "
+            "Einstellung language gilt nur für diesen Bericht und die Vorlagen von cra init.",
         ],
+        "limit_actions": "In Workflows verwendete GitHub Actions werden inventarisiert, aber nicht auf "
+                         "Schwachstellen geprüft (OSV gleicht für dieses Ökosystem keine Versionen ab): {n} in den "
+                         "Branches dieses Laufs.",
         "e_intro": "Wofür die Artefakte dieses Ordners im Sinne des EU Cyber Resilience Act (Verordnung (EU) "
                    "2024/2847) dienen.",
         "e_caveat": "Nachweiswerkzeug, keine Rechtsberatung: Das Plugin erzeugt die Artefakte, nach denen eine "
@@ -472,26 +497,27 @@ STRINGS: dict[str, dict] = {
         "e_head": ("Artefakt", "Wofür es dient", "In diesem Ordner"),
         "e_rows": [
             ("sbom/<project>/<branch>.cdx.json (CycloneDX)",
-             "Anhang I Teil II (1): Komponenten und Schwachstellen ermitteln und dokumentieren, einschließlich einer "
+             "Anhang I Teil II Nr. 1: Komponenten und Schwachstellen ermitteln und dokumentieren, einschließlich einer "
              "SBOM in einem gängigen maschinenlesbaren Format"),
             ("AUDIT.md, audit.json, STATUS.md, der wöchentliche Zeitplan",
-             "Anhang I Teil II (2) und (3): Schwachstellen unverzüglich beheben, regelmäßige Tests und Überprüfungen"),
+             "Anhang I Teil II Nr. 2 und 3: Schwachstellen unverzüglich beheben, regelmäßige Tests und Überprüfungen"),
             ("Der KEV-Abschnitt von AUDIT.md, Zugangsdaten der Klasse A in SECRETS.md",
              "Art. 14: der Anlass, das Meldeverfahren (cra/<product>/art14-procedure.md) für aktiv ausgenutzte "
              "Schwachstellen und schwerwiegende Sicherheitsvorfälle durchzugehen"),
             ("vex/<project>.openvex.json, secrets-decisions.toml",
              "Art. 13 Abs. 7 und Anhang I Teil II: dokumentierte Entscheidungen zur Behandlung von Schwachstellen"),
             ("log.md, reports/, die git-Historie von security/",
-             "Art. 13 Abs. 7, Anhang VII Nummer 2 Buchst. b: die Nachweiskette für die technische Dokumentation"),
+             "Art. 13 Abs. 7, Anhang VII Nr. 2 Buchst. b: die Nachweiskette für die technische Dokumentation"),
             ("INVENTORY.md, der endoflife.date-Abschnitt von AUDIT.md, releases.json",
              "Unterstützungszeitraum (Art. 13 Abs. 8): Laufzeitumgebungen und Images nach oder kurz vor dem "
              "Support-Ende, veröffentlichte Versionen"),
             ("sbom/<project>/tags__<tag>.cdx.json, releases.json",
-             "SBOM je veröffentlichter Version: Anhang I Teil II (1) und Anhang VII Nr. 2 Buchst. b und Nr. 8 (SBOM "
-             "in der technischen Dokumentation); Art. 13(8) (Schwachstellenbehandlung während des Support-Zeitraums); "
-             "Art. 13(13) (Aufbewahrung mindestens 10 Jahre oder für den Support-Zeitraum, je nachdem, welcher länger ist)"),
+             "SBOM je veröffentlichter Version: Anhang I Teil II Nr. 1 und Anhang VII Nr. 2 Buchst. b und Nr. 8 (SBOM "
+             "in der technischen Dokumentation); Art. 13 Abs. 8 (Schwachstellenbehandlung während des "
+             "Support-Zeitraums); Art. 13 Abs. 13 (Aufbewahrung mindestens 10 Jahre oder für den Support-Zeitraum, "
+             "je nachdem, welcher länger ist)"),
             ("cra/<product>/, CRA.md, cra.json",
-             "Art. 13 Abs. 2, 3 und 17, Art. 14, Anhang I Teil II Nummer 5 und 6: Risikobewertung, Meldeverfahren, "
+             "Art. 13 Abs. 2, 3 und 17, Art. 14, Anhang I Teil II Nr. 5 und 6: Risikobewertung, Meldeverfahren, "
              "Offenlegungsstrategie, Kontakt; Bereitschaft je Produkt unten"),
         ],
         "cra_title": "CRA-Bereitschaft je Produkt",
@@ -529,6 +555,28 @@ STRINGS: dict[str, dict] = {
             "technical_documentation": "Technische Dokumentation",
             "conformity": "Konformitätsbewertung, Erklärung, CE-Kennzeichnung",
         },
+        # the same provisions as cra.OBLIGATIONS / MANUFACTURER, cited the way the German Official Journal text
+        # does (Abs. = paragraph, Nr. = point, Buchst. = letter); a new obligation without an entry shows cra.json's
+        "cra_ref": {
+            "risk_assessment": "Art. 13 Abs. 2, 3 und 7; Anhang I Teil I; Anhang VII Nr. 3",
+            "contact": "Art. 13 Abs. 17; Anhang I Teil II Nr. 6; Anhang II Nr. 2",
+            "security_txt": "Anhang I Teil II Nr. 6; Anhang II Nr. 2 (RFC 9116 ist ein verbreiteter Weg, keine "
+                            "Anforderung des CRA)",
+            "cvd_policy": "Anhang I Teil II Nr. 5; Art. 13 Abs. 8; Anhang VII Nr. 2 Buchst. b",
+            "reporting": "Art. 14 Abs. 1 bis 8; Art. 16; Art. 69 Abs. 3; Art. 71 Abs. 2",
+            "sbom": "Anhang I Teil II Nr. 1; Anhang VII Nr. 2 Buchst. b",
+            "vulnerability_handling": "Anhang I Teil II Nr. 2 und 3; Art. 13 Abs. 8",
+            "decisions_trail": "Art. 13 Abs. 7; Anhang VII Nr. 2 Buchst. b",
+            "support_period": "Art. 13 Abs. 8 und 19; Anhang II Nr. 7; Anhang VII Nr. 4",
+            "released_versions": "Anhang I Teil II Nr. 2 und 8; Art. 13 Abs. 9",
+            "scope": "Art. 2, 3 und 7; Anhang III und IV",
+            "essential_requirements": "Anhang I Teil I Nr. 1 und Nr. 2 Buchst. a bis m",
+            "advisories": "Anhang I Teil II Nr. 4, 7 und 8",
+            "components": "Art. 13 Abs. 6",
+            "user_information": "Art. 13 Abs. 16 und 18; Anhang II",
+            "technical_documentation": "Art. 13 Abs. 13, Art. 31; Anhang VII",
+            "conformity": "Art. 28, 30 und 32; Anhang V",
+        },
         "c_releases": "Releases unter Prüfung",
         "c_releases_head": ("Projekt", "Release", "Datum", "Support", "Offen: KEV / kritisch / hoch",
                             "Nicht mehr vorhanden ggü. Vorgänger"),
@@ -545,6 +593,12 @@ STRINGS: dict[str, dict] = {
                          "package_gone": "{n} Paket nicht mehr in der SBOM",
                          "no_longer_matched": "{n} noch in der SBOM, nicht mehr zugeordnet"},
         "c_rel_eol": "Support-Ende vor Ende des Support-Zeitraums: {list}",
+        "c_rel_eol_unknown": "Support-Ende unbekannt (endoflife.date nennt kein Datum; selbst prüfen): {list}",
+        "c_rel_eol_terms": (("(EOL, no date published)", "(Support-Ende erreicht, kein Datum veröffentlicht)"),
+                            ("(EOL ", "(Support-Ende "),
+                            ("(version unknown)", "(Version unbekannt)"),
+                            ("(no endoflife.date data)", "(keine Daten bei endoflife.date)"),
+                            ("(no end-of-life date published)", "(kein Support-Ende veröffentlicht)")),
         "c_rel_note": "Jedes Release hat eine eigene SBOM und wird wie ein Branch geprüft. Releases außerhalb des "
                       "Support-Zeitraums sind aufgeführt, zählen aber nicht als offene Arbeit. „Nicht mehr vorhanden“ "
                       "heißt genau: die Meldung traf ein Paket in der SBOM des vorherigen Releases und trifft keines in "
@@ -838,8 +892,51 @@ def _run_date(data: dict):
     return (data["audit"] or {}).get("generated_at") or (data["status"] or {}).get("generated_at")
 
 
+def _zone_of(value):
+    """The time zone of an ISO timestamp, or None (no value, a date only, or no offset)."""
+    import datetime as dt
+    try:
+        return dt.datetime.fromisoformat(str(value)).tzinfo
+    except ValueError:
+        return None
+
+
+def _in_zone(value, zone) -> str:
+    """An ISO timestamp with an offset converted to `zone` (the run's), so every time in the report reads in
+    one zone and a day is the run's day; anything else (a date only, a naive time, no zone) unchanged."""
+    import datetime as dt
+    text = str(value)
+    if zone is None or len(text) <= 10:
+        return text
+    try:
+        when = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    if when.tzinfo is None:
+        return text
+    moved = when.astimezone(zone)
+    return text if moved.utcoffset() == when.utcoffset() else moved.isoformat()     # already in the zone: as written
+
+
+def _offset(zone) -> str:
+    import datetime as dt
+    delta = dt.datetime.now(zone).utcoffset() if zone else None
+    if delta is None:
+        return ""
+    minutes = int(delta.total_seconds() // 60)
+    sign, minutes = ("+" if minutes >= 0 else "-"), abs(minutes)
+    return f"UTC{sign}{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+_ZONE = contextvars.ContextVar("report_zone", default=None)    # the run's zone while `render` runs
+
+
 def _date(value) -> str:
-    return e(str(value)[:10]) if value else ""
+    return e(_in_zone(value, _ZONE.get())[:10]) if value else ""
+
+
+def _time(value) -> str:
+    return e(_in_zone(value, _ZONE.get())) if value else ""
 
 
 def _table(head, rows: list[list[str]], cls: str = "") -> str:
@@ -1163,13 +1260,13 @@ def _coverage(data: dict, S: dict) -> str:
             state = _source_state(info, S)
         stamp = stamps.get(n) if isinstance(info, dict) or n == "secrets" else None
         rows.append([_td(e(S["src"].get(n, n))), _td(state),
-                     _td(e(stamp) if stamp else f'<span class="na">{S["na"]}</span>')])
+                     _td(_time(stamp) if stamp else f'<span class="na">{S["na"]}</span>')])
     L.append(_table(S["c_sources_head"], rows))
     # secrets scan
     L.append(f"<h3>{S['c_secrets']}</h3>")
     sec = _secrets_state(data)
     if sec["state"] == "ok":
-        L.append(f"<p>{S['c_secrets_ran'].format(mode=e(sec.get('mode')), engine=e(sec.get('engine') or S['unknown']), repos=e(sec.get('repos')))}</p>")
+        L.append(f"<p>{S['c_secrets_ran'].format(mode=e(S['secrets_modes'].get(sec.get('mode'), sec.get('mode'))), engine=e(sec.get('engine') or S['unknown']), repos=e(sec.get('repos')))}</p>")
         if sec["failed"]:
             L.append(f'<p class="warn">{S["c_secrets_failed"].format(n=sec["failed"])}</p>')
     elif sec["state"] in ("skipped", "failed"):
@@ -1188,7 +1285,7 @@ def _coverage(data: dict, S: dict) -> str:
     elif hosts.get("skipped"):
         L.append(f'<p class="warn">{S["c_hosts_skipped"].format(reason=e(hosts["skipped"]), last=e(hosts.get("last_checked") or S["unknown"]))}</p>')
     else:
-        L.append(f"<p>{S['c_hosts_text'].format(checked=e(hosts.get('checked', 0)), failed=e(hosts.get('failed', 0)), unsupported=e(hosts.get('unsupported', 0)), last=e(hosts.get('last_checked') or S['unknown']))}</p>")
+        L.append(f"<p>{S['c_hosts_text'].format(checked=e(hosts.get('checked', 0)), failed=e(hosts.get('failed', 0)), unsupported=e(hosts.get('unsupported', 0)), last=_time(hosts.get('last_checked')) or e(S['unknown']))}</p>")
     # timestamps
     L.append(f"<h3>{S['c_times']}</h3>")
     states = data["states"]
@@ -1200,8 +1297,11 @@ def _coverage(data: dict, S: dict) -> str:
             return f'<span class="na">{S["t_absent"]}</span>'
         if states.get(key) == "unreadable":
             return f'<span class="label strong">{e(S["t_unreadable"].upper())}</span>'
-        return e(value) if value else f'<span class="na">{S["na"]}</span>'
+        return _time(value) if value else f'<span class="na">{S["na"]}</span>'
 
+    zone = _offset(_ZONE.get())
+    if zone:
+        L.append(f"<p>{e(S['c_times_zone'].format(zone=zone))}</p>")
     rows = [[_td(e(S["t_inventory"])), _td(stamp("inventory", (data["inventory"] or {}).get("generated_at")))],
             [_td(e(S["t_audit"])), _td(stamp("audit", audit.get("generated_at")))],
             [_td(e(S["t_status"])), _td(stamp("status", status.get("generated_at")))],
@@ -1210,11 +1310,27 @@ def _coverage(data: dict, S: dict) -> str:
         rows.append([_td(e(S["t_secrets"])), _td(stamp("secrets", (data["secrets"] or {}).get("generated_at")))])
     if data["hosts_active"]:
         rows.append([_td(e(S["t_hosts"])), _td(stamp("hosts", (data["hosts"] or {}).get("last_checked")))])
-    rows.append([_td(e(S["t_kev"])), _td(e(data["kev_fetched"]) if data["kev_fetched"]
+    rows.append([_td(e(S["t_kev"])), _td(_time(data["kev_fetched"]) if data["kev_fetched"]
                                          else f'<span class="na">{S["na"]}</span>')])
     L.append(_table(S["c_times_head"], rows))
-    L.append(f"<h3>{S['c_limits']}</h3><ul>" + "".join(f"<li>{e(x)}</li>" for x in S["limits"]) + "</ul></section>")
+    limits = list(S["limits"])
+    actions = (audit.get("stats") or {}).get("github_actions_unchecked")
+    if actions:
+        limits.insert(2, S["limit_actions"].format(n=actions))
+    L.append(f"<h3>{S['c_limits']}</h3><ul>" + "".join(f"<li>{e(x)}</li>" for x in limits) + "</ul></section>")
     return "".join(L)
+
+
+def _eol_terms(items: list, S: dict) -> str:
+    """The `releases.json` end-of-life entries (`nodejs 20 (EOL 2026-04-30)`, written in English) joined, with
+    their fixed English wording put into the report's language."""
+    out = []
+    for item in items:
+        text = str(item)
+        for en, local in S.get("c_rel_eol_terms") or ():
+            text = text.replace(en, local)
+        out.append(text)
+    return ", ".join(out)
 
 
 def _releases(data: dict, S: dict) -> str:
@@ -1234,7 +1350,12 @@ def _releases(data: dict, S: dict) -> str:
                        f'<span class="label">{e(S["c_rel_out"].format(date=until).upper())}</span>')
             eol = r.get("eol_before_support_end") or []
             if eol:
-                support += f'<br><span class="warn">{e(S["c_rel_eol"].format(list=", ".join(map(str, eol))))}</span>'
+                support += (f'<br><span class="warn">'
+                            f'{e(S["c_rel_eol"].format(list=_eol_terms(eol, S)))}</span>')
+            unknown = r.get("eol_unknown") or []
+            if isinstance(unknown, list) and unknown:
+                support += (f'<br><span class="warn">'
+                            f'{e(S["c_rel_eol_unknown"].format(list=_eol_terms(unknown, S)))}</span>')
             o = r.get("open") or {}
             counts = f"{o.get('kev', 0)} / {o.get('critical', 0)} / {o.get('high', 0)}"
             if r.get("previous") is None:
@@ -1306,7 +1427,7 @@ def _cra(data: dict, S: dict) -> str:
         return "".join(L) + f'<p class="na">{e(S[key])}</p>'
     if not products:
         return "".join(L) + f'<p class="na">{e(S["cra_none"])}</p>'
-    L.append(f"<p>{e(S['cra_intro'].format(date=str(doc.get('generated_at') or '')[:10]))}</p>")
+    L.append(f"<p>{e(S['cra_intro'].format(date=_in_zone(doc.get('generated_at') or '', _ZONE.get())[:10]))}</p>")
     for key, p in products.items():
         if not isinstance(p, dict):
             continue
@@ -1323,7 +1444,8 @@ def _cra(data: dict, S: dict) -> str:
             title = S["cra_ob"].get(o.get("id"), o.get("title") or o.get("id"))
             status = S["cra_status"].get(o.get("status"), S["na"])
             evidence = ", ".join(f"<code>{e(x)}</code>" for x in o.get("evidence") or [])
-            rows.append([_td(e(title)), _td(e(o.get("ref"))), _td(e(status)), _td(evidence or "&ndash;")])
+            ref = S["cra_ref"].get(o.get("id"), o.get("ref"))
+            rows.append([_td(e(title)), _td(e(ref)), _td(e(status)), _td(evidence or "&ndash;")])
         L.append(_table(S["cra_head"], rows))
     return "".join(L)
 
@@ -1339,9 +1461,13 @@ def render(data: dict, *, lang: str = "en", organisation: str | None = None) -> 
     metrics = _metrics(data, S)
     title = S["title_for"].format(org=organisation) if organisation else S["title"]
     when = _run_date(data)
-    body = (_header(data, S, organisation) + _overall(data, S, metrics) + _action(data, S)
-            + _decisions(data, S) + _coverage(data, S) + _evidence(data, S)
-            + f"<footer>{S['footer']}</footer>")
+    token = _ZONE.set(_zone_of(when))
+    try:
+        body = (_header(data, S, organisation) + _overall(data, S, metrics) + _action(data, S)
+                + _decisions(data, S) + _coverage(data, S) + _evidence(data, S)
+                + f"<footer>{S['footer']}</footer>")
+    finally:
+        _ZONE.reset(token)
     return ("<!doctype html>\n"
             f'<html lang="{S["html_lang"]}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -1381,9 +1507,31 @@ def try_write(out: Path, say=print, hosts_active: bool | None = None) -> list[Pa
     """`write` that never raises: the run has done its work and keeps its exit code."""
     try:
         return write(out, hosts_active=hosts_active)
-    except Exception as exc:                            # the type only, as everywhere a report may carry findings
-        say(f"management report: not written ({type(exc).__name__})")
+    except Exception as exc:
+        say(f"management report: not written ({describe_error(exc)})")
         return []
+
+
+def describe_error(exc: BaseException, limit: int = 200) -> str:
+    """`Type: message (file.py:line in function)` for a log line, never a traceback. The place comes from the
+    last traceback frame (where it was raised). The message is given for an OSError only (the reason and the
+    file name): any other exception raised while rendering may quote the data it was handling, and the report
+    reads secrets.json, so its message stays out of the log, as everywhere a run logs a failure."""
+    import traceback
+    msg = ""
+    if isinstance(exc, OSError):
+        msg = exc.strerror or (str(exc) if not exc.filename else "")
+        if exc.filename:
+            msg += f": {Path(str(exc.filename)).name}"
+        msg = " ".join(msg.split())
+        if len(msg) > limit:
+            msg = msg[:limit - 1] + "…"
+    text = type(exc).__name__ + (f": {msg}" if msg else "")
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    if frames:
+        last = frames[-1]
+        text += f" ({Path(last.filename).name}:{last.lineno} in {last.name})"
+    return text
 
 
 def cli(args) -> int:

@@ -196,7 +196,7 @@ def scan_releases(cfg: Config, project: Project, say) -> list[BranchInventory]:
         say(f"{project.name}: listing tags failed ({exc})")
         return [BranchInventory(project=project.name, branch=releases.label(opts.tags), ref=opts.tags, commit="",
                                 errors=[f"git: listing tags: {exc}"], release={"tag": opts.tags, "index": 0})]
-    chosen, order = releases.select(tags, opts.keep, opts.tags)
+    chosen, order = releases.select(tags, opts.keep, opts.tags, prereleases=opts.prereleases)
     say(f"{project.name}: {len(tags)} tags match {opts.tags!r}; keeping {len(chosen)}, ordered by {order}")
     invs = []
     for index, tag in enumerate(chosen):

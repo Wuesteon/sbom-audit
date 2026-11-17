@@ -44,9 +44,48 @@ def _literal_prefix(pattern: str) -> str:
     return (pattern or "")[:m.start()] if m else ""
 
 
+# suffixes that name a final release, not a pre-release (Maven `1.0.0.RELEASE`, `1.0.Final`, `2.1.GA`)
+_FINAL_QUALIFIERS = {"release", "final", "ga"}
+
+
+def _identifiers(text: str) -> tuple:
+    """Semver-style precedence key of a pre-release or build suffix: dot or dash separated identifiers,
+    each split into digit and letter runs (`rc10` -> rc, 10); digits compare numerically and rank below
+    letters, and a shorter list ranks below a longer one with the same start."""
+    out = []
+    for ident in re.split(r"[.\-_]+", text):
+        if not ident:
+            continue
+        out.append(tuple((0, int(run), "") if run.isdigit() else (1, 0, run.lower())
+                         for run in re.findall(r"\d+|\D+", ident)))
+    return tuple(out)
+
+
+def _split_suffix(suffix: str) -> tuple[str, str]:
+    """(pre-release part, build part) of a tag's suffix; `+` starts the build metadata."""
+    pre, _, build = suffix.partition("+")
+    return pre.lstrip("-."), build
+
+
+def is_prerelease(tag: str, pattern: str = "") -> bool:
+    """A version-like tag with a pre-release suffix (`-rc.1`, `rc1`, `-beta`, `-SNAPSHOT`); build metadata
+    (`+abc`) and the final-release qualifiers RELEASE, Final and GA do not count. A tag that does not read
+    as a version is not a pre-release."""
+    prefix = _literal_prefix(pattern)
+    if prefix and tag.startswith(prefix):
+        tag = tag[len(prefix):]
+    m = _VERSION_RE.match(tag)
+    if not m:
+        return False
+    pre, _ = _split_suffix(m.group(2) or "")
+    return bool(pre) and pre.lower() not in _FINAL_QUALIFIERS
+
+
 def version_key(tag: str, pattern: str = "") -> tuple | None:
     """Sort key for a version-like tag, None otherwise. The pattern's literal prefix is dropped first, so
-    digits in it (`app2-v*`) are not read as the version. A pre-release sorts before its release."""
+    digits in it (`app2-v*`) are not read as the version. Semver precedence: a pre-release ranks below
+    its own release, and pre-release identifiers compare part by part, numbers numerically
+    (`rc.9` < `rc.10`). Build metadata only breaks ties."""
     prefix = _literal_prefix(pattern)
     if prefix and tag.startswith(prefix):
         tag = tag[len(prefix):]
@@ -55,14 +94,18 @@ def version_key(tag: str, pattern: str = "") -> tuple | None:
         return None
     nums = tuple(int(x) for x in m.group(1).split("."))
     nums = (nums + (0,) * 6)[:6] if len(nums) <= 6 else nums
-    suffix = m.group(2) or ""
-    pre = bool(suffix) and not suffix.startswith("+")
-    return (nums, 0 if pre else 1, suffix)
+    pre, build = _split_suffix(m.group(2) or "")
+    if pre.lower() in _FINAL_QUALIFIERS:
+        pre = ""
+    return (nums, 0 if pre else 1, _identifiers(pre), _identifiers(build))
 
 
-def select(tags: list[dict], keep: int, pattern: str = "") -> tuple[list[dict], str]:
+def select(tags: list[dict], keep: int, pattern: str = "", prereleases: bool = False) -> tuple[list[dict], str]:
     """The newest `keep` tags, oldest first, and the order used: `version` when every tag reads as a
-    version, else `date` (tag date, then name)."""
+    version, else `date` (tag date, then name). Pre-release tags (`is_prerelease`) are left out first
+    unless `prereleases` is true."""
+    if not prereleases:
+        tags = [t for t in tags if not is_prerelease(t["tag"], pattern)]
     keys = [version_key(t["tag"], pattern) for t in tags]
     if tags and all(k is not None for k in keys):
         ordered = [t for _, t in sorted(zip(keys, tags), key=lambda kt: (kt[0], kt[1]["tag"]))]
@@ -194,6 +237,27 @@ def _eol_before(rows: list[dict], until: str | None) -> list[str]:
     return sorted(flagged)
 
 
+def _eol_unknown(rows: list[dict], until: str | None) -> list[str]:
+    """Runtimes and base images whose end of life cannot be compared with `until` because endoflife.date
+    gives no date: no data for the product or cycle (or the lookup failed), no version to look up, or a
+    cycle that is not end of life and has no end date published. Kept apart from `_eol_before`, so a
+    missing date never reads as "ends after the support period"."""
+    if not until:
+        return []
+    unknown = set()
+    for r in rows:
+        if r.get("eol_date") or r.get("status") == "EOL":
+            continue                                    # a date, or already past end of life: `_eol_before`
+        product, cycle = r.get("product", ""), r.get("cycle") or ""
+        if not cycle:
+            unknown.add(f"{product} (version unknown)")
+        elif r.get("status") == "unknown":
+            unknown.add(f"{product} {cycle} (no endoflife.date data)")
+        else:
+            unknown.add(f"{product} {cycle} (no end-of-life date published)")
+    return sorted(unknown)
+
+
 def _failed_branches(sources: dict | None) -> set[tuple[str, str]]:
     failed = set()
     for info in (sources or {}).values():
@@ -248,6 +312,7 @@ def build(cfg: Config, inventories: list[BranchInventory], present: list[Finding
                 "sbom": inv.sbom_path or None,
                 "open": _open_counts(by_branch_kept.get(key, [])),
                 "eol_before_support_end": _eol_before(eol_by_branch.get(key, []), info["support_until"]),
+                "eol_unknown": _eol_unknown(eol_by_branch.get(key, []), info["support_until"]),
                 "fixed_since_previous": [],
                 "previous": None,
                 "branch": inv.branch,
@@ -265,7 +330,8 @@ def build(cfg: Config, inventories: list[BranchInventory], present: list[Finding
         projects[name] = {
             "support": {"period_months": opts.support_months if opts else None,
                         "until": opts.support_until.isoformat() if opts and opts.support_until else None},
-            "tags": opts.tags if opts else None, "keep": opts.keep if opts else None, "order": order,
+            "tags": opts.tags if opts else None, "keep": opts.keep if opts else None,
+            "prereleases": opts.prereleases if opts else None, "order": order,
             "releases": list(reversed(rows)),           # newest first
         }
     return {"schema": SCHEMA, "generated": generated or _now(), "plugin_version": __version__,
@@ -411,7 +477,11 @@ def render_md(doc: dict) -> str:
          "package was upgraded (a higher version is new in this release), the affected version was removed while "
          "other versions that were already in the previous release remain (for example a second lockfile with an "
          "unaffected copy), or the package is no longer in the SBOM at all. None of this is a claim about which "
-         "manifest or line of code changed.", ""]
+         "manifest or line of code changed.", "",
+         "\"EOL before support end\" lists runtimes and base images whose endoflife.date end of life falls before "
+         "the release's support end. \"EOL unknown\" lists those for which endoflife.date gives no date (product or "
+         "cycle unknown there, no version to look up, or no end date published): they are not known to outlast "
+         "the support period; check them yourself.", ""]
     if not projects:
         return "\n".join(L + ["No project has release scanning configured.", ""]) + "\n"
     for name, p in projects.items():
@@ -421,16 +491,19 @@ def render_md(doc: dict) -> str:
             period.append(f"{sup['period_months']} months from each release date")
         if sup.get("until"):
             period.append(f"until {sup['until']}")
+        pre = {True: "pre-release tags included", False: "pre-release tags left out"}.get(p.get("prereleases"))
         L += [f"## {_md(name)}", "",
-              f"Tags `{_md(p.get('tags'))}`, newest {p.get('keep')} kept, ordered by "
+              f"Tags `{_md(p.get('tags'))}`{f' ({pre})' if pre else ''}, newest {p.get('keep')} kept, ordered by "
               f"{'version' if p.get('order') == 'version' else 'tag date'}. Support period: "
               f"{' and '.join(period) + (' (the later of the two)' if len(period) == 2 else '') if period else 'not configured'}.",
               "",
-              "| Release | Date | Commit | Support | KEV | Critical | High | EOL before support end | Fixed since previous | SBOM |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+              "| Release | Date | Commit | Support | KEV | Critical | High | EOL before support end | EOL unknown "
+              "| Fixed since previous | SBOM |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
         for r in p.get("releases") or []:
             o = r.get("open") or {}
             eol = ", ".join(_md(x) for x in r.get("eol_before_support_end") or []) or "–"
+            eol_unknown = ", ".join(_md(x) for x in r.get("eol_unknown") or []) or "–"
             if r.get("previous") is None:
                 fixed = "– (oldest kept)"
             elif r.get("fixed_since_previous_unknown"):
@@ -439,7 +512,7 @@ def render_md(doc: dict) -> str:
                 fixed = f"{len(r.get('fixed_since_previous') or [])} vs {_md(r['previous'])}"
             L.append(f"| `{_md(r['tag'])}` | {str(r.get('date') or '')[:10]} | {str(r.get('commit') or '')[:7]} | "
                      f"{_support_text(r)} | {o.get('kev', 0)} | {o.get('critical', 0)} | {o.get('high', 0)} | {eol} | "
-                     f"{fixed} | `{_md(r.get('sbom') or '–')}` |")
+                     f"{eol_unknown} | {fixed} | `{_md(r.get('sbom') or '–')}` |")
         L.append("")
         for r in p.get("releases") or []:
             items = r.get("fixed_since_previous") or []
@@ -528,5 +601,6 @@ def cli(args) -> int:
             print(f"  {r['tag']:<20} {str(r.get('date') or '')[:10]}  {_support_text(r):<40} "
                   f"KEV {o.get('kev', 0)}, critical {o.get('critical', 0)}, high {o.get('high', 0)}"
                   + (f"; EOL before support end: {', '.join(r['eol_before_support_end'])}"
-                     if r.get("eol_before_support_end") else ""))
+                     if r.get("eol_before_support_end") else "")
+                  + (f"; EOL unknown: {', '.join(r['eol_unknown'])}" if r.get("eol_unknown") else ""))
     return 0

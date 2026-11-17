@@ -5,7 +5,7 @@ Generated 2026-11-07T02:58:00Z from `.` (portfolio mode, branches `main`, `dev`)
 ## Overview
 
 | Project | Branch | Node | Python | Deno | Expo/React Native | SvelteKit | NestJS | Astro | Vite | FastAPI | Postgres | Images |
-|---||---||---||---||---||---||---||---||---||---||---||---||---|
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | billing-api | main | – | – | – | – | – | – | – | – | – | – | `python:3.12-slim` |
 | docs-site | main | – | – | – | – | – | – | – | – | – | – | – |
 | shop-web | main | 18 | – | – | – | – | – | – | – | – | – | `node:18-alpine` |

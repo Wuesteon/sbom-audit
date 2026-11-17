@@ -114,6 +114,23 @@ class ConfigTests(TmpCase):
         self.assertEqual(config.release_opts(cfg, "app"),
                          ReleasesOpts(tags="app-v*", keep=5, support_months=60, support_until=dt.date(2031, 12, 31)))
 
+    def test_prereleases_key_global_and_per_project(self):
+        cfg = self.toml('[releases]\ntags = "v*"\n'
+                        '[projects]\nbeta = { releases = { prereleases = true } }\n')
+        self.assertFalse(config.release_opts(cfg, "other").prereleases)      # default: left out
+        self.assertTrue(config.release_opts(cfg, "beta").prereleases)
+        cfg = self.toml('[releases]\ntags = "v*"\nprereleases = true\n'
+                        '[projects]\nstable = { releases = { prereleases = false } }\n')
+        self.assertTrue(config.release_opts(cfg, "other").prereleases)
+        self.assertFalse(config.release_opts(cfg, "stable").prereleases)
+        with self.assertRaises(config.ConfigError) as ctx:
+            self.toml('[releases]\ntags = "v*"\nprereleases = "yes"\n')
+        self.assertIn("prereleases", str(ctx.exception))
+        fresh = self.out / "fresh"
+        fresh.mkdir()
+        written = config.write_default(fresh, config.load(fresh))
+        self.assertIn("# prereleases = false", written.read_text())
+
     def test_project_only_release_scanning(self):
         cfg = self.toml('[projects]\napp = { releases = { tags = "v*", support_until = "2030-06-30" } }\n')
         self.assertIsNone(config.release_opts(cfg, "other"))
@@ -145,9 +162,33 @@ class SelectionTests(unittest.TestCase):
         return [{"tag": n, "ref": f"refs/tags/{n}", "commit": "c" * 40, "date": d} for n, d in zip(names, dates)]
 
     def test_version_order_beats_name_order(self):
-        chosen, order = releases.select(self.tags("v1.10.0", "v1.9.0", "v1.2.0", "v2.0.0-rc.1", "v2.0.0"), 3)
+        tags = self.tags("v1.10.0", "v1.9.0", "v1.2.0", "v2.0.0-rc.1", "v2.0.0")
+        chosen, order = releases.select(tags, 3)                 # pre-releases are left out by default
         self.assertEqual(order, "version")
+        self.assertEqual([t["tag"] for t in chosen], ["v1.9.0", "v1.10.0", "v2.0.0"])
+        chosen, _ = releases.select(tags, 3, prereleases=True)
         self.assertEqual([t["tag"] for t in chosen], ["v1.10.0", "v2.0.0-rc.1", "v2.0.0"])
+
+    def test_prerelease_precedence_is_semver(self):
+        tags = self.tags("v4.9.0", "v5.0.0-rc.9", "v5.0.0-rc.10", "v5.0.0-beta.2", "v5.0.0-rc.2", "v5.0.0")
+        chosen, _ = releases.select(tags, 6, prereleases=True)
+        self.assertEqual([t["tag"] for t in chosen],
+                         ["v4.9.0", "v5.0.0-beta.2", "v5.0.0-rc.2", "v5.0.0-rc.9", "v5.0.0-rc.10", "v5.0.0"])
+        # the newest one: the final release, never its own release candidate
+        chosen, _ = releases.select(self.tags("v5.0.0", "v5.0.0-rc.10"), 1, prereleases=True)
+        self.assertEqual([t["tag"] for t in chosen], ["v5.0.0"])
+        self.assertLess(releases.version_key("1.0.0-alpha"), releases.version_key("1.0.0-alpha.1"))
+        self.assertLess(releases.version_key("1.0.0-alpha.beta"), releases.version_key("1.0.0-beta"))
+        self.assertLess(releases.version_key("1.0.0-beta.11"), releases.version_key("1.0.0-rc.1"))
+        self.assertLess(releases.version_key("1.0.0-rc.1"), releases.version_key("1.0.0"))
+
+    def test_prerelease_detection(self):
+        for tag in ("v2.0.0-rc.1", "2.0.0-beta", "1.0-SNAPSHOT", "v3.0.0alpha1", "5.0.0.M1"):
+            self.assertTrue(releases.is_prerelease(tag), tag)
+        for tag in ("v2.0.0", "5.3.0.RELEASE", "1.0.0.Final", "2.0.0+build.5", "v1.2.3-ga"):
+            self.assertFalse(releases.is_prerelease(tag), tag)
+        chosen, _ = releases.select(self.tags("v1.0.0", "v1.1.0-rc.1"), 3)
+        self.assertEqual([t["tag"] for t in chosen], ["v1.0.0"])
 
     def test_pattern_prefix_digits_are_not_the_version(self):
         chosen, order = releases.select(self.tags("app2-v1.0", "app2-v0.9"), 5, "app2-v*")
@@ -300,6 +341,31 @@ class BuildTests(unittest.TestCase):
         [row] = releases.build(self.cfg(support_months=60), [a], [], [], eol, {})["projects"]["app"]["releases"]
         self.assertEqual(row["support_until"], "2030-01-01")
         self.assertEqual(row["eol_before_support_end"], ["nodejs 20 (EOL 2026-04-30)", "python 3.13 (EOL 2029-10-31)"])
+        self.assertEqual(row["eol_unknown"], [])
+
+    def test_eol_unknown_is_listed_apart(self):
+        a = self.inv("v1.0", 0, "2025-01-01")
+        rows = [{"product": "nodejs", "cycle": "20", "eol_date": "2026-04-30", "status": "EOL"},
+                {"product": "caddy", "cycle": "2", "eol_date": "", "status": "unknown"},
+                {"product": "debian", "cycle": "13", "eol_date": "", "status": "supported"},
+                {"product": "postgresql", "cycle": "", "eol_date": "", "status": "unknown"},
+                {"product": "ruby", "cycle": "2.7", "eol_date": "", "status": "EOL"}]
+        eol = [{"project": "app", "branch": a.branch, **r} for r in rows]
+        doc = releases.build(self.cfg(support_months=60), [a], [], [], eol, {})
+        [row] = doc["projects"]["app"]["releases"]
+        self.assertEqual(row["eol_before_support_end"], ["nodejs 20 (EOL 2026-04-30)", "ruby 2.7 (EOL, no date published)"])
+        self.assertEqual(row["eol_unknown"], ["caddy 2 (no endoflife.date data)",
+                                              "debian 13 (no end-of-life date published)",
+                                              "postgresql (version unknown)"])
+        md = releases.render_md(doc)
+        self.assertIn("| EOL unknown |", md)
+        self.assertIn("caddy 2 (no endoflife.date data)", md)
+        header = next(l for l in md.splitlines() if l.startswith("| Tag") or "EOL unknown |" in l)
+        delim = md.splitlines()[md.splitlines().index(header) + 1]
+        self.assertEqual(delim.count("---"), header.count("|") - 1)
+        # without a support period there is nothing to compare with: neither list
+        [row] = releases.build(self.cfg(), [a], [], [], eol, {})["projects"]["app"]["releases"]
+        self.assertEqual(row["eol_unknown"], [])
 
     def test_project_without_release_scanning_is_absent(self):
         main = BranchInventory(project="app", branch="main", ref="main", commit="a" * 40)
