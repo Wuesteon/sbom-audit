@@ -67,7 +67,9 @@ The run writes a `security/` folder next to your repositories:
 | `INVENTORY.md` / `inventory.json` | Every package, image and runtime per project and branch |
 | `SECRETS.md` / `secrets.json` | Leaked-credential findings by fingerprint, file and line, never the value |
 | `HOSTS.md` / `hosts.json` | Server audit, when enabled |
+| `RELEASES.md` / `releases.json` | Releases under audit (with `[releases]`): support period, open KEV/critical/high, runtimes reaching end of life inside the support period, advisories no longer present compared with the previous release |
 | `sbom/<project>/<branch>.cdx.json` | CycloneDX SBOMs |
+| `sbom/<project>/tags__<tag>.cdx.json` | CycloneDX SBOM per release tag under audit (with `[releases]`) |
 | `vex/<project>.openvex.json` | Your OpenVEX decisions |
 | `CRA.md` / `cra.json`, `cra/<product>/` | EU Cyber Resilience Act readiness for the projects you list as products under `[cra.products]`: per obligation, with its article reference, evidence present, missing, stale or the manufacturer's responsibility; starter documents you fill in. Evidence tooling, not legal advice |
 
@@ -82,6 +84,33 @@ Sample from the committed demo fixture [`evals/fixtures/security/AUDIT.md`](eval
 |---|---|---|---|---|---|---|---|
 | HIGH 7.2 | lodash | 4.17.20 | 1 | 4.17.21 | yes | `package-lock.json` | GHSA-35jh-r3h4-6jhm (CVE-2021-23337): Command Injection in lodash |
 ```
+
+### Released versions (opt-in)
+
+Branches show what you build; for the versions you shipped, add a `[releases]` table to
+`security/sbom-audit.toml`. Each run then also audits the newest matching release tags, each with its
+own SBOM, through the same pipeline as a branch:
+
+```toml
+[releases]
+tags = "v*"                 # glob over local tags; version order when every tag is a version, else tag date
+keep = 3                    # the newest N tags
+support_months = 60         # support period from each tag's date ...
+support_until = 2031-12-31  # ... and/or an end date (with both, the later one counts)
+
+[projects."docs-site"]
+releases = false            # per project: false, or a table that overrides key by key
+```
+
+Findings in a supported release rank like production; releases past their support period are listed
+but are not open work. `sbom_audit_cli.py releases --project shop-web --fixed v2.4.0` lists the advisories
+no longer present in the SBOM of `v2.4.0` compared with the previous release, with the release that
+first held each one and the days in between. That is exactly what it proves: absence from the SBOM,
+checked against today's OSV data. In the EU Cyber Resilience Act mapping this is the row
+**SBOM per released version** (Annex I Part II (1), Annex VII points 2(b) and 8, Art. 13(8) and (13)
+of Regulation (EU) 2024/2847); details and the `releases.json` format:
+[Releases](docs/reference.md#releases-an-sbom-per-released-version). Evidence tooling, not legal
+advice.
 
 ## Skills
 

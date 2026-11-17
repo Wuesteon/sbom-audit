@@ -205,7 +205,7 @@ class RunTests(unittest.TestCase):
             day = json.loads((cfg.out / "secrets.json").read_text())["generated_at"][:10]
             run_wrote = {"AUDIT.md", "INVENTORY.md", "audit.json", "log.md", "status.json", "STATUS.md",
                          "issues.json", "ISSUES.md", "CLAUDE.md", "README.md", *dated, "secrets.json", "SECRETS.md",
-                         f"reports/{day}-secrets.md", "REPORT.html",
+                         f"reports/{day}-secrets.md", "REPORT.html", "releases.json", "RELEASES.md",
                          *[d.replace("-audit.md", "-report.html") for d in dated]}
             self.assertEqual(committed, run_wrote)
             self.assertIn("?? notes.md", git(cfg.out, "status", "--porcelain"))

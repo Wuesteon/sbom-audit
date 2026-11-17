@@ -58,9 +58,16 @@ def _syft_excludes(ignore: list[str]) -> list[str]:
     return out
 
 
-def scan_branch(cfg: Config, project: Project, branch: str) -> BranchInventory:
-    ref, sha, behind = gitio.branch_ref(project.path, branch)
-    inv = BranchInventory(project=project.name, branch=branch, ref=ref, commit=sha, behind=behind)
+def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None = None) -> BranchInventory:
+    """SBOM and inventory of one branch, or of one release tag when `release` (from `gitio.list_tags`
+    plus `order` and `index`) is given; `branch` is then the label `tags/<tag>`."""
+    if release is not None:
+        ref, sha, behind = release["ref"], release["commit"], 0
+        meta = {k: release[k] for k in ("tag", "date", "order", "index") if k in release}
+    else:
+        ref, sha, behind = gitio.branch_ref(project.path, branch)
+        meta = None
+    inv = BranchInventory(project=project.name, branch=branch, ref=ref, commit=sha, behind=behind, release=meta)
     purl = config.project_purl(project)
     with tempfile.TemporaryDirectory(prefix="sbom-audit-") as tmp:
         src = Path(tmp) / "src"
@@ -83,7 +90,8 @@ def scan_branch(cfg: Config, project: Project, branch: str) -> BranchInventory:
             extra.append(runtime)
     extra = _dedupe(extra)
 
-    subject_ref = cyclonedx.set_subject(bom, project.name, purl, f"{branch}@{sha[:12]}")
+    version = release["tag"] if release is not None else branch   # a release SBOM names its version
+    subject_ref = cyclonedx.set_subject(bom, project.name, purl, f"{version}@{sha[:12]}")
     cyclonedx.drop_components(
         bom,
         lambda e: (syft.ECOSYSTEM_BY_PURL_TYPE.get(syft.purl_type(e.get("purl", "")),
@@ -161,7 +169,6 @@ def scan(cfg: Config, only: list[str] | None = None, fetch: bool | None = None,
         if not branches:
             result.skipped.append({"project": project.name,
                                    "reason": f"none of {cfg.branches} exist"})
-            continue
         for branch in branches:
             say(f"{project.name}@{branch} …")
             try:
@@ -173,8 +180,38 @@ def scan(cfg: Config, only: list[str] | None = None, fetch: bool | None = None,
                 inv.errors.append(f"fetch: {fetch_error}")
             result.inventories.append(inv)
             say(f"  {len(inv.components)} components" + (f", errors: {inv.errors}" if inv.errors else ""))
+        if project.releases is not None:
+            result.inventories += scan_releases(cfg, project, say)
     write_inventory(cfg, result)
     return result
+
+
+def scan_releases(cfg: Config, project: Project, say) -> list[BranchInventory]:
+    """One inventory per kept release tag (the newest `keep` matching `tags`), oldest first."""
+    from . import releases
+    opts = project.releases
+    try:
+        tags = gitio.list_tags(project.path, opts.tags)
+    except gitio.GitError as exc:
+        say(f"{project.name}: listing tags failed ({exc})")
+        return [BranchInventory(project=project.name, branch=releases.label(opts.tags), ref=opts.tags, commit="",
+                                errors=[f"git: listing tags: {exc}"], release={"tag": opts.tags, "index": 0})]
+    chosen, order = releases.select(tags, opts.keep, opts.tags)
+    say(f"{project.name}: {len(tags)} tags match {opts.tags!r}; keeping {len(chosen)}, ordered by {order}")
+    invs = []
+    for index, tag in enumerate(chosen):
+        branch = releases.label(tag["tag"])
+        say(f"{project.name}@{branch} …")
+        meta = {**tag, "order": order, "index": index}
+        try:
+            inv = scan_branch(cfg, project, branch, release=meta)
+        except gitio.GitError as exc:
+            inv = BranchInventory(project=project.name, branch=branch, ref=tag["ref"], commit=tag["commit"],
+                                  errors=[f"git: {exc}"],
+                                  release={k: meta[k] for k in ("tag", "date", "order", "index")})
+        invs.append(inv)
+        say(f"  {len(inv.components)} components" + (f", errors: {inv.errors}" if inv.errors else ""))
+    return invs
 
 
 def cli(args) -> int:

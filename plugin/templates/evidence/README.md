@@ -18,6 +18,7 @@ security/
 ├── INVENTORY.md / inventory.json
 ├── status.json / STATUS.md  # summary of the last run: counts, exit code, host, visibility
 ├── issues.json / ISSUES.md  # work list: every open issue and where it occurs, most urgent first
+├── releases.json / RELEASES.md  # releases under audit (only with [releases]): support, open counts, fixed
 ├── secrets.json / SECRETS.md  # secrets scan results, counts and fingerprints only, never values
 ├── HOSTS.md / hosts.json    # server audit (only with [hosts]); IPs, ports and user names inside
 ├── CRA.md / cra.json        # CRA readiness per product (only with [cra.products]); evidence, not a verdict
@@ -26,6 +27,7 @@ security/
 ├── hosts-decisions.toml     # accepted host findings
 ├── hosts/                   # baseline/<host>.json, known_hosts, bootstrap/<host>.json
 ├── sbom/<project>/<branch>.cdx.json   # CycloneDX, one per project and branch
+├── sbom/<project>/tags__<tag>.cdx.json  # one per release tag under audit (only with [releases])
 ├── vex/<project>.openvex.json         # OpenVEX 0.2.0 decisions
 ├── reports/<date>-audit.md  # dated copy of every run
 ├── log.md                   # append-only: one line per run, secrets scan and host action
@@ -34,7 +36,7 @@ security/
 
 Only the `## Assessment` sections of `AUDIT.md` are edited by hand. Record decisions with
 `/sbom-audit:vex`, `/sbom-audit:secrets resolve` and `/sbom-audit:hosts accept`; do not edit
-`status.json`, `issues.json`, `ISSUES.md`, `secrets.json`, `SECRETS.md`, `HOSTS.md`, `hosts/` or `sbom/`.
+`status.json`, `issues.json`, `ISSUES.md`, `releases.json`, `RELEASES.md`, `secrets.json`, `SECRETS.md`, `HOSTS.md`, `hosts/` or `sbom/`.
 
 ## What leaves the machine
 

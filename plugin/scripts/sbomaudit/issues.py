@@ -20,7 +20,7 @@ from pathlib import Path
 from . import __version__
 from .cache import atomic_write
 from .cvss import SEV_ORDER
-from .report import ACTIONABLE, JSON_FILE as AUDIT_JSON, md, worst_advisory
+from .report import ACTIONABLE, JSON_FILE as AUDIT_JSON, counts_as_production, md, worst_advisory
 from .versions import ver_key
 
 ISSUES_JSON = "issues.json"
@@ -80,21 +80,27 @@ def _vulnerabilities(rep: dict) -> list[dict]:
             dev_only = all(l.get("scope") == "optional" for l in locs)
             direct = any(l.get("direct") for l in locs)
             in_production = project in production
+            # a supported release ranks like production (out-of-support releases are not in audit.json)
+            ranked = any(counts_as_production(l, production) for l in locs)
             if v.get("kev"):
                 priority, reason = 2, "kev"
-            elif v.get("max_severity") in ACTIONABLE and in_production and not dev_only:
+            elif v.get("max_severity") in ACTIONABLE and ranked:
                 priority, reason = 3, "critical_high_production"
             else:
                 priority, reason = 6, "other"
             version = v.get("version") or "unresolved"
+            where = {"project": project, "branches": sorted({l["branch"] for l in locs}),
+                     "path": manifest, "line": None}
+            tags = sorted({l["release"] for l in locs if l.get("release")})
+            if tags:                         # only with release scanning: the release tags holding it
+                where["releases"] = tags
             issues.append({
                 "id": f"vuln:{project}:{manifest}:{v['ecosystem']}:{v['name']}@{version}",
                 "kind": "vulnerability", "priority": priority, "reason": reason,
                 "severity": v.get("max_severity"), "production": in_production,
                 "title": f"{v['name']} {version}: {len(advisories)} advisories, worst {v.get('max_severity')}"
                          + (" (KEV, actively exploited)" if v.get("kev") else ""),
-                "where": {"project": project, "branches": sorted({l["branch"] for l in locs}),
-                          "path": manifest, "line": None},
+                "where": where,
                 "details": {"ecosystem": v["ecosystem"], "package": v["name"], "version": v.get("version"),
                             "direct": direct, "dev_only": dev_only, "kev": bool(v.get("kev")),
                             "worst": _worst(advisories),
@@ -137,16 +143,22 @@ def _eol(rep: dict) -> list[dict]:
         if r.get("status") != "EOL":
             continue
         places: dict[tuple[str, str], set[str]] = {}
+        tags: dict[tuple[str, str], set[str]] = {}
         for loc in r.get("locations") or []:
             places.setdefault((loc["project"], loc.get("source") or ""), set()).add(loc["branch"])
+            if loc.get("release"):
+                tags.setdefault((loc["project"], loc.get("source") or ""), set()).add(loc["release"])
         for (project, source), branches in sorted(places.items()):
+            where = {"project": project, "branches": sorted(branches),
+                     "path": source.split(":", 1)[0] or None, "line": None}
+            if tags.get((project, source)):
+                where["releases"] = sorted(tags[(project, source)])
             issues.append({
                 "id": f"eol:{project}:{r['product']}@{r['cycle']}:{source}",
                 "kind": "eol", "priority": 4, "reason": "eol", "severity": "EOL",
                 "production": project in production,
                 "title": f"{r['product']} {r['cycle']} is past end of life ({r.get('eol_date') or 'date unknown'})",
-                "where": {"project": project, "branches": sorted(branches),
-                          "path": source.split(":", 1)[0] or None, "line": None},
+                "where": where,
                 "details": {"product": r["product"], "cycle": r["cycle"], "eol_date": r.get("eol_date"),
                             "latest_in_cycle": r.get("latest"), "source": source},
                 "fix": {"action": "upgrade_runtime", "target": None,
@@ -299,8 +311,8 @@ def render_md(doc: dict) -> str:
          "the machine-readable list is `issues.json`. Never edit either by hand. Suppressed, decided, accepted and "
          "informational findings are not listed.", "",
          f"{counts['total']} open: " + (", ".join(f"{n} {k}" for k, n in counts["by_kind"].items()) or "nothing") + ".",
-         "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production, class B "
-         "secret · 4 end of life · 5 floating tag · 6 other.", ""]
+         "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production or a supported "
+         "release, class B secret · 4 end of life · 5 floating tag · 6 other.", ""]
     if doc.get("incomplete"):
         L += ["**Incomplete:** these sources failed, so their part of the list may be missing issues:", ""]
         L += [f"- {md(s.get('source'))}: {md(s.get('detail'))}" for s in doc["incomplete"]] + [""]

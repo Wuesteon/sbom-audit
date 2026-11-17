@@ -22,6 +22,7 @@ into `security/` unless a command below says otherwise. Required tools: `git`, `
 | Full run | `run` (`--only <project>`, `--no-fetch`); takes minutes, run it in the background | reports in `security/`, a commit there when `commit = true` |
 | Summary of the last run | `status` | nothing |
 | Open work list | `issues --project <p> --max-priority 3 --json` | nothing with a filter or `--json` |
+| Releases under audit, fixed vs previous | `releases --project <p> [--fixed <tag>] [--json]` (needs `[releases]`) | nothing |
 | Who uses X | `lookup <name>` (globs `'expo-*'`, images `nginx:alpine`, runtimes `nodejs`) | nothing |
 | Are we affected | `incident <CVE-…\|GHSA-…\|PYSEC-…>` | nothing (`--vex` writes, see rules) |
 | Record a decision | `vex add <project> <vuln-id> <status> [--justification …] --impact "…"` | `security/vex/<project>.openvex.json` |
