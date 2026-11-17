@@ -135,6 +135,17 @@ class CriticalTest(ReportCase):
         self.assertIn("`login:root@2026-11-08T10:12:03Z/SHA256:abc`", critical)
         self.assertIn("`lynis-index:58`", critical)
 
+    def test_login_key_finding_explains_the_rule_and_what_accepting_covers(self):
+        key = f("login:deploy/SHA256:newkey", "login", True, "deploy logged in 30 times ...", kind="key")
+        routine = f("login:deploy/SHA256:oldkey", "login", False, kind="key")
+        text = self.render(document({"box-a": entry([key, routine])}))
+        critical = text[text.index("### Critical"):text.index("### Logins")]
+        self.assertIn("covers this user's later logins with this key", critical)
+        logins_part = text[text.index("### Logins"):]
+        self.assertIn(report.LOGIN_RULE, logins_part)
+        self.assertLess(logins_part.index(report.LOGIN_RULE), logins_part.index("`login:deploy/SHA256:oldkey`"))
+        self.assertNotIn(report.LOGIN_RULE, self.render(document({"box-a": entry()})))
+
     def test_kev_accept_hint_names_review_by(self):
         text = self.render(document({"box-a": entry(GROUPS)}))
         critical = text[text.index("### Critical"):text.index("### Failed checks")]

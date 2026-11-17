@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..cache import atomic_write
+from .logins import EVENT_ID
 
 HOSTS_JSON = "hosts.json"
 HOSTS_MD = "HOSTS.md"
@@ -240,6 +241,16 @@ def _apply_to_baseline(baseline: dict, host_doc: dict, change_id: str) -> None:
         _dict_at(baseline, "lynis")["index"] = index
 
 
+def _known_key_login(host_doc: dict, change_id: str) -> bool:
+    """`login:<user>/<fp>` for a key that is in the host's current `authorized_keys` for that user: a user-and-key
+    login decision may be recorded before that key has logged in (a new CI deploy key), never for a key the
+    host does not have."""
+    if not change_id.startswith("login:") or EVENT_ID.match(change_id):
+        return False
+    keys = (host_doc.get("fingerprint") or {}).get("authorized_keys")
+    return isinstance(keys, dict) and change_id[len("login:"):] in keys
+
+
 def accept(out: Path, host: str, change_id: str, note: str, review_by: str | None, today: dt.date) -> list[Path]:
     """Validate and record the acceptance of one finding; returns the written paths."""
     reason = _refusal(change_id)
@@ -247,7 +258,8 @@ def accept(out: Path, host: str, change_id: str, note: str, review_by: str | Non
         raise ValueError(reason)
     doc = read(out) or {}
     host_doc = (doc.get("hosts") or {}).get(host)
-    if not isinstance(host_doc, dict) or change_id not in {f.get("id") for f in host_doc.get("findings") or []}:
+    if not isinstance(host_doc, dict) or (change_id not in {f.get("id") for f in host_doc.get("findings") or []}
+                                          and not _known_key_login(host_doc, change_id)):
         raise ValueError(f"unknown change-id {change_id!r} (run hosts check first)")
     if change_id.startswith("kev:"):
         if review_by is None:
