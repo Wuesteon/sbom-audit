@@ -1,4 +1,4 @@
-<!-- sbom-audit-template v4 -->
+<!-- sbom-audit-template v5 -->
 # Evidence folder (written by sbom-audit)
 
 This folder is the output of the [sbom-audit](https://github.com/Wuesteon/sbom-audit) plugin: the
@@ -14,12 +14,13 @@ meant to be committed and kept as evidence. Read this file before you change any
 | `INVENTORY.md` / `inventory.json` | Every package, image and runtime on the audited branches | the plugin |
 | `status.json` / `STATUS.md` | Machine- and human-readable summary of the last run | the plugin |
 | `issues.json` / `ISSUES.md` | The work list: every open issue with a stable id, priority, where it occurs (project or host, branches, file, line) and the fix target. Derived from the reports; nothing suppressed, decided or accepted is in it | the plugin |
+| `releases.json` / `RELEASES.md` | Releases under audit (only with `[releases]`): support period, open KEV/critical/high, runtimes reaching EOL inside the support period, advisories no longer present compared with the previous release. Read it with `releases --project <name> [--fixed <tag>]` | the plugin |
 | `secrets.json` / `SECRETS.md` | Secrets scan results: counts and fingerprints only, never values | the plugin |
 | `HOSTS.md` / `hosts.json` | Server audit (only with `[hosts]`): critical findings, KEV, patch automation, logins, fingerprint changes, Lynis. Contains IP addresses, ports and user names | the plugin |
 | `hosts/` | `baseline/<host>.json` (the accepted state), `known_hosts` (pinned host keys), `bootstrap/<host>.json` (bootstrap records) | the plugin |
 | `secrets-decisions.toml` | Decisions per secrets finding (revoked, false positive, accepted) | `/sbom-audit:secrets resolve` |
 | `hosts-decisions.toml` | Accepted host findings with date, note and review date | `/sbom-audit:hosts accept` |
-| `sbom/<project>/<branch>.cdx.json` | CycloneDX SBOM per project and branch | the plugin |
+| `sbom/<project>/<branch>.cdx.json` | CycloneDX SBOM per project and branch; `tags__<tag>.cdx.json` per release tag under audit | the plugin |
 | `vex/<project>.openvex.json` | OpenVEX decisions (why a finding does not affect the product) | `/sbom-audit:vex` |
 | `reports/<date>-audit.md` | Dated copy of every run | the plugin |
 | `log.md` | Append-only: one line per run, secrets scan and host action | the plugin |
@@ -29,7 +30,7 @@ meant to be committed and kept as evidence. Read this file before you change any
 
 - The only hand-edited parts of `AUDIT.md` are the `## Assessment` sections. They are carried over
   from run to run. Everything else in the file is regenerated.
-- Never edit `status.json`, `issues.json`, `ISSUES.md`, `secrets.json`, `SECRETS.md`, `hosts.json`, `HOSTS.md`, anything under `hosts/` or anything under `sbom/` by hand. The next run
+- Never edit `status.json`, `issues.json`, `ISSUES.md`, `releases.json`, `RELEASES.md`, `secrets.json`, `SECRETS.md`, `hosts.json`, `HOSTS.md`, anything under `hosts/` or anything under `sbom/` by hand. The next run
   overwrites them, and an edited SBOM is no longer evidence.
 - To fix things, read `issues.json`: it lists only what is open, most urgent first, one issue per line.
   For one project: `python3 <plugin root>/scripts/sbom_audit_cli.py issues --project <name> --json`

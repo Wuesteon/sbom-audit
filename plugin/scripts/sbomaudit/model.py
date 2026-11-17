@@ -37,10 +37,14 @@ class BranchInventory:
     components: list[Component] = field(default_factory=list)
     sbom_path: str = ""
     errors: list[str] = field(default_factory=list)
+    # a release tag instead of a branch: {"tag", "date", "order"}; `branch` is then "tags/<tag>"
+    release: dict | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["components"] = [c.to_dict() for c in self.components]
+        if d["release"] is None:            # a branch: the inventory.json entry stays as before
+            del d["release"]
         return d
 
     @classmethod

@@ -9,6 +9,7 @@ import subprocess
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -26,10 +27,21 @@ _ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
 @dataclass
+class ReleasesOpts:
+    """Release scanning for one project: tags matching `tags` (a glob), the newest `keep` of them, and the
+    support period of each release (`support_months` from its date and/or an explicit `support_until`)."""
+    tags: str
+    keep: int = 3
+    support_months: int | None = None
+    support_until: date | None = None
+
+
+@dataclass
 class ProjectOpts:
     production: bool = False
     ignore: list[str] = field(default_factory=list)
     github: str | None = None  # "owner/repo"
+    releases: ReleasesOpts | bool | None = None  # None: the portfolio [releases] default; False: off
 
 
 @dataclass
@@ -120,6 +132,7 @@ class Config:
     hosts: HostsOpts = field(default_factory=HostsOpts)
     assess: AssessProvider = field(default_factory=AssessProvider)
     report: ReportOpts = field(default_factory=ReportOpts)
+    releases: ReleasesOpts | None = None  # [releases]: the portfolio default, off when absent
 
 
 @dataclass
@@ -129,6 +142,7 @@ class Project:
     remote: str | None = None
     production: bool = False
     ignore: list[str] = field(default_factory=list)
+    releases: ReleasesOpts | None = None
 
 
 def detect_mode(out: Path) -> str:
@@ -299,6 +313,70 @@ def _report(data) -> ReportOpts:
                       language=language)
 
 
+RELEASES_KEYS = ("tags", "keep", "support_months", "support_until")
+
+
+def _release_keys(data, where: str) -> dict:
+    """The release keys of one table, checked; an unknown key is refused (a typo must not go unnoticed)."""
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where} must be a table")
+    unknown = sorted(set(data) - set(RELEASES_KEYS))
+    if unknown:
+        raise ConfigError(f"{where}: unknown key {unknown[0]} (known: {', '.join(RELEASES_KEYS)})")
+    keys: dict = {}
+    if "tags" in data:
+        keys["tags"] = _str(data["tags"], f"{where} tags").strip()
+    if "keep" in data:
+        keys["keep"] = _int(data["keep"], f"{where} keep")
+    if "support_months" in data:
+        keys["support_months"] = _int(data["support_months"], f"{where} support_months")
+    if "support_until" in data:
+        value = data["support_until"]
+        if isinstance(value, str):
+            try:
+                value = date.fromisoformat(value.strip())
+            except ValueError:
+                raise ConfigError(f"{where} support_until must be a date YYYY-MM-DD") from None
+        if not isinstance(value, date) or hasattr(value, "hour"):
+            raise ConfigError(f"{where} support_until must be a date YYYY-MM-DD")
+        keys["support_until"] = value
+    return keys
+
+
+def _releases_default(data) -> ReleasesOpts | None:
+    keys = _release_keys(data, "[releases]")
+    if not keys:
+        return None
+    if "tags" not in keys:
+        raise ConfigError('[releases] tags is required (a glob such as "v*")')
+    return ReleasesOpts(**keys)
+
+
+def _project_releases(value, default: ReleasesOpts | None, where: str) -> ReleasesOpts | bool | None:
+    """`releases = false` turns release scanning off for the project; a table overrides the portfolio
+    default key by key."""
+    if value is None or value is True:
+        if value is True and default is None:
+            raise ConfigError(f"{where} releases = true needs a [releases] table with tags")
+        return None
+    if value is False:
+        return False
+    keys = _release_keys(value, f"{where} releases")
+    merged = {**(vars(default) if default else {}), **keys}
+    if "tags" not in merged:
+        raise ConfigError(f"{where} releases needs tags (here or in [releases])")
+    return ReleasesOpts(**merged)
+
+
+def release_opts(cfg: Config, name: str) -> ReleasesOpts | None:
+    """The release scanning options of project `name`, or None when release scanning is off for it."""
+    opts = cfg.projects.get(name)
+    value = opts.releases if opts is not None else None
+    if value is None:
+        return cfg.releases
+    return value or None
+
+
 def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = None) -> Config:
     """Read `<out>/sbom-audit.toml`; `SBOM_AUDIT_GIT_PROTOCOL` in `env` (default `os.environ`) overrides
     `[discovery] protocol` and the `ASSESS_ENV` variables override their `[assess]` keys. ConfigError for a
@@ -316,10 +394,12 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
     else:
         root = out.parent
         mode = detect_mode(out)
+    releases = _releases_default(data.get("releases", {}))
     projects = {
         name: ProjectOpts(production=_bool(opts.get("production", False), f'[projects."{name}"] production'),
                           ignore=list(opts.get("ignore", [])),
-                          github=opts.get("github"))
+                          github=opts.get("github"),
+                          releases=_project_releases(opts.get("releases"), releases, f'[projects."{name}"]'))
         for name, opts in (data.get("projects") or {}).items()
     }
     discovery = data.get("discovery") or {}
@@ -349,6 +429,7 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
         hosts=_hosts(data.get("hosts", {})),
         assess=_assess(data.get("assess", {}), env, out),
         report=_report(data.get("report", {})),
+        releases=releases,
     )
 
 
@@ -362,7 +443,8 @@ def remote_url(repo: Path) -> str | None:
 def _project(cfg: Config, path: Path) -> Project:
     opts = cfg.projects.get(path.name, ProjectOpts())
     return Project(name=path.name, path=path, remote=remote_url(path),
-                   production=opts.production, ignore=list(opts.ignore))
+                   production=opts.production, ignore=list(opts.ignore),
+                   releases=release_opts(cfg, path.name))
 
 
 _SLUG_PART_RE = re.compile(r"[A-Za-z0-9._-]+")
@@ -431,7 +513,8 @@ def _cloned_github_projects(cfg: Config) -> list[Project]:
             continue
         opts = cfg.projects[name]
         found.append(Project(name=name, path=path, remote=remote_url(path),
-                             production=opts.production, ignore=list(opts.ignore)))
+                             production=opts.production, ignore=list(opts.ignore),
+                             releases=release_opts(cfg, name)))
     return found
 
 
@@ -497,6 +580,15 @@ def write_default(out: Path, cfg: Config, discovered: list[Project] | None = Non
         "# [report]",
         '# organisation = "..."',
         '# language = "en"',
+        "",
+        "# Release scanning (off until tags is set): one SBOM and audit per release tag for the newest `keep`",
+        "# tags, and each release's support period (months from its date and/or an end date; both: the later).",
+        '# Per project: releases = { tags = "app-v*", support_months = 24 } overrides key by key; false = off.',
+        "# [releases]",
+        '# tags = "v*"',
+        "# keep = 3",
+        "# support_months = 60",
+        "# support_until = 2031-12-31",
         "",
         "# Per-project options: production = true puts CRITICAL/HIGH findings first;",
         "# ignore = [\"path/\"] drops subtrees from the inventory.",

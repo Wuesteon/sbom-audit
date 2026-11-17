@@ -110,11 +110,25 @@ def _sources(sources: dict | None) -> dict:
     return out
 
 
-def _vulnerabilities(findings: list[Finding]) -> list[dict]:
+def out_of_support(releases: dict | None, project: str, branch: str) -> bool:
+    """True for a release past its support period: listed in releases.json, not counted as open work."""
+    info = (releases or {}).get((project, branch))
+    return bool(info) and not info.get("supported", True)
+
+
+def counts_as_production(loc: dict, production: set[str]) -> bool:
+    """A location ranked like production: runtime scope in a production project or in a supported release
+    (a release location in `audit.json` carries `release`; out-of-support ones are not in it)."""
+    return loc.get("scope") != "optional" and (loc["project"] in production or bool(loc.get("release")))
+
+
+def _vulnerabilities(findings: list[Finding], releases: dict | None = None) -> list[dict]:
     groups: dict[tuple, dict] = {}
     scopes: dict[tuple, set] = defaultdict(set)
     ids: dict[tuple, dict] = defaultdict(dict)
     for f in findings:
+        if out_of_support(releases, f.project, f.branch):
+            continue
         c = f.component
         key = (c.ecosystem, c.name, c.version)
         g = groups.get(key)
@@ -124,6 +138,8 @@ def _vulnerabilities(findings: list[Finding]) -> list[dict]:
         scopes[key].add(c.scope)
         loc = {"project": f.project, "branch": f.branch, "manifest": _manifest(c),
                "direct": bool(c.direct), "scope": c.scope}
+        if (f.project, f.branch) in (releases or {}):
+            loc["release"] = releases[(f.project, f.branch)]["tag"]
         if loc not in g["locations"]:
             g["locations"].append(loc)
         if c.direct:
@@ -152,14 +168,19 @@ def _vulnerabilities(findings: list[Finding]) -> list[dict]:
     return rows
 
 
-def _runtimes(eol_rows: list[dict]) -> list[dict]:
+def _runtimes(eol_rows: list[dict], releases: dict | None = None) -> list[dict]:
     groups: dict[tuple, dict] = {}
     for r in eol_rows:
+        if out_of_support(releases, r["project"], r["branch"]):
+            continue
         key = (r["product"], r.get("cycle", ""))
         g = groups.setdefault(key, {"product": r["product"], "cycle": r.get("cycle", ""),
                                     "status": r.get("status", "unknown"), "eol_date": r.get("eol_date"),
                                     "latest": r.get("latest"), "locations": []})
-        g["locations"].append({"project": r["project"], "branch": r["branch"], "source": r.get("source", "")})
+        loc = {"project": r["project"], "branch": r["branch"], "source": r.get("source", "")}
+        if (r["project"], r["branch"]) in (releases or {}):
+            loc["release"] = releases[(r["project"], r["branch"])]["tag"]
+        g["locations"].append(loc)
     rows = list(groups.values())
     for g in rows:
         g["locations"].sort(key=lambda l: (l["project"], l["branch"]))
@@ -170,6 +191,8 @@ def _runtimes(eol_rows: list[dict]) -> list[dict]:
 def _unpinned_images(inventories: list[BranchInventory]) -> list[dict]:
     rows = []
     for inv in inventories:
+        if inv.release:                      # a release is frozen: the tag is pinned on the branches
+            continue
         for c in inv.components:
             if c.kind == "image" and c.props.get("floating"):
                 rows.append({"project": inv.project, "branch": inv.branch, "image": c.props.get("image") or c.name,
@@ -201,23 +224,28 @@ def _notes(inventories: list[BranchInventory]) -> list[str]:
 
 
 def build(cfg: Config, inventories: list[BranchInventory], findings: list[Finding],
-          suppressed: list[Suppressed], eol: list[dict], outdated: list[dict], sources: dict | None) -> dict:
-    """Everything the writers need, JSON-serialisable (this is `audit.json`)."""
+          suppressed: list[Suppressed], eol: list[dict], outdated: list[dict], sources: dict | None,
+          releases: dict | None = None) -> dict:
+    """Everything the writers need, JSON-serialisable (this is `audit.json`).
+
+    `releases` is `releases.context()`: (project, branch) -> release info for every release inventory.
+    Locations in a supported release carry `release: <tag>`; out-of-support releases are left out of
+    `vulnerabilities` and `runtimes` (they are listed in `releases` and in `releases.json`)."""
     packages = [c for inv in inventories for c in inv.components if c.kind == "package"]
     stats = {
         "projects": len({i.project for i in inventories}),
-        "branches": len(inventories),
+        "branches": sum(1 for i in inventories if not i.release),
         "unique_package_versions": len({(c.ecosystem, c.name, c.version) for c in packages}),
         "occurrences": len(packages),
         "direct_dependencies": sum(1 for c in packages if c.direct),
         "images": sum(1 for inv in inventories for c in inv.components if c.kind == "image"),
         "runtimes": sum(1 for inv in inventories for c in inv.components if c.kind == "runtime"),
     }
-    return {
+    rep = {
         "generated_at": _now(),
         "sources": _sources(sources),
-        "vulnerabilities": _vulnerabilities(findings),
-        "runtimes": _runtimes(eol),
+        "vulnerabilities": _vulnerabilities(findings, releases),
+        "runtimes": _runtimes(eol, releases),
         "outdated": [dict(o) for o in outdated],
         "unpinned_images": _unpinned_images(inventories),
         "suppressed": [s.to_dict() if isinstance(s, Suppressed) else dict(s) for s in suppressed],
@@ -225,6 +253,12 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "stats": stats,
         "production_projects": sorted(name for name, opts in cfg.projects.items() if opts.production),
     }
+    if releases:                             # only with release scanning: audit.json is unchanged without it
+        stats["releases"] = len(releases)
+        rep["releases"] = [{"project": p, "branch": b, "tag": r["tag"], "date": r.get("date"),
+                            "supported": r["supported"], "support_until": r["support_until"]}
+                           for (p, b), r in sorted(releases.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1]))]
+    return rep
 
 
 def write_json(rep: dict, out: Path) -> Path:
@@ -267,17 +301,21 @@ def _summary(rep: dict) -> list[str]:
     production = set(rep.get("production_projects", []))
     by_sev = Counter(v["max_severity"] for v in vulns)
     prod_rows = [v for v in vulns if _actionable(v)
-                 and any(l["project"] in production and l.get("scope") != "optional" for l in v["locations"])]
+                 and any(counts_as_production(l, production) for l in v["locations"])]
     dev_only = [v for v in vulns if v["scope"] == "optional"]
+    scanned = f"{st['projects']} / {st['branches']}"
+    if st.get("releases"):
+        scanned += f" (+ {st['releases']} release{'' if st['releases'] == 1 else 's'})"
     rows: list[tuple[str, object]] = [
-        ("Projects / branches scanned", f"{st['projects']} / {st['branches']}"),
+        ("Projects / branches scanned", scanned),
         ("Unique package versions checked", st["unique_package_versions"]),
         ("Vulnerable package versions", len(vulns)),
         ("… in CISA KEV (actively exploited)", sum(1 for v in vulns if v["kev"])),
     ]
     rows += [(f"… max severity {s}", by_sev[s]) for s in SEVERITY_ROWS if by_sev.get(s)]
     rows += [
-        ("CRITICAL/HIGH in production projects (excluding dev-only)", len(prod_rows)),
+        ("CRITICAL/HIGH in production projects" + (" or supported releases" if st.get("releases") else "")
+         + " (excluding dev-only)", len(prod_rows)),
         ("Dev-only vulnerable package versions", len(dev_only)),
         ("Vulnerable direct dependencies", sum(1 for v in vulns if v["direct_anywhere"])),
         ("Runtimes / images past end-of-life", sum(1 for r in rep["runtimes"] if r["status"] == "EOL")),
@@ -290,7 +328,7 @@ def _summary(rep: dict) -> list[str]:
     L = ["## Summary", "", "| Metric | Count |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in rows]
     L.append("")
-    if not production:
+    if not production and not st.get("releases"):
         L += ["_No project is marked `production = true` in `sbom-audit.toml`, so the production row counts nothing; "
               "mark the projects that serve traffic or hold keys._", ""]
     L += ["MEDIUM, LOW and UNKNOWN advisories are not listed below; they are in `audit.json` under `vulnerabilities`.", ""]
@@ -439,6 +477,25 @@ def _suppressed_section(suppressed: list[dict]) -> list[str]:
     return L + [""]
 
 
+def _releases_section(releases: list[dict]) -> list[str]:
+    """Short list of the releases under audit; details (counts, fixed advisories) are in RELEASES.md."""
+    if not releases:
+        return []
+    L = ["## Releases under audit", "",
+         "Release tags scanned like branches (location `tags/<tag>`). Findings in a supported release rank like "
+         "production; out-of-support releases are left out of the sections above. Per-release counts and "
+         "advisories fixed since the previous release: `RELEASES.md` / `releases.json`.", ""]
+    for r in releases:
+        if not r.get("support_until"):
+            state = "supported (no period configured)"
+        elif r["supported"]:
+            state = f"supported until {r['support_until']}"
+        else:
+            state = f"out of support since {r['support_until']}"
+        L.append(f"- {r['project']} `{md(r['tag'])}` ({(r.get('date') or '?')[:10]}): {state}")
+    return L + [""]
+
+
 def _notes_section(notes: list[str]) -> list[str]:
     L = ["## Notes", ""]
     if not notes:
@@ -471,6 +528,7 @@ def write_audit_md(rep: dict, out: Path) -> Path:
     L += _outdated_section(rep["outdated"])
     L += _dev_only_section(rep["vulnerabilities"])
     L += _suppressed_section(rep["suppressed"])
+    L += _releases_section(rep.get("releases") or [])
     L += _notes_section(rep["notes"])
     text = "\n".join(L) + "\n"
     path = out / AUDIT_FILE
@@ -649,8 +707,29 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
     return L
 
 
+def _inventory_releases(releases: list[BranchInventory]) -> list[str]:
+    """One line per release under audit; its components are in its own SBOM (not repeated here)."""
+    if not releases:
+        return []
+    L = ["## Releases", "",
+         "Release tags under audit, one SBOM each (`sbom/<project>/tags__<tag>.cdx.json`). Support status and fixed "
+         "advisories: `RELEASES.md`.", "",
+         "| Project | Tag | Commit | Tag date | Packages | Images | Runtime pins | SBOM |", "|---|---|---|---|---|---|---|---|"]
+    for inv in sorted(releases, key=lambda i: (i.project.lower(), -int(i.release.get("index", 0)))):
+        pkgs = sum(1 for c in inv.components if c.kind == "package")
+        imgs = sum(1 for c in inv.components if c.kind == "image")
+        rts = sum(1 for c in inv.components if c.kind == "runtime")
+        sbom = f"`{inv.sbom_path}`" if inv.sbom_path else "–"
+        L.append(f"| {md(inv.project)} | `{md(inv.release.get('tag', inv.branch))}` | {inv.commit[:7] or '–'} | "
+                 f"{(inv.release.get('date') or '?')[:10]} | {pkgs} | {imgs} | {rts} | {sbom} |")
+        for err in inv.errors:
+            L.append(f"| | | | | | | | error: {md(err)} |")
+    return L + [""]
+
+
 def write_inventory_md(cfg: Config, inventories: list[BranchInventory], out: Path) -> Path:
-    invs = sorted(inventories, key=lambda i: (i.project.lower(), i.branch))
+    releases = [i for i in inventories if i.release]
+    invs = sorted((i for i in inventories if not i.release), key=lambda i: (i.project.lower(), i.branch))
     branches = ", ".join(f"`{b}`" for b in cfg.branches)
     L = ["# Inventory", "",
          f"Generated {_now()} from `{cfg.root}` ({cfg.mode} mode, branches {branches}). Components come from the "
@@ -669,6 +748,7 @@ def write_inventory_md(cfg: Config, inventories: list[BranchInventory], out: Pat
         by_project[inv.project].append(inv)
     for project, group in by_project.items():
         L += _inventory_project(cfg, project, group)
+    L += _inventory_releases(releases)
     path = Path(out) / INVENTORY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(L) + "\n", encoding="utf-8")

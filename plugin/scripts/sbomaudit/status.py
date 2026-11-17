@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .cache import atomic_write
-from .report import ACTIONABLE, _actionable, _sev_label, md
+from .report import ACTIONABLE, _actionable, _sev_label, counts_as_production, md
 
 STATUS_FILE = "STATUS.md"
 STATUS_JSON = "status.json"
@@ -123,7 +123,8 @@ def oldest_text(scan: dict) -> str:
 
 
 def _in_production(v: dict, production: set) -> bool:
-    return any(l["project"] in production and l.get("scope") != "optional" for l in v.get("locations", []))
+    """Runtime scope in a production project or in a supported release (`report.counts_as_production`)."""
+    return any(counts_as_production(l, production) for l in v.get("locations", []))
 
 
 def _hosts_counts(hosts: dict | None) -> dict | None:
@@ -168,13 +169,17 @@ def _counts(rep: dict, now_open: dict, secrets: dict | None, hosts: dict | None 
     open_secrets = _open_secrets(secrets)
     production = set(rep.get("production_projects", []))
     vulns = rep.get("vulnerabilities", [])
-    return {"projects": stats.get("projects", 0), "branches": stats.get("branches", 0),
-            "vulnerable": len(vulns), "kev": sum(1 for v in vulns if v.get("kev")),
-            "critical_high_production": sum(1 for v in vulns if _actionable(v) and _in_production(v, production)),
-            "eol": len(now_open["eol"]), "floating_tags": len(rep.get("unpinned_images", [])),
-            "suppressed": len(rep.get("suppressed", [])),
-            "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
-            "hosts": _hosts_counts(hosts)}
+    counts = {"projects": stats.get("projects", 0), "branches": stats.get("branches", 0),
+              "vulnerable": len(vulns), "kev": sum(1 for v in vulns if v.get("kev")),
+              "critical_high_production": sum(1 for v in vulns if _actionable(v) and _in_production(v, production)),
+              "eol": len(now_open["eol"]), "floating_tags": len(rep.get("unpinned_images", [])),
+              "suppressed": len(rep.get("suppressed", [])),
+              "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
+              "hosts": _hosts_counts(hosts)}
+    if rep.get("releases"):                  # only with release scanning
+        counts["releases"] = {"scanned": len(rep["releases"]),
+                              "supported": sum(1 for r in rep["releases"] if r.get("supported"))}
+    return counts
 
 
 def build(rep: dict, *, secrets: dict | None, previous: dict | None, duration_s: float,
@@ -420,6 +425,10 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
     L += [f"Counts: {n['vulnerable']} vulnerable package versions, {n['kev']} KEV, "
           f"{n['critical_high_production']} CRITICAL/HIGH in production, {n['eol']} EOL, "
           f"{n['floating_tags']} floating tags, {n['suppressed']} suppressed by VEX.", ""]
+    if n.get("releases"):
+        r = n["releases"]
+        L[-2] = L[-2][:-1] + (f"; {r['scanned']} releases under audit, {r['supported']} supported "
+                               "(their CRITICAL/HIGH count as production; details in `RELEASES.md`).")
     L += _delta_lines(status) + ["", "## Secrets", ""] + _secrets_lines(status) + _hosts_lines(status) + ["", "## Sources", ""]
     listed = [f"- {md(f['source'])}: FAILED: {md(f['detail'])}" for f in status["failed_sources"]]
     scan = status["secrets_scan"]

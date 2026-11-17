@@ -8,6 +8,7 @@ mapping, what leaves your machine and the known limitations. For installation an
 
 - [The loop: setup → run → incident → vex](#the-loop-setup--run--incident--vex)
 - [The work list: `issues.json`](#the-work-list-issuesjson)
+- [Releases: an SBOM per released version](#releases-an-sbom-per-released-version)
 - [Scheduler](#scheduler)
 - [Assessment drafts without Claude Code: `assess draft`](#assessment-drafts-without-claude-code-assess-draft)
 - [Secrets](#secrets)
@@ -69,6 +70,9 @@ github = "owner/repo"                 # when the remote does not name the GitHub
 [projects."docs-site"]
 ignore = ["build/"]
 ```
+
+Release scanning (`[releases]`, off by default) is described in
+[Releases](#releases-an-sbom-per-released-version).
 
 **2. Run.** `/sbom-audit:run` builds one CycloneDX SBOM per project and branch with Syft,
 runs osv-scanner against them, marks CISA KEV entries, queries endoflife.date for every
@@ -143,7 +147,7 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
 - `kind`: `vulnerability` (one per project, manifest and package version), `secret` (file, line and
   fingerprint, never the value), `eol`, `floating_tag`, `host`.
 - `priority`: 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production
-  project and class B secrets · 4 end of life · 5 floating tag · 6 everything else.
+  project or a supported release, and class B secrets · 4 end of life · 5 floating tag · 6 everything else.
 - `fix.action`: `upgrade`, `no_fix_released`, `rotate`, `upgrade_runtime`, `pin`, `apt_upgrade`,
   `reboot`, `no_fix_installable`, `review`.
 - Only open issues: findings suppressed by a VEX statement, decided secrets, accepted host findings and
@@ -170,6 +174,90 @@ summary, and the full texts stay in `audit.json`.
 `hosts accept` do the same, and `secrets resolve` also updates the secrets counts in `status.json`, so
 the session line stops counting a finding the moment it is decided. A `vex` decision takes effect
 with the next `run` or `audit`, like in `AUDIT.md`.
+
+## Releases: an SBOM per released version
+
+Branches show what you are building; a manufacturer also answers for what it shipped. With
+`[releases]`, every run also scans the newest release tags of a project, each through the same
+pipeline as a branch: its own SBOM, OSV, CISA KEV, endoflife.date and VEX.
+
+```toml
+[releases]                    # portfolio default; absent = off, nothing changes
+tags = "v*"                   # glob over local tag names (required)
+keep = 3                      # the newest N matching tags are audited
+support_months = 60           # support period: months from each release's tag date ...
+support_until = 2031-12-31    # ... and/or an end date; with both, the later one counts
+
+[projects."shop-web"]
+releases = { tags = "shop-v*", keep = 5 }   # overrides key by key
+[projects."docs-site"]
+releases = false                            # off for this project
+```
+
+`releases = true` on a project needs a `[releases]` table; a project table without `tags` inherits it
+from `[releases]`. Unknown keys are refused.
+
+- **Which tags.** Local tags only, read from git objects (`git for-each-ref refs/tags`); the normal
+  `git fetch` brings tags along, nothing extra is fetched or checked out. A tag that points at a tree
+  or a blob is skipped. When every matching tag, with the pattern's literal prefix removed, reads as a
+  version (`1.2.3`, `2.0.0-rc.1`), they are ordered by version (a pre-release before its release);
+  otherwise by tag date (the tagger date of an annotated tag, else the commit date). The run log names
+  the order used, and so do `releases.json` (`order`) and `RELEASES.md`.
+- **Where the results go.** The SBOM is `sbom/<project>/tags__<tag>.cdx.json` (its version is the
+  tag). In `inventory.json`, `audit.json` and `issues.json` a release appears with branch
+  `tags/<tag>`; an `audit.json` location in a release carries `release: <tag>` and an issue lists its
+  tags under `where.releases`. `INVENTORY.md` lists releases in their own table, `AUDIT.md` has a
+  "Releases under audit" section, `STATUS.md` counts them and `REPORT.html` (en, de) shows them under
+  coverage. The outdated-dependency and floating-tag checks run on branches only.
+- **Support period.** A release is supported until `support_months` after its tag date or
+  `support_until`, whichever is later; with neither, it counts as supported and `support_until` is
+  null. Findings in a supported release rank like production (priority 3 for CRITICAL/HIGH). A
+  release past its support period is listed in `releases.json`, `RELEASES.md` and `AUDIT.md`, but its
+  findings are not in `audit.json`, `issues.json` or the exit code. A runtime or base image whose
+  endoflife.date end of life falls before the end of the support period is listed under
+  `eol_before_support_end`.
+- **Remediation evidence.** For each release, `fixed_since_previous` lists the advisories that matched
+  a package in the SBOM of the previous kept release and match none in the SBOM of this one, with
+  `first_seen` (the earliest kept release of the unbroken run that held it;
+  `first_seen_is_oldest_kept` means it may be older) and `days` between the two tag dates. Both SBOMs
+  are matched against today's OSV data, before VEX. This proves "no longer present in the SBOM of
+  release X" and nothing more: not that the code path was reachable, not when the advisory was
+  published. When either scan was incomplete, `fixed_since_previous_unknown` is true and the list is
+  empty.
+
+```bash
+python3 plugin/scripts/sbom_audit_cli.py releases                                          # every project
+python3 plugin/scripts/sbom_audit_cli.py releases --project shop-web --fixed shop-v2.4.0   # fixed vs the previous release
+python3 plugin/scripts/sbom_audit_cli.py releases --project shop-web --json
+```
+
+`releases` reads `releases.json` and writes nothing. Exit 1: the project or tag is not under audit;
+2: no `releases.json` yet, or `--fixed` cannot compare because a scan was incomplete.
+
+**`releases.json`** is written by every `run` and `audit`, also without `[releases]` (then `projects`
+is empty). A project without release scanning is absent from `projects`. The shape is stable: fields
+may be added, never renamed or removed. Releases are listed newest first.
+
+```json
+{"schema": 1, "generated": "2026-11-18T09:00:00+01:00", "plugin_version": "…",
+ "projects": {"shop-web": {
+   "support": {"period_months": 60, "until": null},
+   "tags": "shop-v*", "keep": 3, "order": "version",
+   "releases": [
+     {"tag": "shop-v2.4.0", "commit": "<sha>", "date": "2026-10-01T12:00:00+02:00",
+      "supported": true, "support_until": "2031-10-01",
+      "sbom": "sbom/shop-web/tags__shop-v2.4.0.cdx.json",
+      "open": {"kev": 0, "critical": 1, "high": 2},
+      "eol_before_support_end": ["nodejs 20 (EOL 2026-04-30)"],
+      "fixed_since_previous": [{"id": "GHSA-…", "package": "lodash", "ecosystem": "npm",
+                                "versions_before": ["4.17.20"], "versions_after": ["4.17.21"],
+                                "first_seen": "shop-v2.2.0", "first_seen_date": "…",
+                                "first_seen_is_oldest_kept": false, "days": 184}],
+      "previous": "shop-v2.3.0", "branch": "tags/shop-v2.4.0", "complete": true}]}}}
+```
+
+`open` counts package versions with an open (not VEX-suppressed) advisory, runtime scope only, by
+their worst advisory; `kev` counts those with an actively exploited one.
 
 ## Scheduler
 
@@ -418,7 +506,9 @@ security/
 ├── HOSTS.md / hosts.json              # server audit (when [hosts] is enabled); contains IPs, ports, user names
 ├── hosts-decisions.toml               # accepted host findings
 ├── hosts/                             # baseline/<host>.json, known_hosts, bootstrap/<host>.json
+├── RELEASES.md / releases.json        # releases under audit (with [releases]): support, open counts, fixed
 ├── sbom/<project>/<branch>.cdx.json   # CycloneDX, one per project and branch
+├── sbom/<project>/tags__<tag>.cdx.json  # CycloneDX, one per release tag under audit
 ├── vex/<project>.openvex.json         # OpenVEX 0.2.0 decisions
 ├── reports/<date>-audit.md            # dated copy of every run (and assessment proposals)
 ├── reports/<date>-report.html         # dated copy of REPORT.html
@@ -432,6 +522,7 @@ security/
 | `ISSUES.md`, `issues.json` | every `run`, `issues`, and after `secrets resolve`, `hosts check`, `hosts accept` | no; derived from the reports |
 | `REPORT.html`, `reports/<date>-report.html` | every `run`, `report` | no; derived from the JSON |
 | `AUDIT.md`, `audit.json`, `INVENTORY.md`, `inventory.json` | `run` | only the `## Assessment` sections of `AUDIT.md` |
+| `RELEASES.md`, `releases.json` | `run`, `audit` | no; read with `releases` |
 | `SECRETS.md`, `secrets.json` | `run`, `secrets scan` | no |
 | `secrets-decisions.toml` | `secrets resolve` | through `/sbom-audit:secrets resolve` |
 | `HOSTS.md`, `hosts.json`, `hosts/` | `run`, `hosts check`, `hosts bootstrap` | no |
@@ -472,6 +563,7 @@ product is in scope or compliant.
 | `vex/<project>.openvex.json`, `secrets-decisions.toml` | Art. 13(1) and Annex I Part II: documented vulnerability handling decisions — which finding was assessed, by whom, with which justification |
 | `log.md`, `reports/`, the git history of `security/` | Art. 13(1): the evidence trail for the technical documentation — when the audit ran, what it found, what was decided |
 | `INVENTORY.md`, endoflife.date section | Support period (Art. 13(8)): which runtimes and images are past or near end of life during the product's support period |
+| SBOM per released version: `sbom/<project>/tags__<tag>.cdx.json`, `releases.json` (with `[releases]`) | Annex I Part II (1) for each version you placed on the market; Annex VII point 2(b) (the SBOM as part of the vulnerability handling described in the technical documentation) and point 8 (the SBOM to a market surveillance authority on reasoned request); Art. 13(8) (vulnerabilities handled for the support period: `support_until`, open counts, `eol_before_support_end`); Art. 13(13) (technical documentation kept at least 10 years after placing on the market or for the support period, whichever is longer: the history of `security/` keeps each release's SBOM, retention itself is yours to organise) |
 
 ## Privacy: what leaves your machine
 
@@ -520,5 +612,10 @@ advisory ids and package names.
   directly and is not affected.
 - Host mode covers Debian and Ubuntu servers with apt only; other distributions are reported as unsupported. A Lynis run takes several minutes per host, so a check of many servers takes a while (hosts run in parallel, 4 by default). Hosts reached only through ProxyJump or ProxyCommand are not supported. `patch` installs only the confirmed list and may refuse an upgrade that needs a new package (see [Hosts](#hosts)).
 - The scheduler covers macOS and Linux; elsewhere use the GitHub Actions template.
+- Release scanning reads local tags only, and only the newest `keep` of them; a release outside that
+  window is no longer audited. "Fixed since previous" compares two SBOMs with today's OSV data, so it
+  is evidence of absence from the SBOM, not of a code fix or of the date a vulnerability was handled;
+  `days` runs between tag dates. The support period is what you configure; the plugin does not
+  determine it.
 - Findings never inflate the counts: dev-only occurrences are labelled and listed apart,
   a failed source leaves its section empty and is named under **Source status**.

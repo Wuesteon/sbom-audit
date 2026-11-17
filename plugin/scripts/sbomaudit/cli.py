@@ -9,7 +9,7 @@ from . import __version__, config
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
-            "assess", "report")
+            "assess", "report", "releases")
 WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report")
 EXIT_READ_ONLY = 5
 SECRETS_STATUSES = ("open", "rotated", "false_positive", "test_fixture", "accepted")  # = secrets.store.STATUSES
@@ -78,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
     vex_p = sub.add_parser("vex", parents=[common], help="record an OpenVEX decision")
     add_vex_args(vex_p, common)
     sub.add_parser("status", parents=[common], help="print STATUS.md from the last run (writes nothing)")
+    rel_p = sub.add_parser("releases", parents=[common],
+                           help="releases under audit from releases.json: support status, open counts, and with "
+                                "--fixed the advisories no longer present compared with the previous release "
+                                "(writes nothing)")
+    rel_p.add_argument("--project", default=None, help="only this project")
+    rel_p.add_argument("--fixed", default=None, metavar="TAG",
+                       help="with --project: advisories no longer present in the SBOM of TAG compared with the "
+                            "previous release under audit")
+    rel_p.add_argument("--json", action="store_true", help="print JSON instead of text")
     issues_p = sub.add_parser("issues", parents=[common],
                               help="rebuild issues.json and ISSUES.md (every open issue and where it occurs); "
                                    "with a filter or --json, print the selected issues and write nothing")
@@ -260,6 +269,11 @@ def _issues(args) -> int:
     return issues.cli(args)
 
 
+def _releases(args) -> int:
+    from . import releases
+    return releases.cli(args)
+
+
 def _report(args) -> int:
     from . import management
     return management.cli(args)
@@ -339,7 +353,8 @@ def main(argv: list[str] | None = None) -> int:
 HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run": _run,
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
-                               "code": _code, "settings": _settings, "assess": _assess, "report": _report}
+                               "code": _code, "settings": _settings, "assess": _assess, "report": _report,
+                               "releases": _releases}
 
 
 if __name__ == "__main__":

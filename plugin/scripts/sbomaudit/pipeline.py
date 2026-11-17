@@ -17,7 +17,8 @@ import socket
 import time
 from pathlib import Path
 
-from . import assess, config, enrich, evidence, issues, matching, preflight, report, scan, scheduler, status, vex
+from . import (assess, config, enrich, evidence, issues, matching, preflight, releases, report, scan, scheduler,
+               status, vex)
 from .cache import Cache
 from .config import Config, Project
 from .errors import VexError
@@ -176,18 +177,23 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
                             "unknown": sum(1 for r in eol_rows if r["status"] == "unknown"),
                             "failed": eol_failed}
     say("registries …")
-    direct = {(c.ecosystem, c.name) for inv in inventories for c in inv.components
+    branch_invs = [inv for inv in inventories if not inv.release]   # a release is frozen: no "latest" drift
+    direct = {(c.ecosystem, c.name) for inv in branch_invs for c in inv.components
               if c.kind == "package" and c.direct and c.ecosystem in enrich.LATEST_ECOSYSTEMS and c.version}
-    latest_rows, latest_failed = enrich.latest(inventories, cache, http)
+    latest_rows, latest_failed = enrich.latest(branch_invs, cache, http)
     sources["registries"] = {"queried": len(direct), "major_behind": len(latest_rows), "failed": latest_failed}
 
     kept, suppressed = vex.apply(findings, statements, purl_of=purl_of(cfg, inventories))
     sources["openvex"] = {"statements": len(statements), "suppressed": len(suppressed)}
 
-    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources)
+    release_ctx = releases.context(cfg, inventories)
+    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx)
+    rel_doc = releases.build(cfg, inventories, findings, kept, eol_rows, sources)
     written = [report.write_json(rep, cfg.out),
                report.write_inventory_md(cfg, inventories, cfg.out),
                report.write_audit_md(rep, cfg.out),
+               releases.write_json(rel_doc, cfg.out),
+               releases.write_md(rel_doc, cfg.out),
                report.write_dated_copy(cfg.out),
                report.append_log(cfg.out, rep, inventories)]
     return rep, written
@@ -211,7 +217,8 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
     kev = sum(1 for v in vulns if v["kev"])
     crit_high = sum(1 for v in vulns if v["max_severity"] in ("CRITICAL", "HIGH"))
     eol = sum(1 for r in rep["runtimes"] if r["status"] == "EOL")
-    return (f"{s['projects']} projects, {s['branches']} branches: {len(vulns)} vulnerable package versions "
+    rel = f", {s['releases']} releases" if s.get("releases") else ""
+    return (f"{s['projects']} projects, {s['branches']} branches{rel}: {len(vulns)} vulnerable package versions "
             f"({kev} KEV, {crit_high} critical/high), {eol} EOL runtimes/images, "
             f"{len(rep['suppressed'])} suppressed by VEX — {cfg.out / report.AUDIT_FILE} "
             f"({time.monotonic() - started:.1f}s)")

@@ -1,6 +1,6 @@
 # Dependency Audit — 2026-11-07
 
-Generated 2026-11-07T03:00:00Z by sbom-audit 1.0.0. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
+Generated 2026-11-07T03:00:00Z by sbom-audit 1.2.1. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
 
 ## Source status
 

@@ -5,6 +5,7 @@ Nothing here checks anything out. The only write to an audited repo is
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -109,6 +110,32 @@ def branch_ref(repo: Path, branch: str) -> tuple[str, str, int]:
             ref = f"origin/{branch}"
     sha = git(repo, "rev-parse", ref).strip()
     return ref, sha, behind
+
+
+def list_tags(repo: Path, pattern: str) -> list[dict]:
+    """Local tags whose name matches the glob `pattern` and that point (peeled) at a commit.
+
+    Each entry: `{"tag", "ref" ("refs/tags/<tag>"), "commit" (full sha), "date"}` where `date` is the
+    annotated tag's tagger date, else the commit's committer date (git's `creatordate`), ISO 8601.
+    Reads refs only; nothing is fetched or checked out."""
+    fmt = "%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(creatordate:iso-strict)"
+    tags = []
+    for line in git(repo, "for-each-ref", f"--format={fmt}", "refs/tags").splitlines():
+        parts = line.split("\0")
+        if len(parts) != 6:
+            continue
+        ref, otype, oid, ptype, pid, date = parts
+        name = ref[len("refs/tags/"):]
+        if not fnmatch.fnmatchcase(name, pattern):
+            continue
+        if otype == "commit":
+            commit = oid
+        elif otype == "tag" and ptype == "commit":
+            commit = pid
+        else:                                   # a tag of a tree or blob, or a tag of a tag: not a release
+            continue
+        tags.append({"tag": name, "ref": ref, "commit": commit, "date": date})
+    return tags
 
 
 def export_ref(repo: Path, ref: str, dest: Path) -> None:
