@@ -288,7 +288,8 @@ class StoreTests(unittest.TestCase):
         expected = hashlib.sha256(engine.RULES_PATH.read_bytes() + classify.CLASSES_PATH.read_bytes()).hexdigest()[:16]
         self.assertTrue(st.rules_hash() == expected and len(expected) == 16, "rules hash")
         self.assertTrue(st.plugin_minor() == ".".join(__version__.split(".")[:2]), "derived from __version__")
-        self.assertTrue(("reopened_from", "rotated_on") == findings.FIELDS[-2:], "new finding fields come last")
+        self.assertTrue(("reopened_from", "rotated_on", "base_class", "context") == findings.FIELDS[-4:],
+                        "new finding fields come last")
 
     def test_atomic_write_is_the_shared_pid_named_one(self):
         self.assertIs(st.atomic_write, cache.atomic_write)

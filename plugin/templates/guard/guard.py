@@ -198,7 +198,48 @@ def classify(rule_id: str, secret: str, classes: Classes, file: str = ""):
         cls = "C" if _STRIPE_TEST.match(secret) else "A"
     elif rule_id == "gcp-api-key" and "firebase" in file.lower():
         cls = "C"
+    elif value_context(rule_id, secret):
+        cls = "C"
     return cls, provider
+
+
+# Value shape (duplicate of sbomaudit.secrets.classify.value_context): a match that holds no credential is
+# class C. The path context of the package (tests, docs, ...) is not applied here: a real key staged into a
+# test file is still blocked.
+PLACEHOLDER_RULES = ("generic-api-key", "curl-auth-header", "curl-auth-user")
+_PEM_HEADER = re.compile(r"-----BEGIN[ A-Z0-9_-]{0,100}-----")
+_PEM_FOOTER = re.compile(r"-----END[ A-Z0-9_-]{0,100}-----")
+_KEY_RUN = re.compile(r"[A-Za-z0-9+/=]{40,}")
+_KEY_MARK = re.compile(r"[0-9+/]")
+_VARREF = re.compile(r"(?:\$\{[A-Za-z_][A-Za-z0-9_.-]*\}|\$[A-Z_][A-Z0-9_]*|\{\{[^{}]{1,80}\}\}|%[A-Z_][A-Z0-9_]*%):?")
+_WORDS = re.compile(r"[A-Za-z]+(?:[._-][A-Za-z]+)*")
+_DOTTED = re.compile(r"(?:[a-z][a-z0-9_-]*|[A-Z][A-Za-z]*)(?:\.(?:[a-z][a-z0-9_-]*|[A-Z][A-Za-z]*)){2,}=?")
+_VERSION = re.compile(r"v?\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z.]+)*(?:\+[0-9A-Za-z.]+)?")
+_ADVISORY = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-\d+(?:-\d+)*")
+
+
+def has_key_body(secret: str) -> bool:
+    body = secret.replace("\\n", "\n").replace("\\r", "\n")
+    head = _PEM_HEADER.search(body)
+    if head is not None:
+        body = body[head.end():]
+    foot = _PEM_FOOTER.search(body)
+    if foot is not None:
+        body = body[:foot.start()]
+    return any(_KEY_MARK.search(run) for run in _KEY_RUN.findall(body))
+
+
+def value_context(rule_id: str, secret: str):
+    if rule_id == "private-key":
+        return None if has_key_body(secret) else "no-key-body"
+    if rule_id not in PLACEHOLDER_RULES:
+        return None
+    value = secret.strip().strip("\"'`").strip()
+    if _VARREF.fullmatch(value):
+        return "placeholder"
+    if rule_id == "generic-api-key" and any(p.fullmatch(value) for p in (_WORDS, _DOTTED, _VERSION, _ADVISORY)):
+        return "not-a-credential"
+    return None
 
 
 # --- engine ---------------------------------------------------------------------------------------------

@@ -63,7 +63,12 @@ class Schedule:
 
 @dataclass
 class SecretsOpts:
+    """`[secrets]`. `rank_by_context` ranks findings in tests, fixtures, examples, docs, vendored code, data
+    files and dev setups one class lower (never drops them); `context` adds path patterns per label to the
+    defaults in classes.toml, and its `deployable` list names paths that are never context."""
     enabled: bool = True
+    rank_by_context: bool = True
+    context: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -158,6 +163,25 @@ def detect_mode(out: Path) -> str:
 def read_only() -> bool:
     """`SBOM_AUDIT_READ_ONLY=1` makes every writing subcommand exit without writing."""
     return os.environ.get("SBOM_AUDIT_READ_ONLY") == "1"
+
+
+def _secrets(source) -> SecretsOpts:
+    if not isinstance(source, dict):
+        raise ConfigError("[secrets] must be a table")
+    context = source.get("context") or {}
+    if not isinstance(context, dict):
+        raise ConfigError("[secrets.context] must be a table of label = [path patterns]")
+    patterns: dict[str, tuple[str, ...]] = {}
+    for label, items in context.items():
+        where = f"[secrets.context] {label}"
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", str(label)):
+            raise ConfigError(f"{where}: a label is lower-case letters, digits and '-'")
+        if not isinstance(items, list) or not all(isinstance(i, str) and i.strip() for i in items):
+            raise ConfigError(f"{where} must be a list of path patterns such as \"qa/\" or \"*_mock.go\"")
+        patterns[label] = tuple(i.strip() for i in items)
+    return SecretsOpts(enabled=_bool(source.get("enabled", True), "[secrets] enabled"),
+                       rank_by_context=_bool(source.get("rank_by_context", True), "[secrets] rank_by_context"),
+                       context=patterns)
 
 
 def _bool(value, key: str) -> bool:
@@ -434,7 +458,7 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
         schedule=Schedule(assess=_bool(schedule.get("assess", False), "[schedule] assess"),
                           assess_budget_usd=_float(schedule.get("assess_budget_usd", 5.0),
                                                    "[schedule] assess_budget_usd", positive=True)),
-        secrets=SecretsOpts(enabled=_bool(secrets.get("enabled", True), "[secrets] enabled")),
+        secrets=_secrets(secrets),
         hosts=_hosts(data.get("hosts", {})),
         assess=_assess(data.get("assess", {}), env, out),
         report=_report(data.get("report", {})),
@@ -635,6 +659,14 @@ def write_default(out: Path, cfg: Config, discovered: list[Project] | None = Non
         "# Secret scanning (gitleaks).",
         "# [secrets]",
         "# enabled = true",
+        "# Findings in tests, fixtures, examples, docs, vendored code, data files and dev setups rank one class",
+        "# lower (labelled, counted, never dropped). Patterns per label add to the defaults in classes.toml:",
+        '# "dir/" matches that directory anywhere in the path, anything else the file name (glob). `deployable`',
+        "# lists paths that are never context. rank_by_context = false turns the ranking off.",
+        "# rank_by_context = true",
+        "# [secrets.context]",
+        '# test = ["qa/"]',
+        '# deployable = ["deploy/examples/"]',
         "",
         "# Management report (REPORT.html): organisation name on the cover, language en or de.",
         "# [report]",

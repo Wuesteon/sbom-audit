@@ -205,7 +205,8 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
   fingerprint, never the value), `eol`, `floating_tag`, `host`.
 - `priority`: 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production
   project or a supported release (reason `critical_high_production`), an advisory there that is not
-  rated (`unrated_production`), and class B secrets · 4 end of life · 5 floating tag · 6 everything else.
+  rated (`unrated_production`), and class B secrets · 4 end of life, and secrets ranked lower by their
+  path context (`secret_context`, see [Secrets](#secrets)) · 5 floating tag · 6 everything else.
 - `fix.action`: `upgrade`, `no_fix_released`, `rotate`, `upgrade_runtime`, `pin`, `apt_upgrade`,
   `reboot`, `no_fix_installable`, `review`.
 - Only open issues: findings suppressed by a VEX statement, decided secrets, accepted host findings and
@@ -467,6 +468,48 @@ every finding in one of three classes:
   else; ranks above KEV.
 - **B** costs money or data (paid API keys, write tokens).
 - **C** is public by design (publishable keys) or a test value.
+
+**Context.** The class comes from the rule, refined by the value and by where it is. Nothing is
+dropped: every finding keeps a class, a `context` label and its `base_class` (the class before
+the path context), and the totals per class still add up to every finding.
+
+- *Value shape* (also in the pre-commit guard). A `private-key` match is class C
+  (`no-key-body`) unless there is key material between the BEGIN and END lines: a run of 40 or
+  more base64 characters holding a digit, `+` or `/` (`\n` escapes in a string literal count
+  as line breaks). Header text in a comment or an assertion is not a key. A `generic-api-key`,
+  `curl-auth-header` or `curl-auth-user` value that only names a variable (`${API_KEY}`,
+  `$TOKEN`, `{{ key }}`) is class C (`placeholder`), and a `generic-api-key` value that is
+  words without a digit, a dotted name (`org.example.Type`), a version (`v1.2.3`, a Go
+  pseudo-version) or an advisory id (`ABC-JS-FOO-123`) is class C (`not-a-credential`). Every
+  other shape keeps its class: a hex string, a UUID or a mixed-case string can be a key.
+- *Path context* (`[context]` in `classes.toml`). A finding in a test, a fixture, an example,
+  docs, vendored code, a data file or a dev setup is ranked one class lower (A to B, B to C)
+  and labelled `test`, `fixture`, `example`, `docs`, `vendored`, `data` or `dev`, unless the
+  same value is also found in a file without context. Defaults include `src/test/`, `test/`,
+  `tests/`, `__tests__/`, `spec/`, `*_test.go`, `test_*.py`, `*.test.*`, `*Test.java`,
+  `testdata/`, `fixtures/`, `examples/`, `*.example`, `docs/`, `vendor/`, `_vendor/`,
+  `node_modules/`, `*.min.js`, `license-list-data/`, `*.csv`, `dev/`, `.devcontainer/` and
+  `docker-compose.dev.yml`; the full list is in `classes.toml`. A pattern ending in `/` matches
+  that directory anywhere in the path, one with another `/` the whole path, anything else the
+  file name. Markdown files, `README.md`, `.env*` files, `build/`, `dist/` and CI files are
+  never context: a key in a manual or a bundle is still a leak.
+
+```toml
+[secrets]
+rank_by_context = true             # false: every finding keeps its base class (labels stay)
+[secrets.context]                  # added to the defaults per label; new labels are allowed
+test = ["qa/"]
+deployable = ["deploy/examples/"]  # never context, whatever else matches
+```
+
+A changed `classes.toml` triggers a full rescan; a changed `[secrets.context]` applies on the
+next `run`. In `SECRETS.md` a ranked finding says its context and "if the value is real,
+rotate", a count line sums them by label, and open class C findings with a context are listed
+under *Ranked lower by context*. In `issues.json` a class B finding ranked lower by its path
+is priority 4 (`secret_context`), never production, with the fix `review`: check whether the
+value is real, then rotate it or record `test_fixture` or `false_positive`. Fingerprints do not
+change, so existing decisions keep matching. History is scanned as before: a value removed
+from the working tree is still a finding.
 
 No value is ever stored, printed, logged or committed: findings carry a fingerprint, file,
 line, branches, whether the value is still in the working tree, its age and a keyed

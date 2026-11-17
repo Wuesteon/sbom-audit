@@ -25,7 +25,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py" secrets scan [--root R
 - `secrets scan [--root R] [--full]`: scans new commits since the last scan (`--full`: all history), writes `secrets.json` and `SECRETS.md`. `run` already does the incremental scan.
 - `secrets report`: prints `SECRETS.md` from `secrets.json`; writes nothing.
 
-Exit 0 = nothing open in class A or B, 1 = open class A or B, 2 = failed, 4 = no engine (`brew install gitleaks`; the scan is `skipped`, never "clean"), 5 = read-only mode. Classes: A owns the platform (rotate before anything else, ranks above KEV), B costs money or data, C is public by design or a test value.
+Exit 0 = nothing open in class A or B, 1 = open class A or B, 2 = failed, 4 = no engine (`brew install gitleaks`; the scan is `skipped`, never "clean"), 5 = read-only mode. Classes: A owns the platform (rotate before anything else, ranks above KEV), B costs money or data, C is public by design or a test value. A finding in tests, fixtures, examples, docs, vendored code, data files or a dev setup is ranked one class lower and labelled (`context` in `secrets.json`, a context line in `SECRETS.md`); a `private-key` match without key material, a variable reference or a name/version is class C. Nothing is dropped: check a ranked finding like any other (a test file can hold a real key), then rotate it or record `test_fixture`/`false_positive`. Rules: `classes.toml` `[context]`, overrides in `[secrets.context]` of `sbom-audit.toml`.
 
 ## Resolve: confirm one list, then write
 

@@ -27,6 +27,14 @@ push = false
 # Secret scanning (gitleaks).
 # [secrets]
 # enabled = true
+# Findings in tests, fixtures, examples, docs, vendored code, data files and dev setups rank one class
+# lower (labelled, counted, never dropped). Patterns per label add to the defaults in classes.toml:
+# "dir/" matches that directory anywhere in the path, anything else the file name (glob). `deployable`
+# lists paths that are never context. rank_by_context = false turns the ranking off.
+# rank_by_context = true
+# [secrets.context]
+# test = ["qa/"]
+# deployable = ["deploy/examples/"]
 
 # Management report (REPORT.html): organisation name on the cover, language en or de.
 # [report]
