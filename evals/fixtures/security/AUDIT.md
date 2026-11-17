@@ -20,6 +20,8 @@ A failed source means its section below is empty, not clean.
 | … in CISA KEV (actively exploited) | 0 |
 | … max severity HIGH | 1 |
 | CRITICAL/HIGH in production projects (excluding dev-only) | 1 |
+| Severity not rated in production (excluding dev-only, KEV) | 0 |
+| Packages with version not resolved, not checked for vulnerabilities | 0 |
 | Dev-only vulnerable package versions | 0 |
 | Vulnerable direct dependencies | 1 |
 | Runtimes / images past end-of-life | 0 |
@@ -28,7 +30,7 @@ A failed source means its section below is empty, not clean.
 | Direct deps ≥1 major behind latest | 0 |
 | Suppressed by VEX | 0 |
 
-MEDIUM, LOW and UNKNOWN advisories are not listed below; they are in `audit.json` under `vulnerabilities`.
+MEDIUM and LOW advisories are not listed below, nor not-rated ones outside production; they are in `audit.json` under `vulnerabilities`.
 
 ## 🔴 Actively exploited (CISA KEV)
 

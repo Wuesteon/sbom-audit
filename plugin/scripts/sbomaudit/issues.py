@@ -6,8 +6,9 @@ the kind, the triage priority, the place (project or host, branches, file, line)
 Suppressed (VEX), decided (secrets), accepted (hosts) and informational findings are left out.
 
 Priorities follow the assessment's triage order:
-1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production project (not dev-only)
-and class B secrets · 4 end-of-life runtimes and images · 5 floating image tags · 6 everything else.
+1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production project (not dev-only),
+an advisory with no severity ("not rated", reason `unrated_production`) in the same scope, and class B secrets ·
+4 end-of-life runtimes and images · 5 floating image tags · 6 everything else.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from . import __version__
 from .cache import atomic_write
+from .coverage import severity_text, unrated_advisories
 from .cvss import SEV_ORDER
 from .report import ACTIONABLE, JSON_FILE as AUDIT_JSON, counts_as_production, md, worst_advisory
 from .versions import ver_key
@@ -28,7 +30,8 @@ ISSUES_FILE = "ISSUES.md"
 SCHEMA = 1
 MD_BRANCHES = 3                                  # ISSUES.md names this many branches; issues.json has all
 KINDS = ("secret", "vulnerability", "eol", "floating_tag", "host")
-PRIORITY_REASONS = {1: ("secret_a",), 2: ("kev", "host_critical"), 3: ("critical_high_production", "secret_b"),
+PRIORITY_REASONS = {1: ("secret_a",), 2: ("kev", "host_critical"),
+                    3: ("critical_high_production", "unrated_production", "secret_b"),
                     4: ("eol",), 5: ("floating_tag",), 6: ("other",)}
 # host finding groups a fixer can act on; logins, Lynis suggestions and `info` are not work items
 HOST_GROUPS = ("change", "patch", "permissive", "lynis_warning", "lynis_index", "third_party")
@@ -86,6 +89,8 @@ def _vulnerabilities(rep: dict) -> list[dict]:
                 priority, reason = 2, "kev"
             elif v.get("max_severity") in ACTIONABLE and ranked:
                 priority, reason = 3, "critical_high_production"
+            elif ranked and unrated_advisories(v):   # not rated is not low: read it before the MEDIUMs
+                priority, reason = 3, "unrated_production"
             else:
                 priority, reason = 6, "other"
             version = v.get("version") or "unresolved"
@@ -98,10 +103,13 @@ def _vulnerabilities(rep: dict) -> list[dict]:
                 "id": f"vuln:{project}:{manifest}:{v['ecosystem']}:{v['name']}@{version}",
                 "kind": "vulnerability", "priority": priority, "reason": reason,
                 "severity": v.get("max_severity"), "production": in_production,
-                "title": f"{v['name']} {version}: {len(advisories)} advisories, worst {v.get('max_severity')}"
+                "title": f"{v['name']} {version}: {len(advisories)} advisories, worst {severity_text(v.get('max_severity'))}"
+                         + (f", {n} not rated" if (n := len(unrated_advisories(v))) and v.get("max_severity") != "UNKNOWN"
+                            else "")
                          + (" (KEV, actively exploited)" if v.get("kev") else ""),
                 "where": where,
-                "details": {"ecosystem": v["ecosystem"], "package": v["name"], "version": v.get("version"),
+                "details": {"ecosystem": v["ecosystem"], "package": v.get("package") or v["name"],
+                            "version": v.get("version"),
                             "direct": direct, "dev_only": dev_only, "kev": bool(v.get("kev")),
                             "worst": _worst(advisories),
                             "advisories": [_advisory(a) for a in advisories]},
@@ -341,7 +349,7 @@ def render_md(doc: dict) -> str:
          "informational findings are not listed.", "",
          f"{counts['total']} open: " + (", ".join(f"{n} {k}" for k, n in counts["by_kind"].items()) or "nothing") + ".",
          "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production or a supported "
-         "release, class B secret · 4 end of life · 5 floating tag · 6 other.", ""]
+         "release or not rated there, class B secret · 4 end of life · 5 floating tag · 6 other.", ""]
     split = dependency_split(doc["issues"])
     if split["total"]:
         L += [f"Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "

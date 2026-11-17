@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .cache import atomic_write
-from .report import ACTIONABLE, _actionable, _sev_label, counts_as_production, md
+from .report import ACTIONABLE, _actionable, _sev_label, counts_as_production, md, unrated_in_production
 
 STATUS_FILE = "STATUS.md"
 STATUS_JSON = "status.json"
@@ -222,6 +222,8 @@ def _counts(rep: dict, now_open: dict, secrets: dict | None, hosts: dict | None 
     counts = {"projects": stats.get("projects", 0), "branches": stats.get("branches", 0),
               "vulnerable": len(vulns), "kev": sum(1 for v in vulns if v.get("kev")),
               "critical_high_production": sum(1 for v in vulns if _actionable(v) and _in_production(v, production)),
+              "unrated_production": sum(1 for v in vulns if unrated_in_production(v, production)),
+              "unresolved_versions": stats.get("unresolved_versions", 0),
               "eol": len(now_open["eol"]), "floating_tags": len(rep.get("unpinned_images", [])),
               "suppressed": len(rep.get("suppressed", [])),
               "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
@@ -486,6 +488,13 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
     L += [f"Counts: {n['vulnerable']} vulnerable package versions, {n['kev']} KEV, "
           f"{n['critical_high_production']} CRITICAL/HIGH in production, {n['eol']} EOL, "
           f"{n['floating_tags']} floating tags, {n['suppressed']} suppressed by VEX.", ""]
+    gaps = []                                # coverage gaps; absent in a status.json written before they existed
+    if n.get("unrated_production"):
+        gaps.append(f"{n['unrated_production']} with severity not rated in production")
+    if n.get("unresolved_versions"):
+        gaps.append(f"{n['unresolved_versions']} packages with version not resolved, not checked for vulnerabilities")
+    if gaps:
+        L[-2] = L[-2][:-1] + "; " + ", ".join(gaps) + "."
     if n.get("releases"):
         r = n["releases"]
         L[-2] = L[-2][:-1] + (f"; {r['scanned']} releases under audit, {r['supported']} supported "

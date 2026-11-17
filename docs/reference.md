@@ -92,11 +92,49 @@ versions from OSV, checks every project and branch from the last scan and prints
 verdict per project: `hit` with the vulnerable version and manifest, `present_not_affected`
 when the package exists in a version outside the affected range, `absent`, or `unknown`
 when that branch's last audit was incomplete (osv-scanner failed on it, or the scan reported
-errors), in which case the command exits 2 and asks for a re-run. Verdicts are per version,
+errors), in which case the command exits 2 and asks for a re-run. `unknown` is also the verdict
+for a package whose version is not resolved (evidence "version not resolved, not checked for
+vulnerabilities"), and `incident --vex` records nothing for it. A finding `audit.json` lists for the
+advisory is always a `hit` (evidence suffixed "(from audit.json)" when the inventory names the package
+differently), never `absent`. Verdicts are per version,
 so a branch holding two versions of one package shows both. Given a bare package name instead of an id, it prints where that package is used, like
 `lookup`, without a verdict.
 `/sbom-audit:lookup <name>` answers the plain "who uses X" without an advisory; names
-may be globs (`expo-*`), images (`nginx:alpine`) or runtimes (`nodejs`).
+may be globs (`expo-*`), images (`nginx:alpine`) or runtimes (`nodejs`). A Maven package answers to
+its OSV name `group:artifact` (`org.postgresql:postgresql`, as listed) and to the bare artifact
+(`postgresql`); Go modules and npm scopes are matched by their full name. The purl `incident --vex`
+writes for a Maven package is `pkg:maven/<group>/<artifact>`.
+
+**What the audit could not judge.** Two coverage gaps are reported as gaps, never as findings and
+never as clean:
+
+- *Version not resolved.* A package whose version is empty, `UNKNOWN` or an unexpanded `${property}`
+  (Syft writes `UNKNOWN` when a Maven version comes from a BOM or parent outside the repository; a
+  `package.json` without a lockfile gives no version) is kept in the inventory and SBOM but not
+  matched: osv-scanner would treat it as affected by every advisory ever published for the package.
+  `AUDIT.md` lists it under "Version not resolved" per project and branch, `audit.json` under
+  `unresolved_versions` (`[{project, branch, count, packages: [{ecosystem, name, version, purl,
+  manifests, direct, scope, requirement?}], release?}]`, present only when not empty) and
+  `stats.unresolved_versions`; `STATUS.md` and the run summary give the count ("packages with version
+  not resolved, not checked for vulnerabilities"). A reusable workflow of the same repository
+  (`uses: ./.github/workflows/…`) is versionless by design and not counted. Before matching, a Maven
+  version that `<dependencyManagement>` of a pom in the same repository sets (directly, through an
+  in-repo parent found by groupId:artifactId, or through an in-repo imported BOM, with `${…}`
+  properties expanded along the parent chain) is filled in offline, without Maven or network; the SBOM
+  entry then carries the property `sbom-audit:version_source` naming that pom, the inventory
+  component `props.version_source`. A version from an external BOM or parent stays unresolved.
+- *Severity not rated.* An advisory without a CVSS v3 score, database severity or CVSS v4 vector takes
+  the severity of an aliased record in the same osv-scanner result (a GHSA for a GO- or CVE-only
+  record), else the numeric `max_severity` of its osv-scanner group; the advisory then carries
+  `severity_source` (`alias <ID>` or `osv-scanner group score`) in `audit.json`. No score is invented
+  (`cvss` stays null). One still without a severity keeps `severity: "UNKNOWN"`, shown everywhere as
+  "not rated". In runtime scope of a production project or supported release it is not ranked under
+  LOW: `AUDIT.md` lists it under "Severity not rated", the summary and `STATUS.md` count it
+  (`status.json` `counts.unrated_production`), and `issues.json` gives it priority 3 with reason
+  `unrated_production`, next to CRITICAL/HIGH, until someone has read it.
+
+Each `audit.json` vulnerability row also carries `package` (the OSV name: `group:artifact` for Maven,
+otherwise the name) and `purl` (without qualifiers); `issues.json` `details.package` uses the same name.
 
 **4. VEX.** `/sbom-audit:vex` records why a finding does or does not apply, in OpenVEX
 0.2.0, one document per project under `security/vex/`. `incident --vex` records
@@ -165,7 +203,8 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
 - `kind`: `vulnerability` (one per project, manifest and package version), `secret` (file, line and
   fingerprint, never the value), `eol`, `floating_tag`, `host`.
 - `priority`: 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production
-  project or a supported release, and class B secrets · 4 end of life · 5 floating tag · 6 everything else.
+  project or a supported release (reason `critical_high_production`), an advisory there that is not
+  rated (`unrated_production`), and class B secrets · 4 end of life · 5 floating tag · 6 everything else.
 - `fix.action`: `upgrade`, `no_fix_released`, `rotate`, `upgrade_runtime`, `pin`, `apt_upgrade`,
   `reboot`, `no_fix_installable`, `review`.
 - Only open issues: findings suppressed by a VEX statement, decided secrets, accepted host findings and
@@ -751,6 +790,13 @@ advisory ids and package names.
   in the inventory but not matched against vulnerabilities.
 - `requirements.txt` with ranges is read best effort; a `package.json` without a lockfile
   lists its direct dependencies with their range and marks them unresolved.
+- A package without a resolved version (Maven `UNKNOWN` from an external BOM or parent, a manifest
+  without a lockfile) is not checked for vulnerabilities; it is counted and listed as "version not
+  resolved", neither vulnerable nor clean. In-repo Maven poms are resolved offline; external BOMs are
+  not downloaded, and Maven profiles, `<version>` ranges and properties set on the command line or in
+  `settings.xml` are not evaluated.
+- An advisory that no source rates reads "not rated"; it ranks with CRITICAL/HIGH in production
+  (issues priority 3) rather than below LOW, and someone has to read it to know how bad it is.
 - No reachability analysis: a vulnerable package in the lockfile counts as a finding until
   a VEX statement says otherwise. The verifier in `assess` reads code; it runs nothing, and a
   `holds` verdict is a second opinion, not a proof.
