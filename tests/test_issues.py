@@ -161,6 +161,37 @@ class BuildTest(unittest.TestCase):
         self.assertIn("- osv: timeout", text)
         self.assertNotIn("Nothing open.", text)     # a failed source is empty, not clean
 
+    def test_direct_before_transitive_within_a_priority_and_counted(self):
+        def transitive(v):
+            for loc in v["locations"]:
+                loc["direct"] = False
+            return v
+        rep = make_rep(vulnerabilities=[
+            transitive(vuln("crit", "CRITICAL", [("prod", "main", "p.json", "required")])),
+            vuln("high", "HIGH", [("prod", "main", "p.json", "required")]),
+            transitive(vuln("kev", "HIGH", [("prod", "main", "p.json", "required")], kev=True)),
+            transitive(vuln("dev", "HIGH", [("prod", "main", "tools.json", "optional")])),
+        ])
+        doc = issues.build(rep, None, None)
+        ids = [i["id"] for i in doc["issues"]]
+        # priorities and ids unchanged; within priority 3 the direct HIGH comes before the transitive CRITICAL
+        self.assertEqual(ids, ["vuln:prod:p.json:npm:kev@1.0.0", "vuln:prod:p.json:npm:high@1.0.0",
+                               "vuln:prod:p.json:npm:crit@1.0.0", "vuln:prod:tools.json:npm:dev@1.0.0"])
+        self.assertEqual([i["priority"] for i in doc["issues"]], [2, 3, 3, 6])
+        self.assertEqual(issues.dependency_split(doc["issues"]),
+                         {"total": 3, "direct": 1, "transitive": 2, "dev_only": 0})
+        self.assertFalse(issues.is_transitive({"kind": "secret", "details": {}}))
+        text = issues.render_md(doc)
+        self.assertIn("priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): 3, of which "
+                      "1 in direct dependencies and 2 in transitive ones", text)
+        self.assertIn("Transitive does not mean harmless", text)
+        self.assertIn("no reachability analysis", text)
+        self.assertIn("| 3 | vulnerability, direct | high 1.0.0", text)
+        self.assertIn("| 3 | vulnerability, transitive | crit 1.0.0", text)
+        self.assertIn("| 6 | vulnerability, transitive, dev-only | dev 1.0.0", text)
+        # nothing urgent: no split sentence
+        self.assertNotIn("transitive ones", issues.render_md(issues.build(make_rep(), None, None)))
+
     def test_markdown_names_a_few_branches_and_counts_the_rest(self):
         secrets = {"findings": [secret("fp", "A", branches=[f"b{n}" for n in range(9)])]}
         doc = issues.build(make_rep(), secrets, None)

@@ -278,9 +278,69 @@ def _versions(inv: BranchInventory, ecosystem: str, name: str) -> list[str]:
                    if c.kind == "package" and c.ecosystem == ecosystem and c.name == name})
 
 
+CHANGES = ("upgraded", "replaced", "affected_removed", "package_gone", "no_longer_matched")
+
+
+def change(affected: list[str], before_all: list[str], after_all: list[str]) -> dict:
+    """What the two SBOMs show for one package whose advisory no longer matches.
+
+    `affected` are the versions the advisory matched in the previous release, `before_all` and `after_all`
+    every version of the package in the previous release and in this one. Returns `removed_versions`
+    (affected, absent now), `remaining_versions` (in this release and already in the previous one),
+    `new_versions` (in this release, not in the previous one) and `change`:
+    `package_gone` (no version left in the SBOM), `upgraded` (a version new in this release, every new one
+    higher than every removed affected one), `replaced` (a new version, not higher), `affected_removed` (the
+    affected versions are gone and every remaining version was already in the previous release, where the
+    advisory did not match it) or `no_longer_matched` (an affected version is still in the SBOM; today's
+    OSV data matches it no longer). Read from the SBOMs only: it says nothing about which manifest changed."""
+    from .versions import ver_key
+    before, after = set(before_all) | set(affected), set(after_all)
+    removed = sorted(set(affected) - after, key=ver_key)
+    new = sorted(after - before, key=ver_key)
+    remaining = sorted(after & before, key=ver_key)
+    if set(affected) & after:
+        kind = "no_longer_matched"
+    elif not after:
+        kind = "package_gone"
+    elif new:
+        top = max((ver_key(v) for v in removed), default=None)
+        kind = "upgraded" if top is not None and all(ver_key(v) > top for v in new) else "replaced"
+    else:
+        kind = "affected_removed"
+    return {"removed_versions": removed, "remaining_versions": remaining, "new_versions": new, "change": kind}
+
+
+def change_text(f: dict, previous: str | None) -> str:
+    """One plain sentence for a `fixed_since_previous` entry: what was removed and what is in the SBOM now.
+    An entry written before `change` existed reads as before → after, as it always did."""
+    def vs(items):
+        return ", ".join(str(v) for v in items or [])
+    kind = f.get("change")
+    if kind not in CHANGES:
+        return f"{vs(f.get('versions_before'))} → {vs(f.get('versions_after')) or 'removed or no advisory'}"
+    removed, remaining, new = vs(f.get("removed_versions")), vs(f.get("remaining_versions")), vs(f.get("new_versions"))
+    prev = previous or "the previous release"
+    kept = (f"; {remaining} also present (already in {prev}, not matched by this advisory)" if remaining else "")
+    if kind == "package_gone":
+        return f"{removed} removed; the package is no longer in the SBOM"
+    if kind == "upgraded":
+        return f"{removed} removed, upgraded to {new} (new in this release){kept}"
+    if kind == "replaced":
+        return f"{removed} removed; {new} is new in this release (not a higher version){kept}"
+    if kind == "affected_removed":
+        return (f"{removed} removed; {remaining} remains (already in {prev}, not matched by this advisory); "
+                "no new version of the package")
+    still = sorted(set(f.get("versions_before") or []) & set(f.get("versions_after") or []))
+    return f"{vs(still)} still in the SBOM; today's OSV data no longer matches this advisory to it"
+
+
 def _fixed(inv: BranchInventory, history: list, presence: dict, fixed_date: str | None) -> list[dict]:
     """Advisories present in the previous release and absent from `inv`, each with the first kept release
-    that held it in an unbroken run up to the previous one and the days from that release to this one."""
+    that held it in an unbroken run up to the previous one and the days from that release to this one.
+
+    `versions_before` are the versions the advisory matched in the previous release, `versions_after` every
+    version of the package in this release (fields kept for compatibility); `change` and its version lists
+    (see `change`) say which of the two happened: the affected version went, or the package moved on."""
     here = presence[(inv.project, inv.branch)]
     prev_inv = history[-1][0]
     out = []
@@ -294,10 +354,12 @@ def _fixed(inv: BranchInventory, history: list, presence: dict, fixed_date: str 
                 break
             first_inv, first_row = old_inv, old_row
         first_day = _day(first_row["date"])
+        after = _versions(inv, e["ecosystem"], e["package"])
         out.append({
             "id": vid, "package": e["package"], "ecosystem": e["ecosystem"],
             "versions_before": sorted(e["versions"]),
-            "versions_after": _versions(inv, e["ecosystem"], e["package"]),
+            "versions_after": after,
+            **change(sorted(e["versions"]), _versions(prev_inv, e["ecosystem"], e["package"]), after),
             "first_seen": first_row["tag"], "first_seen_date": first_row["date"],
             "first_seen_is_oldest_kept": first_inv is history[0][0],
             "days": (fixed_day - first_day).days if fixed_day and first_day else None,
@@ -344,7 +406,12 @@ def render_md(doc: dict) -> str:
          "\"Fixed\" below means exactly: the advisory matched a package in the SBOM of the previous release under "
          "audit and matches none in the SBOM of this release, both checked against today's OSV data. Days are "
          "counted between the two release dates, not from the advisory's publication. Out-of-support releases "
-         "are listed, not counted as open work. Open counts leave dev-only packages out.", ""]
+         "are listed, not counted as open work. Open counts leave dev-only packages out.", "",
+         "Each entry says what the two SBOMs show for the package: the affected version was removed and the "
+         "package was upgraded (a higher version is new in this release), the affected version was removed while "
+         "other versions that were already in the previous release remain (for example a second lockfile with an "
+         "unaffected copy), or the package is no longer in the SBOM at all. None of this is a claim about which "
+         "manifest or line of code changed.", ""]
     if not projects:
         return "\n".join(L + ["No project has release scanning configured.", ""]) + "\n"
     for name, p in projects.items():
@@ -379,12 +446,12 @@ def render_md(doc: dict) -> str:
             if not items:
                 continue
             L += [f"**No longer present in `{_md(r['tag'])}`** (compared with `{_md(r['previous'])}`)", "",
-                  "| Advisory | Package | Versions before → after | First seen | Days |", "|---|---|---|---|---|"]
+                  "| Advisory | Package | Affected version(s) in the previous release, and the package now | "
+                  "First seen | Days |", "|---|---|---|---|---|"]
             for f in items:
                 first = f"`{_md(f['first_seen'])}`" + (" or earlier" if f.get("first_seen_is_oldest_kept") else "")
-                after = ", ".join(_md(v) for v in f.get("versions_after") or []) or "removed or no advisory"
                 L.append(f"| {_md(f['id'])} | {_md(f['package'])} ({_md(f['ecosystem'])}) | "
-                         f"{', '.join(_md(v) for v in f['versions_before'])} → {after} | {first} | "
+                         f"{_md(change_text(f, r.get('previous')))} | {first} | "
                          f"{f['days'] if f.get('days') is not None else '?'}"
                          f"{'+' if f.get('first_seen_is_oldest_kept') and f.get('days') is not None else ''} |")
             L.append("")
@@ -439,9 +506,8 @@ def cli(args) -> int:
               f"in the SBOM of {row['tag']}")
         for f in items:
             first = f["first_seen"] + (" or earlier" if f.get("first_seen_is_oldest_kept") else "")
-            print(f"  {f['id']}  {f['package']} ({f['ecosystem']}) {', '.join(f['versions_before'])} → "
-                  f"{', '.join(f.get('versions_after') or []) or 'removed or no advisory'}; first seen {first}, "
-                  f"{f['days'] if f.get('days') is not None else '?'} days")
+            print(f"  {f['id']}  {f['package']} ({f['ecosystem']}): {change_text(f, row.get('previous'))}; "
+                  f"first seen {first}, {f['days'] if f.get('days') is not None else '?'} days")
         return 0
     projects = doc.get("projects") or {}
     if args.project:

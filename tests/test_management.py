@@ -178,6 +178,50 @@ class TestFullRun(ManagementTestCase):
         self.assertIn("full scan with gitleaks 8.21.0 over 1 repositories", text)
         self.assertIn("2026-11-10T09:59:00Z", text)
 
+    def test_direct_and_transitive_are_counted_and_direct_listed_first(self):
+        out = full_folder(self.tmp / "security")
+        doc = json.loads((out / "issues.json").read_text())
+        # an issues.json in the old order: the transitive issue before the direct one of the same priority
+        doc["issues"][1:2] = [
+            {"id": "t1", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "CRITICAL", "production": True, "title": "deep 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": False, "dev_only": False}, "fix": {"action": "upgrade", "target": "2.0.0"}},
+            {"id": "d1", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "HIGH", "production": True, "title": "top 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": True, "dev_only": False}, "fix": {"action": "upgrade", "target": "2.0.0"}},
+            {**doc["issues"][1], "details": {"direct": False, "dev_only": True}}]
+        write_json(out / "issues.json", doc)
+        en = text_of(management.render(management.load(out)))
+        self.assertIn("Vulnerability issues at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported "
+                      "release): 3, of which 1 in direct dependencies and 2 in transitive ones.", en)
+        self.assertIn("Transitive does not mean harmless", en)
+        self.assertIn("no reachability analysis", en)
+        self.assertLess(en.index("lodash 1.0.0"), en.index("top 1.0.0"))   # priority first
+        self.assertLess(en.index("top 1.0.0"), en.index("deep 1.0.0"))     # then direct before transitive
+        self.assertIn("top 1.0.0 direct dependency", en)
+        self.assertIn("deep 1.0.0 transitive dependency", en)
+        self.assertIn("lodash 1.0.0 transitive dependency, dev-only", en)
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertIn("Schwachstellen mit Priorität 2 und 3 (KEV, oder CRITICAL/HIGH in Produktion oder einem "
+                      "unterstützten Release): 3, davon 1 in direkten und 2 in transitiven Abhängigkeiten.", de)
+        self.assertIn("Transitiv heißt nicht harmlos", de)
+        self.assertIn("keine Erreichbarkeitsanalyse", de)
+        self.assertIn("top 1.0.0 direkte Abhängigkeit", de)
+
+    def test_release_breakdown_says_what_the_sboms_show(self):
+        out = full_folder(self.tmp / "security")
+        fixed = [{"id": "GHSA-a", "change": "affected_removed"}, {"id": "GHSA-b", "change": "upgraded"},
+                 {"id": "GHSA-c", "change": "affected_removed"}, {"id": "GHSA-d"}]   # an older entry: no change
+        write_json(out / "releases.json", {"schema": 1, "projects": {"shop": {"releases": [
+            {"tag": "v2", "date": "2026-02-01", "previous": "v1", "fixed_since_previous": fixed},
+            {"tag": "v1", "date": "2026-01-01", "previous": None, "fixed_since_previous": []}]}}})
+        en = text_of(management.render(management.load(out)))
+        self.assertIn("4 vs v1 1 upgraded to a higher version; 2 affected version removed, an unaffected version "
+                      "that was already there remains", en)
+        self.assertIn("It does not by itself mean an upgrade", en)
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertIn("4 ggü. v1 1 auf eine höhere Version aktualisiert; 2 betroffene Version entfernt", de)
+
     def test_secret_values_never_reach_the_report(self):
         out = full_folder(self.tmp / "security")
         page = management.render(management.load(out))

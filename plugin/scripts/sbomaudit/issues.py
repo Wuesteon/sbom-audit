@@ -236,9 +236,28 @@ def _hosts(doc: dict | None, accepted: dict[str, set[str]] | None = None) -> lis
 
 # --------------------------------------------------------------------------- document
 
+def is_transitive(i: dict) -> bool:
+    """A vulnerability whose package is not a direct dependency of that manifest. Every other kind is False."""
+    details = i.get("details")
+    return i.get("kind") == "vulnerability" and isinstance(details, dict) and not details.get("direct")
+
+
+def dependency_split(issues: list[dict], max_priority: int = 3) -> dict:
+    """Vulnerability issues at priority `max_priority` or more urgent, counted as direct and transitive
+    dependencies (`dev_only` counts those of them only dev-only manifests hold). A view, not a ranking: the
+    priority of an issue does not depend on it."""
+    vulns = [i for i in issues if isinstance(i, dict) and i.get("kind") == "vulnerability"
+             and isinstance(i.get("priority"), int) and i["priority"] <= max_priority]
+    transitive = sum(1 for i in vulns if is_transitive(i))
+    return {"total": len(vulns), "direct": len(vulns) - transitive, "transitive": transitive,
+            "dev_only": sum(1 for i in vulns if (i.get("details") or {}).get("dev_only"))}
+
+
 def _sort_key(i: dict):
+    """Priority, production first, direct dependencies before transitive ones, severity, place, id."""
     place = i["where"].get("project") or i["where"].get("host") or ""
-    return (i["priority"], not i["production"], SEV_ORDER.get(str(i.get("severity")), 5), place.lower(), i["id"])
+    return (i["priority"], not i["production"], is_transitive(i), SEV_ORDER.get(str(i.get("severity")), 5),
+            place.lower(), i["id"])
 
 
 def _counts(issues: list[dict]) -> dict:
@@ -296,6 +315,16 @@ def _where_cell(i: dict) -> str:
     return f"{path} ({shown or '–'})"
 
 
+def _kind_cell(i: dict) -> str:
+    """The kind; a vulnerability also says whether the package is a direct or transitive dependency."""
+    text = i["kind"].replace("_", " ")
+    if i["kind"] == "vulnerability" and isinstance(i.get("details"), dict):
+        text += ", transitive" if is_transitive(i) else ", direct"
+        if i["details"].get("dev_only"):
+            text += ", dev-only"
+    return text
+
+
 def _fix_cell(i: dict) -> str:
     fix = i["fix"]
     text = fix["action"].replace("_", " ") + (f" → {md(fix['target'])}" if fix.get("target") else "")
@@ -313,6 +342,15 @@ def render_md(doc: dict) -> str:
          f"{counts['total']} open: " + (", ".join(f"{n} {k}" for k, n in counts["by_kind"].items()) or "nothing") + ".",
          "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production or a supported "
          "release, class B secret · 4 end of life · 5 floating tag · 6 other.", ""]
+    split = dependency_split(doc["issues"])
+    if split["total"]:
+        L += [f"Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "
+              f"{split['total']}, of which {split['direct']} in direct dependencies and {split['transitive']} in "
+              "transitive ones. Within a priority, direct dependencies are listed first: they are fixed in your own "
+              "manifest; a transitive one through the parent that pulls it in, or a lockfile refresh. Transitive "
+              "does not mean harmless: a transitive package is installed and can run like a direct one, and there "
+              "is no reachability analysis, so each one stays a finding until it is fixed or a VEX decision says "
+              "otherwise.", ""]
     if doc.get("incomplete"):
         L += ["**Incomplete:** these sources failed, so their part of the list may be missing issues:", ""]
         L += [f"- {md(s.get('source'))}: {md(s.get('detail'))}" for s in doc["incomplete"]] + [""]
@@ -326,7 +364,7 @@ def render_md(doc: dict) -> str:
         flag = " (production)" if items[0]["production"] else ""
         L += [f"## {'Host ' if kind == 'host' else ''}{md(name)}{flag}", "",
               "| P | Kind | Issue | Where | Fix | Open since |", "|---|---|---|---|---|---|"]
-        L += [f"| {i['priority']} | {i['kind'].replace('_', ' ')} | {md(i['title'])} | {_where_cell(i)} | "
+        L += [f"| {i['priority']} | {_kind_cell(i)} | {md(i['title'])} | {_where_cell(i)} | "
               f"{_fix_cell(i)} | {i['first_seen']} |" for i in items]
         L.append("")
     return "\n".join(L)

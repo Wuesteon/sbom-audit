@@ -221,8 +221,55 @@ class BuildTests(unittest.TestCase):
                                                 "versions_before", "versions_after")},
                          {"id": "GHSA-1", "package": "lodash", "first_seen": "v1.0", "first_seen_is_oldest_kept": True,
                           "days": 90, "versions_before": ["4.17.20"], "versions_after": ["4.17.21"]})
+        self.assertEqual({k: fixed[k] for k in ("change", "removed_versions", "remaining_versions", "new_versions")},
+                         {"change": "upgraded", "removed_versions": ["4.17.20"], "remaining_versions": [],
+                          "new_versions": ["4.17.21"]})
         self.assertIsNone(rows["v1.0"]["previous"])
         self.assertEqual(doc["projects"]["app"]["support"], {"period_months": 12, "until": None})
+
+    def test_removed_lockfile_is_not_shown_as_a_downgrade(self):
+        """The real case: two lockfiles, 4.17.21 and 4.17.23; the advisory matched 4.17.23 only and that
+        lockfile was deleted. Not an upgrade and not a downgrade: the affected copy went, 4.17.21 stayed."""
+        old, new = lodash("4.17.21"), lodash("4.17.23")
+        a = self.inv("v1.0", 0, "2025-01-01", [old, new])
+        b = self.inv("v1.1", 1, "2025-01-13", [lodash("4.17.21")])
+        present = [self.finding(a, new, vid="GHSA-f23m")]
+        doc = releases.build(self.cfg(), [a, b], present, present, [], {})
+        [fixed] = doc["projects"]["app"]["releases"][0]["fixed_since_previous"]
+        self.assertEqual((fixed["versions_before"], fixed["versions_after"]), (["4.17.23"], ["4.17.21"]))  # unchanged
+        self.assertEqual({k: fixed[k] for k in ("change", "removed_versions", "remaining_versions", "new_versions")},
+                         {"change": "affected_removed", "removed_versions": ["4.17.23"],
+                          "remaining_versions": ["4.17.21"], "new_versions": []})
+        text = releases.change_text(fixed, "v1.0")
+        self.assertEqual(text, "4.17.23 removed; 4.17.21 remains (already in v1.0, not matched by this advisory); "
+                               "no new version of the package")
+        self.assertNotIn("→", text)
+        md = releases.render_md(doc)
+        self.assertIn("| GHSA-f23m | lodash (npm) | 4.17.23 removed; 4.17.21 remains (already in v1.0", md)
+        self.assertNotIn("4.17.23 → 4.17.21", md)
+
+    def test_change_kinds(self):
+        c = releases.change
+        self.assertEqual(c(["1.0"], ["1.0"], [])["change"], "package_gone")
+        self.assertEqual(c(["1.0"], ["1.0"], ["2.0"])["change"], "upgraded")
+        self.assertEqual(c(["1.10"], ["1.10"], ["1.9"])["change"], "replaced")       # lower: never "upgraded"
+        up = c(["1.0"], ["1.0", "1.5"], ["1.5", "2.0"])
+        self.assertEqual((up["change"], up["remaining_versions"], up["new_versions"]), ("upgraded", ["1.5"], ["2.0"]))
+        self.assertEqual(c(["1.0"], ["1.0", "1.5"], ["1.5"])["change"], "affected_removed")
+        self.assertEqual(c(["1.0"], ["1.0"], ["1.0"])["change"], "no_longer_matched")
+        self.assertEqual(releases.change_text({"change": "package_gone", "removed_versions": ["1.0"]}, "v1"),
+                         "1.0 removed; the package is no longer in the SBOM")
+        self.assertEqual(releases.change_text({"change": "upgraded", "removed_versions": ["1.0"],
+                                               "remaining_versions": ["1.5"], "new_versions": ["2.0"]}, "v1"),
+                         "1.0 removed, upgraded to 2.0 (new in this release); 1.5 also present (already in v1, "
+                         "not matched by this advisory)")
+        self.assertIn("not a higher version", releases.change_text(
+            {"change": "replaced", "removed_versions": ["1.10"], "new_versions": ["1.9"]}, "v1"))
+        self.assertIn("still in the SBOM", releases.change_text(
+            {"change": "no_longer_matched", "versions_before": ["1.0"], "versions_after": ["1.0"]}, "v1"))
+        # an entry from a releases.json written before `change` existed reads as it always did
+        self.assertEqual(releases.change_text({"versions_before": ["1.0"], "versions_after": ["2.0"]}, "v1"),
+                         "1.0 → 2.0")
 
     def test_incomplete_scan_makes_fixed_unknown(self):
         a = self.inv("v1.0", 0, "2025-01-01", [lodash("4.17.20")])
@@ -345,6 +392,8 @@ class EndToEndTests(TmpCase):
             self.assertEqual(cli.main(["releases", "--project", "app", "--fixed", "v1.2.0", "--out", str(self.out)]), 0)
         self.assertIn("GHSA-1", buf.getvalue())
         self.assertIn("first seen v1.0.0", buf.getvalue())
+        self.assertIn("GHSA-1  lodash (npm): 4.17.20 removed, upgraded to 4.17.21 (new in this release); "
+                      "first seen v1.0.0", buf.getvalue())
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(["releases", "--project", "app", "--fixed", "v9", "--out", str(self.out)]), 1)
             self.assertEqual(cli.main(["releases", "--project", "web", "--out", str(self.out)]), 1)
@@ -376,6 +425,8 @@ class EndToEndTests(TmpCase):
         de = management.render(data, lang="de")
         self.assertIn("Releases under audit", en)
         self.assertIn("1 vs v1.1.0", en)
+        self.assertIn("1 upgraded to a higher version", en)
+        self.assertIn("1 auf eine höhere Version aktualisiert", de)
         self.assertIn("SBOM per released version", en)
         self.assertIn("2 project branches (app, web)", en)
         self.assertIn("4 release tags under audit", en)

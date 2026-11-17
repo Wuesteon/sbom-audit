@@ -154,6 +154,16 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
   informational host output are not in it. An id is stable from run to run and the entry disappears
   when the issue does.
 - `incomplete` lists failed sources. When it is not empty, a short list is not a clean one.
+- `details.direct` says whether the package is a direct dependency of that manifest (`false`:
+  transitive), `details.dev_only` whether only dev-only scopes hold it. The list is ordered by
+  priority, production first, then direct dependencies before transitive ones, then severity, place
+  and id: a direct dependency's fix lands in your own
+  manifest; a transitive one is fixed through the parent that pulls it in or a lockfile refresh. The
+  priority never depends on it. `ISSUES.md` and `REPORT.html` say how many vulnerabilities at
+  priority 2 and 3 are direct and how many transitive, and mark each row. Transitive does not mean
+  harmless: the package is installed and can run like a direct one, and there is no reachability
+  analysis (see [Limitations](#limitations)), so it stays a finding until it is fixed or a VEX
+  decision says otherwise.
 
 It is a view of `audit.json`, `secrets.json` and `hosts.json`, never a second source of truth.
 The file holds one issue per line, so `grep '"priority": 1' issues.json` returns whole entries. An
@@ -224,6 +234,20 @@ from `[releases]`. Unknown keys are refused.
   release X" and nothing more: not that the code path was reachable, not when the advisory was
   published. When either scan was incomplete, `fixed_since_previous_unknown` is true and the list is
   empty.
+- **What happened to the package.** "No longer present" is not the same as "upgraded". Each entry
+  says what the two SBOMs show: `removed_versions` (the versions the advisory matched in the previous
+  release, gone now), `remaining_versions` (versions in this release that were already in the
+  previous one, where the advisory did not match them), `new_versions` (versions new in this release)
+  and `change`: `upgraded` (a new version, higher than every removed one), `replaced` (a new version
+  that is not higher), `affected_removed` (only the affected copy went, for example with a deleted
+  second lockfile, and the other versions were already there), `package_gone` (no version of the
+  package left in the SBOM) or `no_longer_matched` (the affected version is still in the SBOM and
+  today's OSV data no longer matches it). It is read from the SBOMs alone and says nothing about
+  which manifest or line changed. `versions_before` (the affected versions) and `versions_after`
+  (every version of the package in this release) stay for compatibility; read `change` rather than
+  putting the two side by side. `RELEASES.md`, `releases --fixed` and `REPORT.html` word it the same
+  way, for example `4.17.23 removed; 4.17.21 remains (already in v1.0, not matched by this
+  advisory); no new version of the package`.
 
 ```bash
 python3 plugin/scripts/sbom_audit_cli.py releases                                          # every project
@@ -251,6 +275,8 @@ may be added, never renamed or removed. Releases are listed newest first.
       "eol_before_support_end": ["nodejs 20 (EOL 2026-04-30)"],
       "fixed_since_previous": [{"id": "GHSA-…", "package": "lodash", "ecosystem": "npm",
                                 "versions_before": ["4.17.20"], "versions_after": ["4.17.21"],
+                                "removed_versions": ["4.17.20"], "remaining_versions": [],
+                                "new_versions": ["4.17.21"], "change": "upgraded",
                                 "first_seen": "shop-v2.2.0", "first_seen_date": "…",
                                 "first_seen_is_oldest_kept": false, "days": 184}],
       "previous": "shop-v2.3.0", "branch": "tags/shop-v2.4.0", "complete": true}]}}}
