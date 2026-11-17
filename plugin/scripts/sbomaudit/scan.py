@@ -11,7 +11,6 @@ from . import config, cyclonedx, gitio, preflight, readers, syft
 from .config import Config, Project
 from .errors import ToolError
 from .model import BranchInventory, Component
-from .versions import norm_py
 
 INVENTORY_FILE = "inventory.json"
 
@@ -32,7 +31,14 @@ def _now() -> str:
 
 
 def _direct_key(c: Component) -> tuple[str, str]:
-    return (c.ecosystem, norm_py(c.name) if c.ecosystem == "PyPI" else c.name)
+    return (c.ecosystem, readers.package_key(c.ecosystem, c.name, c.purl))
+
+
+def _entry_key(e: dict) -> tuple[str, str]:
+    """`_direct_key` of a Syft CycloneDX entry."""
+    purl = e.get("purl", "")
+    eco = syft.ECOSYSTEM_BY_PURL_TYPE.get(syft.purl_type(purl), syft.purl_type(purl))
+    return (eco, readers.package_key(eco, e.get("name", ""), purl))
 
 
 def _dedupe(comps: list[Component]) -> list[Component]:
@@ -83,6 +89,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
             bom, packages = cyclonedx.empty_bom(), []
         own_names = readers.self_packages(src)
         direct = readers.direct_deps(src, project.ignore)
+        dev_only = readers.dev_only_deps(src, project.ignore)
         extra = readers.read_tree(src, project.ignore, remote=project.remote)
     for image in [c for c in extra if c.kind == "image"]:
         runtime = readers.runtime_from_image(image)
@@ -92,18 +99,18 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
 
     version = release["tag"] if release is not None else branch   # a release SBOM names its version
     subject_ref = cyclonedx.set_subject(bom, project.name, purl, f"{version}@{sha[:12]}")
-    cyclonedx.drop_components(
-        bom,
-        lambda e: (syft.ECOSYSTEM_BY_PURL_TYPE.get(syft.purl_type(e.get("purl", "")),
-                                                   syft.purl_type(e.get("purl", ""))),
-                   e.get("name", "")) in own_names if e.get("purl") else False,
-        keep_ref=subject_ref,
-    )
-    packages = [c for c in packages if (c.ecosystem, c.name) not in own_names]
+    # the project's own packages (npm/Python packages, Go modules, Maven reactor modules) are not dependencies
+    cyclonedx.drop_components(bom, lambda e: _entry_key(e) in own_names if e.get("purl") else False,
+                              keep_ref=subject_ref)
+    packages = [c for c in packages if _direct_key(c) not in own_names]
     for c in packages:
-        c.direct = _direct_key(c) in direct
+        # no manifest reader for the ecosystem: unknown (None), never a guessed "transitive"
+        c.direct = _direct_key(c) in direct if c.ecosystem in readers.DIRECT_ECOSYSTEMS else None
+        if _direct_key(c) in dev_only:     # Maven <scope>test</scope> everywhere it is declared
+            c.scope = "optional"
     direct_by_purl = {c.purl: c.direct for c in packages}
     cyclonedx.mark_direct(bom, lambda e: direct_by_purl.get(e.get("purl")))
+    cyclonedx.mark_scope(bom, lambda e: "optional" if _entry_key(e) in dev_only else None)
     known = {c.key() for c in packages}            # a package Syft already catalogued is not added twice
     extra = [c for c in extra if c.kind != "package" or c.key() not in known]
     cyclonedx.merge(bom, extra)

@@ -8,7 +8,9 @@ import json
 import os
 import re
 import tomllib
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import unquote
 
 from .model import Component
 from .versions import min_version_from_range, norm_py, runtime_cycle
@@ -351,7 +353,8 @@ def _pyproject_name(d: dict) -> str | None:
 
 
 def self_packages(src: Path) -> set[tuple[str, str]]:
-    """(ecosystem, name) of every package the tree itself defines."""
+    """(ecosystem, key) of every package the tree itself defines: npm and PyPI names, Go module paths and
+    Maven `groupId:artifactId` (the reactor modules); the key is `package_key`'s."""
     out: set[tuple[str, str]] = set()
     for rel, path in walk(src, []):
         try:
@@ -363,13 +366,25 @@ def self_packages(src: Path) -> set[tuple[str, str]]:
                 name = _pyproject_name(tomllib.loads(_read(path)))
                 if name:
                     out.add(("PyPI", name))
+            elif path.name == "go.mod":
+                module = parse_go_mod(_read(path))["module"]
+                if module:
+                    out.add(("Go", module))
         except (ValueError, tomllib.TOMLDecodeError):
             continue
+    poms = maven_poms(src, [])
+    props = _maven_global_props(poms)
+    for pom in poms:
+        ga = _maven_ga(pom.group or pom.parent_group, pom.artifact, pom, props)   # no groupId: the parent's
+        if ga:
+            out.add(("Maven", ga))
     return out
 
 
 def direct_deps(src: Path, ignore: list[str]) -> dict[tuple[str, str], list[str]]:
-    """(ecosystem, normalised name) -> manifest paths that declare it directly."""
+    """(ecosystem, key) -> manifest paths that declare it directly. The key is `package_key`'s: the
+    normalised name, a Go module path, a Maven `groupId:artifactId`. Ecosystems outside DIRECT_ECOSYSTEMS
+    have no reader here, so their packages are neither direct nor transitive but unknown."""
     out: dict[tuple[str, str], list[str]] = {}
 
     def add(eco: str, name: str, rel: str) -> None:
@@ -388,8 +403,282 @@ def direct_deps(src: Path, ignore: list[str]) -> dict[tuple[str, str], list[str]
             elif _is_requirements(path.name):
                 for name, _, _ in _requirements_deps(_read(path)):
                     add("PyPI", name, rel)
+            elif path.name == "go.mod":
+                for module, indirect in parse_go_mod(_read(path))["require"]:
+                    if not indirect:
+                        add("Go", module, rel)
         except (ValueError, tomllib.TOMLDecodeError):
             continue
+    poms = maven_poms(src, ignore)
+    props = _maven_global_props(poms)
+    for pom in poms:
+        for group, artifact, _ in pom.deps:
+            ga = _maven_ga(group, artifact, pom, props)
+            if ga:
+                add("Maven", ga, pom.rel)
+    return out
+
+
+def dev_only_deps(src: Path, ignore: list[str]) -> set[tuple[str, str]]:
+    """(ecosystem, key) of the packages every declaration in the tree marks as test-only. Maven only: a
+    dependency whose every `<dependencies>` entry has `<scope>test</scope>`, its own or the one a
+    `<dependencyManagement>` entry of any pom in the tree sets. `provided`, `runtime` and `system` count as
+    production (provided code is on the production classpath, only supplied by the container or JDK)."""
+    poms = maven_poms(src, ignore)
+    props = _maven_global_props(poms)
+    managed: dict[str, set[str]] = {}
+    for pom in poms:
+        for group, artifact, scope in pom.managed:
+            ga = _maven_ga(group, artifact, pom, props)
+            if ga and scope:
+                managed.setdefault(ga, set()).add(_resolve(scope, pom, props).strip().lower())
+    scopes: dict[str, set[str]] = {}
+    for pom in poms:
+        for group, artifact, scope in pom.deps:
+            ga = _maven_ga(group, artifact, pom, props)
+            if not ga:
+                continue
+            if scope:
+                found = {_resolve(scope, pom, props).strip().lower()}
+            else:
+                found = managed.get(ga) or {"compile"}
+            scopes.setdefault(ga, set()).update(found)
+    return {("Maven", ga) for ga, s in scopes.items() if s == {"test"}}
+
+
+# --------------------------------------------------------------------------- Maven, Go, .NET
+
+# Ecosystems whose manifests `direct_deps` reads; for any other, a package's `direct` stays None (unknown).
+DIRECT_ECOSYSTEMS = frozenset({"npm", "PyPI", "Go", "Maven"})
+JAVA_LEVEL_KEYS = ("maven.compiler.release", "maven.compiler.target", "maven.compiler.source", "java.version")
+DOTNET_PROJECT_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
+PROP_REF = re.compile(r"\$\{([^}]+)\}")
+
+
+def maven_ga(purl: str) -> str | None:
+    """'pkg:maven/org.example/lib@1.0?type=jar' -> 'org.example:lib'."""
+    if not purl.startswith("pkg:maven/"):
+        return None
+    body = purl[len("pkg:maven/"):].split("?", 1)[0].split("#", 1)[0].split("@", 1)[0]
+    group, _, artifact = body.rpartition("/")
+    if not group or not artifact:
+        return None
+    return f"{unquote(group)}:{unquote(artifact)}"
+
+
+def package_key(ecosystem: str, name: str, purl: str = "") -> str:
+    """The name `direct_deps`, `self_packages` and `dev_only_deps` key a package by."""
+    if ecosystem == "PyPI":
+        return norm_py(name)
+    if ecosystem == "Maven":
+        return maven_ga(purl) or name
+    return name
+
+
+def parse_go_mod(text: str) -> dict:
+    """{'module', 'go', 'toolchain', 'require': [(module path, indirect)]} from a go.mod; single-line and
+    block `require`. A module marked `// indirect` is needed only by a dependency (or by a dependency's
+    tests); go.mod has no marker for modules only the project's own tests need."""
+    out: dict = {"module": "", "go": "", "toolchain": "", "require": []}
+    in_require = False
+    for raw in text.splitlines():
+        code, _, comment = raw.partition("//")
+        line = code.strip()
+        indirect = re.match(r"^\s*indirect\b", comment) is not None
+        if in_require:
+            if line.startswith(")"):
+                in_require = False
+            elif line:
+                out["require"].append((_unquote(line.split()[0]), indirect))
+            continue
+        m = re.match(r"^(module|go|toolchain|require)\s*(.*)$", line)
+        if not m:
+            continue
+        key, rest = m.group(1), m.group(2).strip()
+        if key == "require":
+            if rest.startswith("("):
+                in_require = True
+            elif rest:
+                out["require"].append((_unquote(rest.split()[0]), indirect))
+        elif rest:
+            out[key] = _unquote(rest.split()[0])
+    return out
+
+
+class Pom:
+    """What the readers need from one pom.xml."""
+
+    def __init__(self, rel: str):
+        self.rel = rel
+        self.group = self.artifact = self.version = ""
+        self.parent_group = self.parent_version = ""
+        self.props: dict[str, str] = {}
+        self.deps: list[tuple[str, str, str]] = []       # <dependencies> (incl. profiles): (group, artifact, scope)
+        self.managed: list[tuple[str, str, str]] = []    # <dependencyManagement>
+        self.java: list[tuple[str, str]] = []            # (where, raw value), most specific first
+
+
+def _local(tag) -> str:
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _child(el, name: str):
+    for c in el:
+        if _local(c.tag) == name:
+            return c
+    return None
+
+
+def _children(el, name: str) -> list:
+    return [c for c in el if _local(c.tag) == name] if el is not None else []
+
+
+def _text(el, name: str) -> str:
+    c = _child(el, name) if el is not None else None
+    return (c.text or "").strip() if c is not None else ""
+
+
+def _dep_list(deps_el) -> list[tuple[str, str, str]]:
+    return [(_text(d, "groupId"), _text(d, "artifactId"), _text(d, "scope"))
+            for d in _children(deps_el, "dependency") if _text(d, "artifactId")]
+
+
+def parse_pom(text: str, rel: str = "pom.xml") -> Pom:
+    """Coordinates, properties, declared and managed dependencies and the Java language level of a pom.
+    Plugin dependencies are not read: they are build tools, not dependencies of the code."""
+    root = ET.fromstring(text)               # expat: no external entities, no DTD fetches
+    pom = Pom(rel)
+    pom.group, pom.artifact, pom.version = _text(root, "groupId"), _text(root, "artifactId"), _text(root, "version")
+    parent = _child(root, "parent")
+    if parent is not None:
+        pom.parent_group, pom.parent_version = _text(parent, "groupId"), _text(parent, "version")
+    props = _child(root, "properties")
+    for p in props if props is not None else []:
+        if _local(p.tag):
+            pom.props[_local(p.tag)] = (p.text or "").strip()
+    pom.deps = _dep_list(_child(root, "dependencies"))
+    for profile in _children(_child(root, "profiles"), "profile"):
+        pom.deps += _dep_list(_child(profile, "dependencies"))
+    dm = _child(root, "dependencyManagement")
+    if dm is not None:
+        pom.managed = [d for d in _dep_list(_child(dm, "dependencies")) if d[2] != "import"]
+    build = _child(root, "build")
+    plugins = _children(_child(build, "plugins"), "plugin") if build is not None else []
+    if build is not None and _child(build, "pluginManagement") is not None:
+        plugins += _children(_child(_child(build, "pluginManagement"), "plugins"), "plugin")
+    compiler = [_child(p, "configuration") for p in plugins if _text(p, "artifactId") == "maven-compiler-plugin"]
+    for key in ("release", "target", "source"):
+        for conf in compiler:
+            if conf is not None and _text(conf, key):
+                pom.java.append((f"maven-compiler-plugin <{key}>", _text(conf, key)))
+        prop = f"maven.compiler.{key}"
+        if pom.props.get(prop):
+            pom.java.append((prop, pom.props[prop]))
+    if pom.props.get("java.version"):
+        pom.java.append(("java.version", pom.props["java.version"]))
+    return pom
+
+
+def maven_poms(src: Path, ignore: list[str]) -> list[Pom]:
+    """Every pom.xml in the tree that parses; a broken one is skipped (read_tree reports it)."""
+    out = []
+    for rel, path in walk(src, ignore):
+        if path.name == "pom.xml":
+            try:
+                out.append(parse_pom(_read(path), rel))
+            except (ET.ParseError, ValueError):
+                continue
+    return out
+
+
+def _maven_global_props(poms: list[Pom]) -> dict[str, str]:
+    """Properties of every pom in the tree: a fallback for `${…}` a child inherits from a parent in the repo."""
+    out: dict[str, str] = {}
+    for pom in sorted(poms, key=lambda p: (p.rel.count("/"), p.rel), reverse=True):   # shallower poms win
+        out.update(pom.props)
+    return out
+
+
+def _resolve(value: str, pom: Pom, global_props: dict[str, str]) -> str:
+    """`${…}` references replaced from the pom's own properties and coordinates, then the tree's."""
+    own = {"project.groupId": pom.group or pom.parent_group, "pom.groupId": pom.group or pom.parent_group,
+           "project.artifactId": pom.artifact, "project.version": pom.version or pom.parent_version,
+           "project.parent.groupId": pom.parent_group, "project.parent.version": pom.parent_version}
+    for _ in range(5):
+        new = PROP_REF.sub(lambda m: pom.props.get(m.group(1)) or own.get(m.group(1))
+                           or global_props.get(m.group(1)) or m.group(0), value)
+        if new == value:
+            break
+        value = new
+    return value
+
+
+def _maven_ga(group: str, artifact: str, pom: Pom, global_props: dict[str, str]) -> str | None:
+    """'groupId:artifactId' with `${…}` resolved; None when either part stays unknown."""
+    group, artifact = _resolve(group, pom, global_props), _resolve(artifact, pom, global_props)
+    if not group or not artifact or "${" in group + artifact:
+        return None
+    return f"{group}:{artifact}"
+
+
+def java_runtimes(src: Path, ignore: list[str]) -> list[Component]:
+    """One `java` runtime per pom that sets a Java language level (compiler release, target or source, or
+    the `java.version` property). It is the level the code is compiled for, not the JDK that runs it."""
+    poms = maven_poms(src, ignore)
+    props = _maven_global_props(poms)
+    out = []
+    for pom in poms:
+        for where, raw in pom.java:
+            value = _resolve(raw, pom, props)
+            if re.fullmatch(r"\d+(\.\d+)?", value):
+                out.append(runtime_component(
+                    "java", runtime_cycle("java", value), pom.rel,
+                    detail=f"{where} = {value} (Java language level the code is compiled for, not the JDK "
+                           "it runs on)"))
+                break
+    return out
+
+
+def go_runtime(text: str, rel: str) -> Component | None:
+    """The Go version a go.mod asks for: its `toolchain` line, else its `go` line. Both are minimums for the
+    build; the binary carries the runtime of whichever Go toolchain builds it."""
+    mod = parse_go_mod(text)
+    toolchain = mod["toolchain"].removeprefix("go")
+    if toolchain and re.match(r"\d+\.\d+", toolchain):
+        version, detail = toolchain, f"toolchain {mod['toolchain']}"
+    elif mod["go"] and re.match(r"\d+\.\d+", mod["go"]):
+        version, detail = mod["go"], f"go {mod['go']}"
+    else:
+        return None
+    return runtime_component("go", runtime_cycle("go", version), rel,
+                             detail=f"go.mod {detail} (minimum Go for the build, not necessarily the Go that "
+                                    "builds the release)")
+
+
+def dotnet_runtimes(text: str, rel: str) -> list[Component]:
+    """.NET from global.json (`sdk.version`: the SDK that builds it) or from a project file's
+    `<TargetFramework(s)>` (`net8.0`, `netcoreapp3.1`: the runtime the code targets). .NET Framework
+    (`net48`) and .NET Standard targets are not runtimes endoflife.date tracks as `dotnet`; they are skipped."""
+    out = []
+    if rel.rsplit("/", 1)[-1] == "global.json":
+        sdk = (_load_json_lenient(text).get("sdk") or {})
+        version = sdk.get("version") if isinstance(sdk, dict) else None
+        if isinstance(version, str) and re.match(r"\d+\.\d+", version):
+            out.append(runtime_component("dotnet", runtime_cycle("dotnet", version), rel,
+                                         detail=f"global.json sdk.version = {version} (the SDK that builds it)"))
+        return out
+    seen = set()
+    for value in re.findall(r"<TargetFrameworks?>([^<]+)</TargetFrameworks?>", text):
+        for tf in value.split(";"):
+            tf = tf.strip()
+            m = re.match(r"^net(?:coreapp)?(\d+)\.(\d+)", tf)
+            if not m or (tf.startswith("net") and not tf.startswith("netcoreapp") and int(m.group(1)) < 5):
+                continue
+            cycle = runtime_cycle("dotnet", f"{m.group(1)}.{m.group(2)}")
+            if cycle not in seen:
+                seen.add(cycle)
+                out.append(runtime_component("dotnet", cycle, rel,
+                                             detail=f"TargetFramework {tf} (the .NET the code targets)"))
     return out
 
 
@@ -425,6 +714,7 @@ def deno_remote_packages(lock: dict, rel: str) -> list[Component]:
 
 def read_tree(src: Path, ignore: list[str], remote: str | None = None) -> list[Component]:
     comps: list[Component] = []
+    has_pom = False
     owner = _owner(remote)
     root = src.resolve()
 
@@ -483,6 +773,15 @@ def read_tree(src: Path, ignore: list[str], remote: str | None = None) -> list[C
                         comps.append(Component(kind="package", ecosystem="PyPI", name=name, version="",
                                                purl=f"pkg:pypi/{name}", scope=scope, locations=[rel], direct=True,
                                                props={"requirement": req, "unresolved": True}))
+            elif base == "pom.xml":
+                parse_pom(_read(path), rel)            # only to report a broken pom; java_runtimes reads them all
+                has_pom = True
+            elif base == "go.mod":
+                runtime = go_runtime(_read(path), rel)
+                if runtime is not None:
+                    comps.append(runtime)
+            elif base == "global.json" or base == "Directory.Build.props" or base.endswith(DOTNET_PROJECT_SUFFIXES):
+                comps.extend(dotnet_runtimes(_read(path), rel))
             elif base == "deno.lock":
                 comps.extend(deno_remote_packages(_load_json_lenient(_read(path)), rel))
             elif base in ("deno.json", "deno.jsonc"):
@@ -497,7 +796,9 @@ def read_tree(src: Path, ignore: list[str], remote: str | None = None) -> list[C
                 if deno:
                     comps.append(runtime_component("deno", str(deno), rel,
                                                    detail=f"supabase edge_runtime.deno_version = {deno}"))
-        except (ValueError, tomllib.TOMLDecodeError, OSError) as exc:
+        except (ValueError, tomllib.TOMLDecodeError, OSError, ET.ParseError) as exc:
             comps.append(Component(kind="package", ecosystem="", name=rel, version="", purl="",
                                    scope="unknown", locations=[rel], props={"error": f"{type(exc).__name__}: {exc}"}))
+    if has_pom:                                        # `${…}` in a child pom may resolve from a parent's properties
+        comps.extend(java_runtimes(src, ignore))
     return comps

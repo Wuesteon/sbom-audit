@@ -49,6 +49,12 @@ def runtime_cycle(product: str, version: str | None) -> str:
     """endoflife.date cycle for a runtime version: '20.11.1' -> '20', python '3.12.4' -> '3.12'."""
     if not version:
         return ""
+    if product == "java":                       # '1.8' is Java 8 (cycles are majors: 8, 11, 17, 21, 25)
+        version = re.sub(r"^1\.(?=\d)", "", version.strip())
+    if product == "dotnet":                     # .NET 5 and later: cycle '8'; .NET Core: cycle '3.1'
+        major, t = ver_major(version), ver_minor_tuple(version)
+        if major is not None and major < 5 and t:
+            return f"{t[0]}.{t[1]}"
     if product in MINOR_CYCLE_PRODUCTS:
         t = ver_minor_tuple(version)
         if t:

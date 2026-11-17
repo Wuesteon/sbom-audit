@@ -20,7 +20,9 @@ UA = f"sbom-audit/{__version__} (+https://github.com/Wuesteon/sbom-audit)"
 HTTP_TIMEOUT = 60
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EOL_API = "https://endoflife.date/api"
-EOL_SLUG = {"alpine": "alpine-linux"}          # readers' product name -> endoflife.date slug
+# readers' product name -> endoflife.date slug. "java" is a language level read from a pom (the release the
+# code is compiled for, not the JDK it runs on); it is checked against Eclipse Temurin's support dates.
+EOL_SLUG = {"alpine": "alpine-linux", "java": "eclipse-temurin"}
 EOL_SOON_DAYS = 90
 LATEST_ECOSYSTEMS = ("npm", "PyPI", "jsr")
 

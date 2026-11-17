@@ -188,6 +188,44 @@ class ScanTests(unittest.TestCase):
         comps = [c for c in result.inventories[0].components if c.name == "inngest"]
         self.assertEqual([(c.version, c.purl) for c in comps], [("3.52.7", "pkg:npm/inngest@3.52.7")])
 
+    def test_maven_go_direct_test_scope_own_modules_and_unknown_direct(self):
+        pom = ("<project><groupId>org.example</groupId><artifactId>app</artifactId><version>1.0</version>"
+               "<properties><maven.compiler.release>21</maven.compiler.release></properties><dependencies>"
+               "<dependency><groupId>org.lib</groupId><artifactId>lib</artifactId></dependency>"
+               "<dependency><groupId>org.junit</groupId><artifactId>junit</artifactId><scope>test</scope></dependency>"
+               "<dependency><groupId>org.example</groupId><artifactId>mod</artifactId></dependency>"
+               "</dependencies></project>")
+        mod_pom = ("<project><parent><groupId>org.example</groupId><artifactId>app</artifactId></parent>"
+                   "<artifactId>mod</artifactId></project>")
+        gomod = ("module example.com/svc\n\ngo 1.22\n\nrequire (\n\texample.com/dep v1.0.0\n"
+                 "\texample.com/ind v1.0.0 // indirect\n)\n")
+        make_repo(self.root, "java", {"pom.xml": pom, "mod/pom.xml": mod_pom, "svc/go.mod": gomod})
+        cfg = config.load(self.out)
+
+        def entry(name, purl):
+            return {"bom-ref": purl, "type": "library", "name": name, "purl": purl,
+                    "properties": [{"name": "sbom-audit:scope", "value": "required"}]}
+        rows = [("lib", "pkg:maven/org.lib/lib@1.0"), ("lib-core", "pkg:maven/org.lib/lib-core@1.0"),
+                ("junit", "pkg:maven/org.junit/junit@4.13"), ("mod", "pkg:maven/org.example/mod@1.0"),
+                ("example.com/dep", "pkg:golang/example.com/dep@v1.0.0"),
+                ("example.com/ind", "pkg:golang/example.com/ind@v1.0.0"),
+                ("hex", "pkg:hex/hex@1.0.0")]
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1,
+               "components": [entry(n, p) for n, p in rows]}
+        comps = [cyclonedx.components({"components": [entry(n, p)]})[0] for n, p in rows]
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["java"], fetch=False)
+        got = {c.name: (c.direct, c.scope) for c in result.inventories[0].components if c.kind == "package"}
+        self.assertEqual(got, {"lib": (True, "required"), "lib-core": (False, "required"),
+                               "junit": (True, "optional"), "example.com/dep": (True, "required"),
+                               "example.com/ind": (False, "required"), "hex": (None, "required")})
+        runtimes = {(c.ecosystem, c.version) for c in result.inventories[0].components if c.kind == "runtime"}
+        self.assertTrue({("java", "21"), ("go", "1.22")} <= runtimes, runtimes)
+        sbom = {c.name: c for c in cyclonedx.read_components(scan.sbom_path(self.out, "java", "main"))}
+        self.assertNotIn("mod", sbom, "the reactor's own module is not a dependency")
+        self.assertEqual((sbom["junit"].scope, sbom["junit"].direct), ("optional", True))
+        self.assertIsNone(sbom["hex"].direct)
+
     def test_only_filters_and_reports_unknown_names(self):
         make_repo(self.root, "a", {"README": "a\n"})
         make_repo(self.root, "b", {"README": "b\n"})

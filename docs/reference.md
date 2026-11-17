@@ -17,6 +17,7 @@ mapping, what leaves your machine and the known limitations. For installation an
 - [The `security/` folder](#the-security-folder)
 - [Cyber Resilience Act](#cyber-resilience-act)
 - [Privacy: what leaves your machine](#privacy-what-leaves-your-machine)
+- [What is read per ecosystem](#what-is-read-per-ecosystem)
 - [Limitations](#limitations)
 
 ## The loop: setup → run → incident → vex
@@ -744,6 +745,42 @@ days; the queries name the runtimes and frameworks in your inventory, not your p
 When Claude runs `assess`, `incident` or `lookup` it may also use its own WebSearch/WebFetch
 for advisory pages; those requests go through Claude Code, not the plugin, and carry only
 advisory ids and package names.
+
+## What is read per ecosystem
+
+Syft lists the packages. The plugin's own readers add three facts it cannot get from Syft: whether a
+package is a **direct** dependency (`direct` in `inventory.json`, `sbom-audit:direct` in the SBOM),
+whether it is **dev-only** (scope `optional`) and which **runtimes** the manifests ask for. Every manifest
+is read from the scanned git ref, never from the working tree. A package of the project itself is dropped:
+it is not a dependency.
+
+| Ecosystem | direct | dev-only (`optional`) | own packages dropped | runtime |
+|---|---|---|---|---|
+| npm | `dependencies`, `devDependencies`, `optionalDependencies` of every `package.json` | `devDependencies` (from Syft's second run) | `package.json` `name` | `engines.node`, `.nvmrc`, `.node-version` |
+| PyPI | `pyproject.toml` (PEP 621, Poetry), `requirements*.txt` | not determined | `pyproject.toml` name | `requires-python`, `.python-version` |
+| Go | every `require` in every `go.mod` without `// indirect` (single-line and block) | **not determined**: go.mod and go.sum do not say which modules only tests import | the `module` of every `go.mod` | `toolchain`, else `go` line of each `go.mod`, labelled as the minimum Go for the build |
+| Maven | `<dependencies>` (and profile dependencies) of every `pom.xml`; not `<dependencyManagement>`, not plugin dependencies | a dependency whose every declaration has `<scope>test</scope>`, its own or one a `<dependencyManagement>` entry in the repository sets | `groupId:artifactId` of every `pom.xml` (the reactor modules) | Java language level: `maven-compiler-plugin` `<release>`/`<target>`/`<source>`, then `maven.compiler.release`/`target`/`source`, then `java.version`; checked against Eclipse Temurin's support dates |
+| .NET | none (no NuGet reader) | none | none | `global.json` `sdk.version` and `<TargetFramework(s)>` in `*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Build.props` (`net5.0`+ and `netcoreappX.Y`; .NET Framework and .NET Standard skipped) |
+| others (Cargo, RubyGems, Composer, Swift, CocoaPods, GitHub Actions, …) | none | none | none | images in Dockerfiles and Compose files only |
+
+- **Unknown is not transitive.** For an ecosystem without a reader, `direct` is left out of
+  `inventory.json` and the SBOM (null), instead of claiming `false`. `audit.json` and the work list
+  still sort such a package with the transitive ones, because they only tell "direct" from "not
+  direct".
+- **Maven `provided`, `runtime` and `system` count as production.** `provided` code is on the
+  production classpath, supplied by the container or the JDK; a finding there is still yours to judge.
+  A dependency declared as `test` in one module and without scope in another is production.
+- **Maven `${…}` in coordinates** resolves from the pom's own properties and coordinates, then from
+  any pom in the repository; a property defined only in a parent outside the repository stays
+  unresolved and the dependency is neither direct nor dropped. Gradle (`build.gradle`,
+  `build.gradle.kts`, version catalogs) is not read: its packages have `direct: false`.
+- **The Java runtime is a language level**, the release the code is compiled for, not the JDK in
+  production. The JDK in a `FROM eclipse-temurin:…` image is listed separately. A level below 9
+  (`1.8`) is read as `8`.
+- **The Go runtime is a minimum.** The Go version in a binary is the toolchain that built it; the
+  `golang` build image, when there is one, says more.
+- **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
+  repository yet.
 
 ## Limitations
 

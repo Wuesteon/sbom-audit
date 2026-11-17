@@ -82,6 +82,22 @@ def mark_direct(bom: dict, is_direct) -> None:
             props.append(_prop("direct", value))
 
 
+def mark_scope(bom: dict, scope_of) -> None:
+    """Overwrite `sbom-audit:scope` on Syft package entries where `scope_of(entry)` returns a scope; None
+    keeps the scope `syft.inventory` set."""
+    for entry in bom.get("components", []) or []:
+        if not entry.get("purl"):
+            continue
+        props = entry.setdefault("properties", [])
+        if any(p.get("name") == PREFIX + "kind" for p in props):
+            continue
+        value = scope_of(entry)
+        if value is None:
+            continue
+        props[:] = [p for p in props if p.get("name") != SCOPE_PROPERTY]
+        props.append({"name": SCOPE_PROPERTY, "value": value})
+
+
 def drop_components(bom: dict, should_drop, keep_ref: str | None = None) -> list[dict]:
     """Remove entries where `should_drop(entry)`; their dependency rows move to `keep_ref`."""
     comps = bom.get("components", []) or []

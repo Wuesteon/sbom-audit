@@ -152,6 +152,18 @@ class EolTests(unittest.TestCase):
         self.assertEqual(by_cycle[("nodejs", "24")], "supported")
         self.assertEqual(by_cycle[("caddy", "2")], "supported")
 
+    def test_manifest_runtimes_map_to_endoflife_cycles(self):
+        """Java language levels are checked against Eclipse Temurin; .NET 5+ cycles are majors, .NET Core
+        cycles major.minor; Go cycles major.minor."""
+        from sbomaudit.versions import runtime_cycle
+        self.assertEqual(runtime_cycle("java", "1.8"), "8")
+        self.assertEqual(runtime_cycle("java", "17"), "17")
+        self.assertEqual(runtime_cycle("dotnet", "8.0.100"), "8")
+        self.assertEqual(runtime_cycle("dotnet", "3.1"), "3.1")
+        self.assertEqual(runtime_cycle("go", "1.22.3"), "1.22")
+        self.assertEqual(enrich.eol_url("java", "21"), "https://endoflife.date/api/eclipse-temurin/21.json")
+        self.assertEqual(enrich.eol_url("dotnet", "8"), "https://endoflife.date/api/dotnet/8.json")
+
     def test_eol_unknown_cycle_and_missing_product(self):
         """HTTP 404 is endoflife.date's answer (product or cycle unknown): cached, status unknown, not a failure."""
         def fetch(url):
