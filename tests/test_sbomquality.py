@@ -299,6 +299,17 @@ class CommandTests(unittest.TestCase):
             code = cli.main(["--out", str(self.out), *argv])
         return code, out.getvalue(), err.getvalue()
 
+    def test_project_and_branch_cannot_leave_the_sbom_folder(self):
+        outside = self.tmp / "elsewhere"
+        outside.mkdir()
+        (outside / "main.cdx.json").write_text("{}", encoding="utf-8")
+        for argv in (("--project", "../../elsewhere"), ("--project", str(outside)), ("--project", ".."),
+                     ("--project", "shop", "--branch", "../../../elsewhere/main")):
+            code, out, err = self.run_cli("sbom", "check", *argv)
+            self.assertEqual(code, 2, argv)
+            self.assertEqual(out, "", argv)
+            self.assertIn("takes a", err, argv)
+
     def write(self, rel: str, doc) -> Path:
         path = self.out / rel
         path.parent.mkdir(parents=True, exist_ok=True)

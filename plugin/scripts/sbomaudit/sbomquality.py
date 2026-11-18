@@ -21,6 +21,7 @@ import json
 import re
 from pathlib import Path
 
+from .errors import ConfigError
 from .sbomimport import MAX_BYTES, MAX_COMPONENTS, MAX_DEPTH, MAX_FIELD, SPEC_VERSIONS, purl_parts
 
 MAX_EDGES = 10 * MAX_COMPONENTS        # dependency rows plus dependsOn entries
@@ -459,6 +460,11 @@ def _targets(args) -> list[tuple[str, Path]]:
     out = Path(args.out)
     base = out / "sbom"
     if args.project:
+        # a project is one folder name under sbom/, a branch one file in it: neither may leave that folder
+        if args.project in (".", "..") or "/" in args.project or "\\" in args.project:
+            raise ConfigError(f"--project takes a project name, not a path: {args.project!r}")
+        if args.branch and ".." in args.branch.split("/"):
+            raise ConfigError(f"--branch takes a branch name: {args.branch!r}")
         folder = base / args.project
         if args.branch:
             name = args.branch.replace("/", "__") + ".cdx.json"
