@@ -19,6 +19,7 @@ mapping, what leaves your machine and the known limitations. For installation an
 - [Privacy: what leaves your machine](#privacy-what-leaves-your-machine)
 - [What is read per ecosystem](#what-is-read-per-ecosystem)
 - [Imported build SBOMs](#imported-build-sboms)
+- [SBOM quality: `sbom check`](#sbom-quality-sbom-check)
 - [Limitations](#limitations)
 
 ## The loop: setup → run → incident → vex
@@ -763,7 +764,7 @@ the configured branch (`git cat-file`), never from the working tree; the plugin 
 | security.txt | Annex I Part II (6); Annex II point 2 | `.well-known/security.txt` (also under `public/`, `static/`, or `security.txt`) on the branch, and with `check_well_known` the served file: RFC 9116 needs `Contact` and exactly one `Expires`; a past `Expires` reads stale. RFC 9116 is one common way to publish the contact, not a CRA requirement |
 | Coordinated vulnerability disclosure policy | Annex I Part II (5); Art. 13(8); Annex VII point 2(b) | `cra/<product>/cvd-policy.md` without the starter line |
 | Reporting procedure | Art. 14(1)-(8); Art. 16; Art. 69(3); Art. 71(2) | `cra/<product>/art14-procedure.md` without the starter line; an open KEV finding in the product adds a note pointing to it |
-| SBOM | Annex I Part II (1); Annex VII point 2(b) | `sbom/<project>/<branch>.cdx.json` |
+| SBOM | Annex I Part II (1); Annex VII point 2(b) | `sbom/<project>/<branch>.cdx.json` (a `/` in the branch reads `__`). A file with structural errors ([SBOM quality](#sbom-quality-sbom-check)) reads missing, with the path and the error codes in the note; the note of a usable file gives its data-field coverage. Neither says whether the content is complete |
 | Vulnerabilities addressed, regular reviews | Annex I Part II (2), (3); Art. 13(8) | `audit.json`; older than `audit_max_age_days` reads stale |
 | Decisions and evidence trail | Art. 13(7); Annex VII point 2(b) | `log.md`, `reports/`, `vex/<project>.openvex.json` |
 | Support period and end date | Art. 13(8), 13(19); Annex II point 7; Annex VII point 4 | `support` of the product in `releases.json` |
@@ -828,6 +829,13 @@ Read for this section (consolidated text as published; the Art. 13(4) replacemen
 - Delegated Regulation (EU) 2026/881: <https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32026R0881>
 - ENISA, single reporting platform: <https://portal.cra-srp.enisa.europa.eu/>
 - RFC 9116 (security.txt): <https://www.rfc-editor.org/rfc/rfc9116>
+- For the data-field table under [SBOM quality](#sbom-quality-sbom-check), read 2026-11-18:
+  NTIA, "The Minimum Elements For a Software Bill of Materials (SBOM)", 12 July 2021,
+  <https://www.ntia.gov/files/ntia/publications/sbom_minimum_elements_report.pdf>; BSI TR-03183-2
+  "Software Bill of Materials (SBOM)", version 2.1.0 of 20 August 2025, the version the BSI page lists as
+  current, <https://www.bsi.bund.de/SharedDocs/Downloads/EN/BSI/Publications/TechGuidelines/TR03183/BSI-TR-03183-2_v2_1_0.pdf?__blob=publicationFile&v=6>
+  (page: <https://www.bsi.bund.de/EN/Themen/Unternehmen-und-Organisationen/Standards-und-Zertifizierung/Technische-Richtlinien/TR-nach-Thema-sortiert/tr03183/TR-03183_node.html>).
+  Neither is a CRA implementing act; see the note below.
 
 No implementing act under Art. 13(24) (SBOM format) or Art. 14(10) (reporting format) had been found
 when this section was written. The Commission's guidance C(2026) 6013 is non-binding and its annex was
@@ -949,6 +957,79 @@ python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from
   SPDX are refused with the generator's JSON option. Components without a purl are skipped and counted;
   unknown purl types are kept. A file that cannot be used is an error on the branch (`errors` in
   `inventory.json`) and the repository scan stands.
+
+## SBOM quality: `sbom check`
+
+Every SBOM the plugin writes, and any CycloneDX JSON file you point it at, gets a structural check and a
+count of which data fields its components carry. The command reads and prints, and writes nothing (it
+runs under `SBOM_AUDIT_READ_ONLY=1` and in the autonomous allow list).
+
+```bash
+python3 scripts/sbom_audit_cli.py sbom check                                  # every sbom/*/*.cdx.json
+python3 scripts/sbom_audit_cli.py sbom check --project shop --branch release/1  # sbom/shop/release__1.cdx.json
+python3 scripts/sbom_audit_cli.py sbom check target/bom.json --json           # a build SBOM before import
+```
+
+Exit code 0: no structural errors; 1: at least one file has structural errors; 2: a file is missing,
+too large or not JSON (also for conflicting arguments).
+
+**Structural findings.** Each finding has a level, a stable code, a message, a count and up to three
+examples. "Valid" means none of the checks below found an error; it is not a full JSON Schema
+validation, and it says nothing about whether the components are the right ones.
+
+| Level | Codes |
+|---|---|
+| error | `not-object`, `bom-format`, `spec-version` (1.4 to 1.7), `serial-number-format` (`urn:uuid:`), `version-invalid`; `metadata-type`, `timestamp-format` (ISO 8601 date-time with zone), `tools-type`, `subject-type`, `subject-type-invalid`, `subject-name-missing`; `component-not-object`, `component-type-missing`, `component-type-invalid`, `component-name-missing`, `component-components`, `purl-syntax`, `version-type`; `bom-ref-type`, `bom-ref-too-long`, `bom-ref-duplicate`; `dependencies-type`, `dependency-not-object`, `dependency-ref-type`, `dependency-ref-dangling`, `depends-on-type`, `depends-on-dangling`; `too-many-components`, `too-many-dependencies`. Unreadable: `missing`, `too-large`, `unreadable`, `not-json` |
+| warning | `serial-number-missing`, `version-missing`, `metadata-missing`, `timestamp-missing`, `tools-missing`, `subject-missing` (all optional in CycloneDX), `dependency-ref-repeated`, `nesting-too-deep` |
+
+**Coverage.** For each field, how many components carry it, and the share. Components of type `file`
+(Syft lists the manifests it read) are counted apart and left out of the shares. A value counts only
+when it is there and non-empty; nothing is inferred and nothing is filled in. The plugin never adds a
+supplier, licence or hash a source does not state, so a low share is the honest result for most
+repository scans: lockfiles carry versions and purls, rarely licences or suppliers.
+
+| Column | Counts a component when it has |
+|---|---|
+| Version | a non-empty `version` |
+| purl | a syntactically valid `purl` |
+| Identifier | a valid purl, a `cpe`, `swid.tagId`, `omniborId` or `swhid` |
+| Licence | a `licenses` entry with an id, a name or an expression |
+| Hash | a `hashes` entry with algorithm and content, also under `externalReferences[].hashes`; SHA-512 separately |
+| Supplier | `supplier` or `manufacturer` with a name, URL or contact |
+| In graph | a `dependencies` row naming it, as `ref` or in `dependsOn` |
+
+Document-level flags: dependency graph present, `compositions` present, timestamp, tool named,
+author or tool (tools, `metadata.authors`, `manufacturer`, `manufacture` or `supplier`), subject named
+with a version (`metadata.component`).
+
+**Where it shows.** `sbom_quality` on each inventory entry in `inventory.json` (the counts above), the
+"SBOM quality" table in `INVENTORY.md`, and the SBOM row of `cra check` (see the table under Cyber
+Resilience Act).
+
+**What the columns correspond to.** The table names the data fields of two documents that describe what
+an SBOM should hold; the numbers show how many components carry something in that field. They do not
+show that a document conforms to either, and neither document is a CRA implementing act: the CRA itself
+asks for an SBOM in a commonly used, machine-readable format covering at least the top-level
+dependencies (Annex I Part II (1)), and the Commission may set format and elements by an
+implementing act (Art. 13(24)), which had not been found when this section was written. Sources and the
+dates read are under [Sources](#sources).
+
+| Column | NTIA minimum elements (2021) | BSI TR-03183-2 2.1.0 (2025) | What the count does not check |
+|---|---|---|---|
+| (structural: component name) | Component Name | Component name (5.2.2, required) | |
+| Version | Version of the Component | Component version (5.2.2, required) | whether the version follows a well-recognised scheme, as the TR recommends (8.1.9) |
+| purl, Identifier | Other Unique Identifiers | Other unique identifiers, CPE or purl (5.2.4, additional) | |
+| Supplier | Supplier Name | not the same field: the TR's "Component creator" (5.2.2, required) is the manufacturer, with an email or URL, and the TR keeps creator and supplier apart | whether the party is the creator; whether an email or URL is given |
+| Licence | not a minimum element ("License Information" is listed as a recommended field) | Distribution licences (5.2.2, required) | the SPDX expression rules and the "concluded" acknowledgement the TR asks for |
+| Hash, SHA-512 | not a minimum element ("Hash of the Component" is recommended) | Hash value of the deployable component, SHA-512 (5.2.2, required) | whether the hash is of the deployable form, and where it sits (the TR names the distribution external reference) |
+| In graph, dependency graph, compositions | Dependency Relationship; NTIA asks at least for all top-level dependencies and for gaps to be stated ("known unknowns") | Dependencies on other components, with completeness indicated (5.2.2, required); recursive resolution as set out in 5.1 | whether the graph is complete or deep enough; `compositions` is only noted as present |
+| Author or tool | Author of SBOM Data | Creator of the SBOM, with an email or URL (5.2.1, required) | whether a contact is given |
+| Timestamp | Timestamp | Timestamp (5.2.1, required) | |
+
+Not counted at all: the TR's filename and executable, archive and structured properties of a component
+(5.2.2), the SBOM-URI (5.2.3), source code and deployable-form URIs (5.2.4), and the TR's format floor
+(CycloneDX 1.6 or SPDX 3.0.1 or higher, section 4; the plugin writes the CycloneDX version Syft writes, 1.7 when Syft fails).
+NTIA's practices (frequency, delivery, access control) are outside a file check.
 
 ## Limitations
 

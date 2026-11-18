@@ -9,7 +9,7 @@ from . import __version__, config
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
-            "assess", "report", "cra", "releases", "import")
+            "assess", "report", "cra", "releases", "import", "sbom")
 WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report", "cra",
                     "import")
 EXIT_READ_ONLY = 5
@@ -134,7 +134,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_cra_args(sub.add_parser("cra", parents=[common],
                                 help="EU Cyber Resilience Act readiness per configured product ([cra.products]): "
                                      "evidence present, missing or stale; starter documents"), common)
+    add_sbom_args(sub.add_parser("sbom", parents=[common],
+                                 help="SBOM quality: structural check and data-field coverage (writes nothing)"),
+                  common)
     return parser
+
+
+def add_sbom_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
+    sbom_sub = p.add_subparsers(dest="sbom_command", metavar="action")
+    sbom_sub.required = True
+    check_p = sbom_sub.add_parser("check", parents=[common],
+                                  help="structural findings and data-field coverage of CycloneDX JSON SBOMs (default: "
+                                       "every SBOM under sbom/); exit 1 on structural errors, 2 when unreadable")
+    check_p.add_argument("path", nargs="?", type=Path, default=None, help="one CycloneDX JSON file")
+    check_p.add_argument("--project", default=None, help="the SBOMs of this project under sbom/")
+    check_p.add_argument("--branch", default=None, help="with --project: only this branch or release label")
+    check_p.add_argument("--json", action="store_true", help="print JSON instead of text")
 
 
 def add_cra_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
@@ -344,6 +359,17 @@ def _import(args) -> int:
     return sbomimport.cli(args)
 
 
+def _sbom(args) -> int:
+    from . import sbomquality
+    if args.path is not None and args.project:
+        print("sbom check: give a path or --project, not both", file=sys.stderr)
+        return 2
+    if args.branch and not args.project:
+        print("sbom check: --branch needs --project", file=sys.stderr)
+        return 2
+    return sbomquality.cli(args)
+
+
 def _cra(args) -> int:
     from . import cra
     return cra.cli(args)
@@ -401,7 +427,7 @@ HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
                                "code": _code, "settings": _settings, "assess": _assess, "report": _report,
-                               "cra": _cra, "releases": _releases, "import": _import}
+                               "cra": _cra, "releases": _releases, "import": _import, "sbom": _sbom}
 
 
 if __name__ == "__main__":

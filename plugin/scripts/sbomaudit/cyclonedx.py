@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
@@ -15,11 +17,24 @@ BOOL_PROPS = {"floating", "own", "digest", "unresolved", "imported"}
 
 
 def empty_bom() -> dict:
-    return {
+    """The document written when Syft fails: own-reader components only, with the same header Syft writes."""
+    bom = {
         "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
         "bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1,
         "metadata": {}, "components": [],
     }
+    ensure_header(bom)
+    return bom
+
+
+def ensure_header(bom: dict) -> None:
+    """A `serialNumber` and `metadata.timestamp` where the document has none (both describe this document, not
+    a component, so nothing is invented about the software)."""
+    if not bom.get("serialNumber"):
+        bom["serialNumber"] = f"urn:uuid:{uuid.uuid4()}"
+    meta = bom.setdefault("metadata", {})
+    if not meta.get("timestamp"):
+        meta["timestamp"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _prop(name: str, value) -> dict:
@@ -61,7 +76,13 @@ def merge(bom: dict, extra: list[Component]) -> dict:
             continue
         seen.add(entry["bom-ref"])
         comps.append(entry)
-    tools = bom.setdefault("metadata", {}).setdefault("tools", {}).setdefault("components", [])
+    ensure_header(bom)
+    meta = bom["metadata"]
+    if isinstance(meta.get("tools"), list):         # legacy (spec 1.4) tool list: add an entry of that shape
+        if not any(isinstance(t, dict) and t.get("name") == "sbom-audit" for t in meta["tools"]):
+            meta["tools"].append({"vendor": "Nils Weiser", "name": "sbom-audit", "version": __version__})
+        return bom
+    tools = meta.setdefault("tools", {}).setdefault("components", [])
     if not any(t.get("name") == "sbom-audit" for t in tools):
         tools.append({"type": "application", "name": "sbom-audit", "version": __version__,
                       "author": "Nils Weiser"})
