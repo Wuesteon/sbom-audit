@@ -30,10 +30,12 @@ into `security/` unless a command below says otherwise. Required tools: `git`, `
 | Read audited code | `code grep\|show\|files <project> <branch> …` | nothing |
 | CRA readiness per product | `cra check` (only products under `[cra.products]`; also part of `run`) | `security/CRA.md`, `security/cra.json` |
 | CRA starter documents | `cra init <project>` (plan), then `cra init <project> --yes` after confirmation | new files in `security/cra/<project>/`, never overwrites |
+| Check the reports are what the run wrote | `verify [--json]` (recomputes the SHA-256 of every file in `manifest.json`) | nothing |
 | Assessment draft by a model | `assess draft --dry-run`, then `assess draft` (needs `[assess]`, see below) | `reports/<date>-assessment-proposal.md` |
 
 Exit codes: `run` 0 clean, 1 findings, 2 a source failed (that section is empty, not clean), 3 malformed
-VEX file, 4 missing tool; `lookup` 1 no match; `incident` 1 hit, 2 cannot answer; 5 read-only mode
+VEX file, 4 missing tool; `lookup` 1 no match; `incident` 1 hit, 2 cannot answer; `verify` 1 a file changed
+or is missing, 2 no readable `manifest.json`; 5 read-only mode
 (`SBOM_AUDIT_READ_ONLY=1` makes every writing command exit 5 without writing).
 
 Not for agents without the user present: `setup --enable-dependabot … --yes`, `setup --schedule`,
