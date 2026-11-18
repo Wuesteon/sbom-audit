@@ -16,7 +16,7 @@ from . import __version__, coverage, sbomimport, sbomquality
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import fixed_in
-from .model import BranchInventory, Finding
+from .model import BranchInventory, Finding, qualified_name
 from .versions import ver_key
 from .vex import Suppressed
 
@@ -30,7 +30,7 @@ OUTDATED_CAP = 60
 SEVERITY_ROWS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 ACTIONABLE = ("CRITICAL", "HIGH")
 EOL_ICON = {"EOL": "🔴 EOL", "EOL soon": "🟠 EOL soon", "supported": "🟢 supported", "unknown": "⚪ unknown"}
-EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3}
+EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3, "minimum": 4}   # minimum: enrich.build_minimum
 # INVENTORY.md overview columns: (header, component kind, names)
 OVERVIEW_COLUMNS = [("Node", "runtime", ("nodejs",)), ("Python", "runtime", ("python",)),
                     ("Deno", "runtime", ("deno",)), ("Expo/React Native", "package", ("expo", "react-native")),
@@ -61,6 +61,17 @@ _CONTROLS = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 def md(s) -> str:
     """One table-safe line from untrusted text (advisory summaries, paths, authors, host output)."""
     return _CONTROLS.sub(" ", _LINE_BREAKS.sub(" ", str(s).replace("|", "\\|")))
+
+
+def _pkg(v: dict) -> str:
+    """The package name a reader sees: Maven `group:artifact`, every other ecosystem its own full name.
+    `name` (the bare artifact for Maven) stays in audit.json for the issue ids and status identities."""
+    return v.get("package") or v["name"]
+
+
+def _direct_cell(direct) -> str:
+    """The Direct column: `yes`, `no` (transitive) or `unknown` (the scan could not tell; never shown as `no`)."""
+    return {True: "yes", False: "no"}.get(direct, "unknown")
 
 
 def _sev_label(v: dict) -> str:
@@ -144,7 +155,7 @@ def _vulnerabilities(findings: list[Finding], releases: dict | None = None) -> l
                                "scope": "unknown", "direct_anywhere": False, "locations": [], "vulns": []}
         scopes[key].add(c.scope)
         loc = {"project": f.project, "branch": f.branch, "manifest": _manifest(c),
-               "direct": bool(c.direct), "scope": c.scope}
+               "direct": c.direct, "scope": c.scope}
         if c.props.get("imported"):          # from an imported build SBOM (only then: audit.json unchanged)
             loc["imported"] = True
         if (f.project, f.branch) in (releases or {}):
@@ -182,10 +193,14 @@ def _runtimes(eol_rows: list[dict], releases: dict | None = None) -> list[dict]:
     for r in eol_rows:
         if out_of_support(releases, r["project"], r["branch"]):
             continue
-        key = (r["product"], r.get("cycle", ""))
+        # a go.mod build minimum (status `minimum`, enrich.build_minimum) is its own row, never merged into
+        # the runtime row of the same cycle
+        key = (r["product"], r.get("cycle", ""), r.get("basis"))
         g = groups.setdefault(key, {"product": r["product"], "cycle": r.get("cycle", ""),
                                     "status": r.get("status", "unknown"), "eol_date": r.get("eol_date"),
                                     "latest": r.get("latest"), "locations": []})
+        if r.get("basis"):
+            g.update(basis=r["basis"], cycle_status=r.get("cycle_status", "unknown"))
         loc = {"project": r["project"], "branch": r["branch"], "source": r.get("source", "")}
         if (r["project"], r["branch"]) in (releases or {}):
             loc["release"] = releases[(r["project"], r["branch"])]["tag"]
@@ -419,7 +434,7 @@ def _kev_section(vulns: list[dict]) -> list[str]:
         ids = ", ".join(f"{s['id']} {' '.join(s.get('cves', []))}".strip() for s in v["vulns"] if s.get("kev"))
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in v["locations"]}))
         scope = "dev-only" if v["scope"] == "optional" else "runtime scope"
-        L.append(f"- **{md(v['name'])}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): {ids} — used by {where}")
+        L.append(f"- **{md(_pkg(v))}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): {ids} — used by {where}")
     return L + [""]
 
 
@@ -427,8 +442,9 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
     L = ["## Critical and high severity by project", "",
          "KEV, CRITICAL and HIGH package versions with runtime scope; dev-only occurrences are listed further down. "
          "Production projects come first. `Fix target` is the lowest version that closes every listed advisory "
-         "(`–` = no fix released). `direct` = the manifest declares the package itself; otherwise it is transitive "
-         "and the fix is a lockfile refresh of the parent.", ""]
+         "(`–` = no fix released). Direct `yes` = the manifest declares the package itself; `no` = it is transitive "
+         "and the fix is a lockfile refresh of the parent; `unknown` = the scan could not tell whether the manifest "
+         "declares it, which is not the same as transitive: check the manifest first.", ""]
     per: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for v in vulns:
         if not _actionable(v):
@@ -447,8 +463,8 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
                   "|---|---|---|---|---|---|---|---|"]
             for v, l in rows:
                 sev, fix, worst = _fix_cells(v)
-                L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
-                         f"{'yes' if l['direct'] else 'no'} | `{md(l['manifest'])}` | {worst} |")
+                L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                         f"{_direct_cell(l.get('direct'))} | `{md(l['manifest'])}` | {worst} |")
             L.append("")
     return L
 
@@ -461,11 +477,18 @@ def _runtime_section(runtimes: list[dict]) -> list[str]:
     for r in runtimes:
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in r["locations"]}))
         via = "; ".join(sorted({l["source"] for l in r["locations"] if l.get("source")}))
-        L.append(f"| {EOL_ICON.get(r['status'], r['status'])} | {r['product']} | {r['cycle'] or '?'} | "
+        status = (f"build minimum (cycle {r.get('cycle_status') or 'unknown'})" if r["status"] == "minimum"
+                  else EOL_ICON.get(r["status"], r["status"]))
+        L.append(f"| {status} | {r['product']} | {r['cycle'] or '?'} | "
                  f"{r.get('eol_date') or '–'} | {r.get('latest') or '–'} | {md(where)} | {md(via)} |")
     L += ["", "_`engines` / `requires-python` give the lowest version the manifest allows (what runs depends on the "
           "host); Dockerfile and compose images are what actually runs in containers; Supabase edge runtime and "
           "Postgres are managed but still age out._", ""]
+    if any(r["status"] == "minimum" for r in runtimes):
+        L += ["_`build minimum`: the Go version in a go.mod (`go` or `toolchain` line) is the lowest Go that may "
+              "build the module, not the Go that runs it: the binary carries the runtime of whichever toolchain "
+              "builds it. It is listed for information and not counted as end of life; the cycle's own status is "
+              "in brackets. To check what you ship, look at the `golang` build image or the CI's Go version._", ""]
     return L
 
 
@@ -518,8 +541,8 @@ def _dev_only_section(vulns: list[dict]) -> list[str]:
           "|---|---|---|---|---|---|---|---|---|"]
     for v, l in rows:
         sev, fix, _ = _fix_cells(v)
-        L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
-                 f"{'yes' if l['direct'] else 'no'} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
+        L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                 f"{_direct_cell(l.get('direct'))} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
     return L + [""]
 
 
@@ -534,7 +557,7 @@ def _suppressed_section(suppressed: list[dict]) -> list[str]:
     for s in suppressed:
         f, st, c = s["finding"], s["statement"], s["finding"]["component"]
         vid = f["vulns"][0]["id"] if f.get("vulns") else st["vuln"]
-        L.append(f"| {vid} | {md(c['name'])} | {c['version'] or 'unresolved'} | {f['project']}@{f['branch']} | "
+        L.append(f"| {vid} | {md(qualified_name(c['ecosystem'], c['name'], c.get('purl') or ''))} | {c['version'] or 'unresolved'} | {f['project']}@{f['branch']} | "
                  f"{st['status']} | {st.get('justification') or '–'} | {md(st.get('impact') or '–')} | "
                  f"`{Path(st.get('path') or '').name or '–'}` |")
     return L + [""]
@@ -580,7 +603,8 @@ def _imports_line(imports: list[dict]) -> list[str]:
         return []
     off = [r for r in imports if sbomimport.staleness(r)]
     text = (f"Imported build SBOMs: {len(imports)} project branches or releases take the packages of some ecosystems "
-            "from a build SBOM instead of the repository scan (details under Notes and in `INVENTORY.md`)")
+            "from a build SBOM; packages only the repository scan found are kept in addition (counts under Notes "
+            "and in `INVENTORY.md`)")
     if off:
         text += (f"; {len(off)} of them not built from the scanned commit or with no commit recorded: "
                  + ", ".join(f"{md(r['project'])}@{md(r['branch'])} ({sbomimport.staleness(r)})" for r in off))
@@ -789,7 +813,7 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
     for inv in invs:
         for c in inv.components:
             if c.kind == "package" and c.direct:
-                d = direct.setdefault((c.ecosystem, c.name, _manifest(c)), {"versions": {}, "scopes": set()})
+                d = direct.setdefault((c.ecosystem, c.qualified_name(), _manifest(c)), {"versions": {}, "scopes": set()})
                 d["versions"][inv.branch] = c.version or "unresolved"
                 d["scopes"].add(c.scope)
     branches = _branch_order(cfg, {inv.branch for inv in invs})

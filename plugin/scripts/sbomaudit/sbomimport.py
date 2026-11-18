@@ -298,19 +298,25 @@ def read_capped(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def source(doc: Document, raw: bytes, where: str, from_evidence: bool, provenance: dict, commit: str) -> dict:
-    """The `package_source` of an inventory built from an import. `commit` is the scanned commit; the import's
-    own commit comes from its provenance (an evidence-folder file whose sha256 still matches it). `stale` is
-    True when that commit differs from the scanned one, None when it is not recorded."""
+def source(doc: Document, raw: bytes, where: str, from_evidence: bool, provenance: dict, commit: str,
+           last_change: str | None = None) -> dict:
+    """The `package_source` of an inventory built from an import. `commit` is the scanned commit. The import's
+    own commit comes from its provenance (an evidence-folder file whose sha256 still matches it); for a file
+    committed in the repository (config `sbom`) it is `last_change`, the last commit on the audited branch that
+    changed the file (`commit_from` says which). `stale` is True when that commit differs from the scanned
+    one, None when it is not recorded."""
     digest = hashlib.sha256(raw).hexdigest()
-    recorded = None
+    recorded, how = None, None
     if from_evidence and provenance.get("sha256") == digest and isinstance(provenance.get("commit"), str):
         recorded = provenance["commit"] if _SHA_RE.match(provenance["commit"]) else None
+        how = "provenance" if recorded else None
+    elif not from_evidence and isinstance(last_change, str) and _SHA_RE.match(last_change):
+        recorded, how = last_change, "git history"
     return {"kind": "import", "file": where, "in": "evidence" if from_evidence else "repository",
             "sha256": digest, "spec_version": doc.spec, "tool": doc.tool, "timestamp": doc.timestamp,
-            "commit": recorded,
+            "commit": recorded, "commit_from": how,
             "stale": None if recorded is None else recorded != commit,
-            "imported_at": provenance.get("imported_at") if recorded else None}
+            "imported_at": provenance.get("imported_at") if recorded and from_evidence else None}
 
 
 def staleness(src: dict | None) -> str:
@@ -320,21 +326,47 @@ def staleness(src: dict | None) -> str:
     if src.get("commit") is None:
         return "commit not recorded"
     if src.get("stale"):
+        if src.get("commit_from") == "git history":
+            return f"file last changed in commit {src['commit'][:7]}, not the scanned one"
         return f"built from commit {src['commit'][:7]}, not the scanned one"
     return ""
 
 
+KEPT_LISTED = 20       # kept packages named in the one-line description; the rest are counted
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
 def describe(src: dict) -> str:
-    """One line on an imported package list (Markdown-safe text is the caller's job)."""
-    replaced = ", ".join(src.get("replaced") or []) or "no ecosystem"
+    """One line on an imported package list (Markdown-safe text is the caller's job): the ecosystems it covers,
+    how many packages came from it, how many the repository scan kept because the build SBOM does not name them
+    (listed), and how many repository entries it replaced."""
+    ecosystems = ", ".join(src.get("replaced") or []) or "no ecosystem"
     where = "" if src.get("in") == "evidence" else " (committed in the repository)"
-    bits = [f"imported build SBOM `{src.get('file')}`{where}", f"replaces {replaced}"]
+    bits = [f"imported build SBOM `{src.get('file')}`{where} for {ecosystems}"]
+    if src.get("packages") is not None:
+        bits.append(f"{_plural(src['packages'], 'package', 'packages')} from the import")
+    if src.get("kept_from_scan") is not None:
+        unresolved = src.get("kept_unresolved") or 0
+        text = f"{src['kept_from_scan']} kept from the repository scan (not in the build SBOM"
+        text += f", {unresolved} with version not resolved)" if unresolved else ")"
+        kept = [str(k) for k in src.get("kept") or []]
+        if kept:
+            more = len(kept) - KEPT_LISTED
+            text += ": " + ", ".join(kept[:KEPT_LISTED]) + (f" and {more} more" if more > 0 else "")
+        bits.append(text)
+    if src.get("replaced_entries") is not None:
+        bits.append(_plural(src["replaced_entries"], "repository entry replaced", "repository entries replaced"))
     if src.get("tool"):
         bits.append(f"by {src['tool']}")
     if src.get("timestamp"):
         bits.append(f"generated {src['timestamp']}")
     bits.append(f"sha256 {str(src.get('sha256', ''))[:12]}")
-    bits.append(staleness(src) or f"commit {str(src.get('commit'))[:7]} (current)")
+    current = (f"committed in {str(src.get('commit'))[:7]} (the scanned commit)"
+               if src.get("commit_from") == "git history" else f"commit {str(src.get('commit'))[:7]} (current)")
+    bits.append(staleness(src) or current)
     if src.get("skipped_no_purl"):
         bits.append(f"{src['skipped_no_purl']} components without purl skipped")
     if src.get("invalid"):

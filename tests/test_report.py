@@ -180,6 +180,83 @@ class AuditMdTests(unittest.TestCase):
         self.assertIn("URLError: timeout", sec)
         self.assertLess(text.index("## Source status"), text.index("## Summary"))
 
+    def test_unknown_dependency_type_is_printed_unknown_not_transitive(self):
+        unk = pkg("mystery", "1.0.0", direct=None)
+        dev = pkg("devmystery", "1.0.0", scope="optional", direct=None)
+        loose = pkg("loose", "", direct=None)                      # unresolved: in coverage
+        trans = pkg("deep", "1.0.0", direct=False)
+        findings = [Finding("zeta", "main", unk, [vuln("GHSA-u", "HIGH", 7.5)]),
+                    Finding("zeta", "main", dev, [vuln("GHSA-d", "HIGH", 7.5)]),
+                    Finding("zeta", "main", trans, [vuln("GHSA-t", "HIGH", 7.5)])]
+        invs = [inv("zeta", "main", [unk, dev, loose, trans])]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            rep = report.build(cfg, invs, findings, [], [], [], SOURCES_OK)
+            text = self.write(Path(tmp), findings, invs=invs)
+        rows = {v["name"]: v for v in rep["vulnerabilities"]}
+        self.assertIsNone(rows["mystery"]["locations"][0]["direct"])
+        self.assertFalse(rows["deep"]["locations"][0]["direct"])
+        self.assertFalse(rows["mystery"]["direct_anywhere"])
+        [cov] = rep["unresolved_versions"]
+        self.assertIsNone(cov["packages"][0]["direct"])
+        by_project = section(text, "Critical and high severity by project")
+        self.assertRegex(by_project, r"\| mystery \| 1\.0\.0 \|[^\n]*\| unknown \| `package.json`")
+        self.assertRegex(by_project, r"\| deep \| 1\.0\.0 \|[^\n]*\| no \| `package.json`")
+        self.assertIn("`unknown` = the scan could not tell", by_project)
+        self.assertRegex(section(text, "Dev-only findings"), r"\| devmystery \| 1\.0\.0 \|[^\n]*\| unknown \| zeta@main")
+
+    def test_maven_packages_are_named_group_and_artifact_everywhere(self):
+        def maven(group, artifact, scope="required"):
+            return Component(kind="package", ecosystem="Maven", name=artifact, version="1.0",
+                             purl=f"pkg:maven/{group}/{artifact}@1.0", scope=scope, locations=["pom.xml"], direct=True)
+        kev = maven("org.kev", "kev-core")
+        high = maven("org.high", "high-core")
+        dev = maven("org.dev", "dev-core", scope="optional")
+        unrated = maven("org.unrated", "unrated-core")
+        hidden = maven("org.hidden", "hidden-core")
+        unrated_vuln = vuln("GHSA-u", None)
+        findings = [Finding("zeta", "main", kev, [vuln("GHSA-k", "HIGH", 7.5, kev=True)]),
+                    Finding("zeta", "main", high, [vuln("GHSA-h", "HIGH", 7.5)]),
+                    Finding("zeta", "main", dev, [vuln("GHSA-d", "HIGH", 7.5)]),
+                    Finding("zeta", "main", unrated, [unrated_vuln])]
+        st = vex.Statement(vuln="GHSA-x", product="pkg:github/example-org/zeta",
+                           subcomponents=["pkg:maven/org.hidden/hidden-core"], status="not_affected",
+                           justification="vulnerable_code_not_present", impact="", timestamp="2026-11-06T00:00:00+00:00",
+                           project="zeta", path="security/vex/zeta.openvex.json")
+        sup = vex.Suppressed(Finding("zeta", "main", hidden, [vuln("GHSA-x", "HIGH", 7.5)]), st)
+        invs = [inv("zeta", "main", [kev, high, dev, unrated, hidden])]
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.write(Path(tmp), findings, suppressed=[sup], invs=invs)
+            cfg = config(Path(tmp))
+            inventory = report.write_inventory_md(cfg, invs, cfg.out).read_text(encoding="utf-8")
+        self.assertIn("**org.kev:kev-core@1.0**", section(text, "🔴 Actively exploited (CISA KEV)"))
+        self.assertIn("| org.high:high-core | 1.0 |", section(text, "Critical and high severity by project"))
+        self.assertIn("| org.dev:dev-core | 1.0 |", section(text, "Dev-only findings"))
+        self.assertIn("| GHSA-x | org.hidden:hidden-core | 1.0 |", section(text, "Suppressed by VEX"))
+        self.assertIn("| org.unrated:unrated-core | 1.0 |", section(text, "Severity not rated"))
+        self.assertIn("| org.high:high-core | Maven |", inventory)
+
+    def test_go_mod_minimum_is_listed_apart_and_not_counted_as_eol(self):
+        eol = [{"project": "zeta", "branch": "main", "product": "go", "cycle": "1.20", "status": "minimum",
+                "basis": "go.mod", "cycle_status": "EOL", "eol_date": "2024-02-06", "latest": "1.20.14",
+                "source": "go.mod: go.mod go 1.20 (minimum Go for the build)"},
+               {"project": "alpha", "branch": "main", "product": "go", "cycle": "1.20", "status": "EOL",
+                "eol_date": "2024-02-06", "latest": "1.20.14", "source": "Dockerfile: image golang:1.20"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            rep = report.build(cfg, [inv("zeta", "main", [LODASH]), inv("alpha", "main", [LODASH])], [], [], eol,
+                               [], SOURCES_OK)
+            text = self.write(Path(tmp), [], eol=eol)
+        # the go.mod row and the image row of the same cycle are not merged into one status
+        self.assertEqual(sorted((r["status"], r.get("basis")) for r in rep["runtimes"]),
+                         [("EOL", None), ("minimum", "go.mod")])
+        self.assertIn("| Runtimes / images past end-of-life | 1 |", section(text, "Summary"))
+        sec = section(text, "Runtimes and base images")
+        self.assertIn("| build minimum (cycle EOL) | go | 1.20 | 2024-02-06 |", sec)
+        self.assertIn("zeta@main", sec)
+        self.assertIn("not the Go that runs", sec)
+        self.assertLess(sec.index("🔴 EOL"), sec.index("build minimum"))
+
     def test_runtime_and_floating_sections(self):
         eol = [{"project": "zeta", "branch": "main", "product": "nodejs", "cycle": "18", "status": "EOL",
                 "eol_date": "2025-04-30", "latest": "18.20.8", "source": "package.json: engines.node >=18"}]

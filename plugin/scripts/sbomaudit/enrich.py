@@ -142,24 +142,44 @@ def _source(c) -> str:
     return loc or detail
 
 
+MINIMUM = "minimum"
+
+
+def build_minimum(c) -> bool:
+    """A Go version read from go.mod (its `go` or `toolchain` line): the lowest Go that may build the module,
+    not the Go it runs on. The binary carries the runtime of whichever toolchain builds it, which may be any
+    newer one. A `golang` image (detail `image …`) is what builds or runs it and is not a minimum."""
+    source = c.locations[0] if c.locations else c.props.get("source", "")
+    return ((c.ecosystem or c.name) == "go" and str(c.props.get("detail", "")).startswith("go.mod ")
+            and (source == "go.mod" or source.endswith("/go.mod")))
+
+
 def eol(inventories: list[BranchInventory], cache: Cache, fetch=http_get_json,
         today: dt.date | None = None) -> tuple[list[dict], list[dict]]:
     """One row per (project, branch, product, cycle) for every runtime component, plus the lookups
-    that failed (`{"what": "<product>/<cycle>", "error": …}`), each product/cycle fetched once per run."""
+    that failed (`{"what": "<product>/<cycle>", "error": …}`), each product/cycle fetched once per run.
+
+    A row whose every source is a go.mod line (`build_minimum`) gets status `minimum`, `basis` "go.mod" and
+    the cycle's own endoflife.date status in `cycle_status`: a build minimum is not an end-of-life runtime,
+    so it never counts as EOL. Any other source of the same cycle on that branch (an image) keeps the row a
+    runtime row."""
     groups: dict[tuple, list[str]] = {}
+    minimum: dict[tuple, bool] = {}
     for inv in inventories:
         for c in inv.components:
             if c.kind != "runtime":
                 continue
             key = (inv.project, inv.branch, c.ecosystem or c.name, c.version or "")
             groups.setdefault(key, [])
+            minimum[key] = minimum.get(key, True) and build_minimum(c)
             src = _source(c)
             if src and src not in groups[key]:
                 groups[key].append(src)
     rows: list[dict] = []
     failed: list[dict] = []
     memo: dict[tuple[str, str], dict] = {}
-    for (project, branch, product, cycle), sources in sorted(groups.items()):
+    for key, sources in sorted(groups.items()):
+        project, branch, product, cycle = key
         if cycle:
             if (product, cycle) not in memo:
                 memo[(product, cycle)], error = _eol_lookup(product, cycle, cache, fetch)
@@ -170,9 +190,11 @@ def eol(inventories: list[BranchInventory], cache: Cache, fetch=http_get_json,
             latest = str(data.get("latest") or "") if "error" not in data else ""
         else:
             status, eol_date, latest = "unknown", "", ""
-        rows.append({"project": project, "branch": branch, "product": product, "cycle": cycle,
-                     "status": status, "eol_date": eol_date, "latest": latest,
-                     "source": "; ".join(sources)})
+        row = {"project": project, "branch": branch, "product": product, "cycle": cycle,
+               "status": status, "eol_date": eol_date, "latest": latest, "source": "; ".join(sources)}
+        if minimum[key]:
+            row.update(status=MINIMUM, basis="go.mod", cycle_status=status)
+        rows.append(row)
     return rows, failed
 
 

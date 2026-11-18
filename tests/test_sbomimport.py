@@ -202,6 +202,19 @@ class SourceTests(unittest.TestCase):
         committed = sbomimport.source(self.doc, self.raw, "target/bom.json", False, prov, "a" * 40)
         self.assertEqual((committed["in"], committed["stale"]), ("repository", None))
         self.assertIn("committed in the repository", sbomimport.describe(dict(committed, replaced=["Maven"])))
+        # git history could not name the file's last commit: the wording stays "commit not recorded"
+        self.assertEqual(sbomimport.staleness(committed), "commit not recorded")
+        self.assertIsNone(sbomimport.source(self.doc, self.raw, "target/bom.json", False, {}, "a" * 40,
+                                            last_change="not a sha")["commit"])
+        # an evidence file never takes a git-history commit
+        self.assertIsNone(sbomimport.source(self.doc, self.raw, "imports/p/main.cdx.json", True, {}, "a" * 40,
+                                            last_change="a" * 40)["commit"])
+
+    def test_last_change_is_none_when_git_fails(self):
+        from sbomaudit import gitio
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(gitio.last_change(Path(tmp), "a" * 40, "target/bom.json"))   # not a repository
+            self.assertIsNone(gitio.last_change(Path(tmp), "--output=/tmp/x", "bom.json"))
 
     def test_import_hint_does_not_point_at_a_manifest_line(self):
         self.assertIn("refresh the lockfile", issues._upgrade_hint(False, [{"direct": False}]))
@@ -294,7 +307,67 @@ class ScanImportTests(unittest.TestCase):
         self.assertEqual(next(i for i in back if i.branch == "main").package_source["replaced"], ["Maven"])
         notes = report._import_notes(result.inventories)
         self.assertEqual(len(notes), 1)
-        self.assertIn("imported build SBOM `imports/java/main.cdx.json`; replaces Maven", notes[0])
+        self.assertIn("imported build SBOM `imports/java/main.cdx.json` for Maven; 4 packages from the import", notes[0])
+
+    def test_import_supplements_the_scan_and_never_drops_a_package_silently(self):
+        # the scan found two Maven packages the build SBOM does not name: one resolved, one not
+        self.syft_bom["components"] += [
+            {"bom-ref": "s3", "type": "library", "name": "testcontainers", "version": "1.19.0",
+             "purl": "pkg:maven/org.testcontainers/testcontainers@1.19.0",
+             "properties": [{"name": "syft:location:0:path", "value": "/core/pom.xml"}]},
+            {"bom-ref": "s4", "type": "library", "name": "mystery", "version": "",
+             "purl": "pkg:maven/org.mystery/mystery",
+             "properties": [{"name": "syft:location:0:path", "value": "/core/pom.xml"}]}]
+        self.syft_comps += [
+            Component(kind="package", ecosystem="Maven", name="testcontainers", version="1.19.0",
+                      purl="pkg:maven/org.testcontainers/testcontainers@1.19.0", scope="required",
+                      locations=["core/pom.xml"]),
+            Component(kind="package", ecosystem="Maven", name="mystery", version="",
+                      purl="pkg:maven/org.mystery/mystery", scope="required", locations=["core/pom.xml"],
+                      props={"unresolved": True})]
+        code, _, err = self.cli("--branch", "main", str(self.write_doc(maven_doc())))
+        self.assertEqual(code, 0, err)
+        result = self.run_scan()
+        inv = next(i for i in result.inventories if i.branch == "main")
+        pkgs = {(c.ecosystem, c.name): c for c in inv.components if c.kind == "package"}
+        self.assertEqual(sorted(pkgs), [("Maven", "junit"), ("Maven", "lib"), ("Maven", "lib-core"),
+                                        ("Maven", "mystery"), ("Maven", "opt"), ("Maven", "testcontainers"),
+                                        ("npm", "left-pad")])
+        kept = pkgs[("Maven", "testcontainers")]
+        self.assertEqual((kept.version, kept.locations), ("1.19.0", ["core/pom.xml"]))
+        self.assertIs(kept.props.get("not_in_build_sbom"), True)
+        self.assertFalse(kept.props.get("imported"))
+        self.assertIs(pkgs[("Maven", "mystery")].props.get("not_in_build_sbom"), True)
+        self.assertFalse(pkgs[("Maven", "lib")].props.get("not_in_build_sbom"))   # named by both: import wins
+        self.assertEqual(pkgs[("Maven", "lib")].version, "1.0")
+        self.assertFalse(pkgs[("npm", "left-pad")].props.get("not_in_build_sbom"))  # ecosystem not imported
+        # the unresolved one is still listed as not checked
+        from sbomaudit import coverage
+        rows = coverage.unresolved_versions(result.inventories)
+        main = next(r for r in rows if r["branch"] == "main")
+        self.assertEqual([p["name"] for p in main["packages"] if p["ecosystem"] == "Maven"], ["org.mystery:mystery"])
+        src = inv.package_source
+        self.assertEqual((src["packages"], src["kept_from_scan"], src["kept_unresolved"], src["replaced_entries"]),
+                         (4, 2, 1, 1))
+        line = sbomimport.describe(src)
+        self.assertIn("4 packages from the import", line)
+        self.assertIn("2 kept from the repository scan (not in the build SBOM, 1 with version not resolved)", line)
+        self.assertIn("1 repository entry replaced", line)
+        # the SBOM document keeps the scan's entries and marks them
+        sbom = json.loads(scan.sbom_path(self.out, "java", "main").read_text())
+        props = {p["name"]: p["value"] for p in sbom["metadata"]["properties"]}
+        self.assertEqual((props["sbom-audit:package_source:packages"], props["sbom-audit:package_source:kept_from_scan"],
+                          props["sbom-audit:package_source:kept_unresolved"],
+                          props["sbom-audit:package_source:replaced_entries"]), ("4", "2", "1", "1"))
+        read = {c.name: c for c in cyclonedx.read_components(scan.sbom_path(self.out, "java", "main"))}
+        self.assertIs(read["testcontainers"].props.get("not_in_build_sbom"), True)
+        self.assertIs(read["lib"].props.get("imported"), True)
+        self.assertNotIn("pkg:maven/org.lib/lib", {c.get("purl") for c in sbom["components"]})
+        # INVENTORY.md names the kept packages
+        cfg = config.load(self.out)
+        text = report.write_inventory_md(cfg, result.inventories, self.out).read_text()
+        self.assertIn("kept from the repository scan (not in the build SBOM", text)
+        self.assertIn("org.testcontainers:testcontainers 1.19.0", text)
 
     def test_stale_import_is_used_and_reported(self):
         first = git(self.repo, "rev-parse", "main")
@@ -358,8 +431,20 @@ class ScanImportTests(unittest.TestCase):
         inv = next(i for i in self.run_scan().inventories if i.branch == "main")
         self.assertEqual(inv.errors, [])
         self.assertEqual((inv.package_source["file"], inv.package_source["in"]), ("target/bom.json", "repository"))
-        self.assertEqual(sbomimport.staleness(inv.package_source), "commit not recorded")
-        dev = next(i for i in self.run_scan().inventories if i.branch == "dev")
+        bom_commit = git(self.repo, "log", "-1", "--format=%H", "main", "--", "target/bom.json")
+        self.assertEqual((inv.package_source["commit"], inv.package_source["commit_from"]),
+                         (bom_commit, "git history"))
+        self.assertEqual(sbomimport.staleness(inv.package_source), "")       # last change is the scanned commit
+        self.assertIn(f"committed in {bom_commit[:7]} (the scanned commit)", sbomimport.describe(inv.package_source))
+        (self.repo / "LATER").write_text("x\n")
+        git(self.repo, "add", "LATER")
+        git(self.repo, "commit", "-q", "-m", "later")
+        inv = next(i for i in self.run_scan().inventories if i.branch == "main")
+        self.assertEqual(inv.package_source["commit"], bom_commit)
+        self.assertTrue(inv.package_source["stale"])
+        self.assertEqual(sbomimport.staleness(inv.package_source),
+                         f"file last changed in commit {bom_commit[:7]}, not the scanned one")
+        dev =next(i for i in self.run_scan().inventories if i.branch == "dev")
         self.assertIn("is not a file in the tree", dev.errors[0])      # dev was cut before the commit
         npm = {"bomFormat": "CycloneDX", "specVersion": "1.5",
                "components": [{"name": "left-pad", "purl": "pkg:npm/left-pad@1.3.0"}]}

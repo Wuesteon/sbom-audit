@@ -138,6 +138,13 @@ never as clean:
 
 Each `audit.json` vulnerability row also carries `package` (the OSV name: `group:artifact` for Maven,
 otherwise the name) and `purl` (without qualifiers); `issues.json` `details.package` uses the same name.
+Every name a reader sees uses it: the `AUDIT.md` tables (KEV, by project, dev-only, not rated, suppressed
+by VEX), the `INVENTORY.md` direct dependencies, the issue titles in `ISSUES.md`/`issues.json`, the
+management report, `RELEASES.md`/`releases.json` (`fixed_since_previous[].package`) and `lookup`. Two
+Maven artifacts with the same name in different groups are two packages. Only the `name` field of an
+`audit.json` row (the bare artifact, as Syft writes it) and the identifiers built from it keep the short
+name: issue ids (`vuln:<project>:<manifest>:Maven:<artifact>@<version>`) and the `status` identities stay
+as they were, so an id does not change between versions.
 
 **4. VEX.** `/sbom-audit:vex` records why a finding does or does not apply, in OpenVEX
 0.2.0, one document per project under `security/vex/`. `incident --vex` records
@@ -215,13 +222,15 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
   informational host output are not in it. An id is stable from run to run and the entry disappears
   when the issue does.
 - `incomplete` lists failed sources. When it is not empty, a short list is not a clean one.
-- `details.direct` says whether the package is a direct dependency of that manifest (`false`:
+- `details.direct` says whether the package is a direct dependency of that manifest (`true`), a
+  transitive one (`false`) or that the scan could not tell (`null`: unknown, never counted as
   transitive), `details.dev_only` whether only dev-only scopes hold it. The list is ordered by
-  priority, production first, then direct dependencies before transitive ones, then severity, place
-  and id: a direct dependency's fix lands in your own
-  manifest; a transitive one is fixed through the parent that pulls it in or a lockfile refresh. The
-  priority never depends on it. `ISSUES.md` and `REPORT.html` say how many vulnerabilities at
-  priority 2 and 3 are direct and how many transitive, and mark each row. Transitive does not mean
+  priority, production first, then direct dependencies, then unknown, then transitive ones, then
+  severity, place and id: a direct dependency's fix lands in your own
+  manifest; a transitive one is fixed through the parent that pulls it in or a lockfile refresh; for an
+  unknown one check the manifest first. The priority never depends on it. `ISSUES.md` and
+  `REPORT.html` say how many vulnerabilities at priority 2 and 3 are direct, how many transitive and,
+  when there are any, how many unknown, and mark each row. Transitive does not mean
   harmless: the package is installed and can run like a direct one, and there is no reachability
   analysis (see [Limitations](#limitations)), so it stays a finding until it is fixed or a VEX
   decision says otherwise.
@@ -303,7 +312,8 @@ from `[releases]`. Unknown keys are refused.
   announced end) or `(version unknown)` (no version to look up). An empty `eol_before_support_end`
   therefore never hides a runtime without a date; `RELEASES.md` has an "EOL unknown" column, and
   `REPORT.html` and `CRA.md` name them per release. Both lists are empty when the release has no
-  support period to compare with.
+  support period to compare with. A go.mod build minimum (status `minimum`, see "The Go runtime is a
+  minimum" below) is in neither list.
 - **Remediation evidence.** For each release, `fixed_since_previous` lists the advisories that matched
   a package in the SBOM of the previous kept release and match none in the SBOM of this one, with
   `first_seen` (the earliest kept release of the unbroken run that held it;
@@ -935,9 +945,13 @@ it is not a dependency.
 | others (Cargo, RubyGems, Composer, Swift, CocoaPods, GitHub Actions, …) | none | none | none | images in Dockerfiles and Compose files only |
 
 - **Unknown is not transitive.** For an ecosystem without a reader, `direct` is left out of
-  `inventory.json` and the SBOM (null), instead of claiming `false`. `audit.json` and the work list
-  still sort such a package with the transitive ones, because they only tell "direct" from "not
-  direct".
+  `inventory.json` and the SBOM (null), instead of claiming `false`; the same holds for an imported
+  build SBOM without a dependency graph. It stays null downstream: `audit.json` location `direct` and
+  the coverage `direct` value, `issues.json` `details.direct`, and `lookup` print `unknown` (never
+  `transitive`); `AUDIT.md` shows `unknown` in the Direct column, `ISSUES.md` "dependency type unknown",
+  the management report "dependency type unknown" / "Abhängigkeitsart unbekannt". Several places of one
+  package merge to `true` when any is direct, `false` only when every one is known transitive, else
+  null.
 - **Maven `provided`, `runtime` and `system` count as production.** `provided` code is on the
   production classpath, supplied by the container or the JDK; a finding there is still yours to judge.
   A dependency declared as `test` in one module and without scope in another is production.
@@ -949,7 +963,15 @@ it is not a dependency.
   production. The JDK in a `FROM eclipse-temurin:…` image is listed separately. A level below 9
   (`1.8`) is read as `8`.
 - **The Go runtime is a minimum.** The Go version in a binary is the toolchain that built it; the
-  `golang` build image, when there is one, says more.
+  `golang` build image, when there is one, says more. A go.mod `go` or `toolchain` line is therefore
+  never reported as an end-of-life runtime: when every source of a Go cycle on a branch is a go.mod
+  line, its `audit.json` `runtimes` row (and the `eol` row behind it) has status `minimum`, `basis`
+  `"go.mod"` and the cycle's own endoflife.date status in `cycle_status`; `eol_date` and `latest`
+  stay. `AUDIT.md` lists it last as `build minimum (cycle EOL)` with a footnote. It is not counted in
+  the summary, the log or the exit code, is not an `eol` issue in `issues.json`, is not in
+  `STATUS.md` or `MANAGEMENT.md`, and is in neither release list. A `golang` image of the same cycle
+  on the same branch is what builds or runs the code, so that cycle stays a normal runtime row with
+  its real status. The rule lives in `enrich.build_minimum` and `enrich.eol`.
 - **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
   repository yet.
 
@@ -957,8 +979,8 @@ it is not a dependency.
 
 The repository scan sees what the manifests declare. Where versions come from outside the repository
 (a Maven parent or BOM that is not in it, Gradle) or where you ship more than the manifests show, the
-build knows better. A CycloneDX JSON SBOM from the build can stand in for the scan's package list of a
-project branch or release tag.
+build knows better. A CycloneDX JSON SBOM from the build supplements the scan's package list of a
+project branch or release tag: where both name a package, the build's entry counts.
 
 ```bash
 # in the build, for Maven (official plugin; writes target/bom.json)
@@ -976,12 +998,22 @@ python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from
   Alternatively `sbom = "target/bom.json"` under `[projects."<name>"]` takes a file committed in the
   repository, read from the scanned commit, never from the working tree. When both exist, the
   `imports/` file wins. `--from-artifact` runs Syft on a built JAR, WAR, folder or image instead.
-- **What it replaces.** Syft and the readers still run. For each ecosystem (purl type) in the imported
-  SBOM, its packages replace the scan's packages of that ecosystem; other ecosystems, images and runtime
-  pins stay as the scan found them. The project's own modules are dropped (the SBOM's
-  `metadata.component` and its sub-components, the components the root depends on that the repository
-  defines). An SBOM of one artefact therefore replaces the whole repository's packages of its ecosystem:
-  import the aggregate SBOM, or the one of the artefact you ship.
+- **What it replaces, what it keeps.** Syft and the readers still run. For each ecosystem (purl type) in
+  the imported SBOM, a package that both the SBOM and the scan name (same ecosystem and package name,
+  Maven `groupId:artifactId`) is taken from the SBOM: version, scope and direct. A scan package of that
+  ecosystem the SBOM does not name is kept and marked `not_in_build_sbom` (in `inventory.json`, and as
+  `sbom-audit:not_in_build_sbom` in the `sbom/` document); if its version is not resolved it stays in
+  "Coverage: unresolved versions" like any other, so nothing leaves the inventory silently. Other
+  ecosystems, images and runtime pins stay as the scan found them. The project's own modules are dropped
+  (the SBOM's `metadata.component` and its sub-components, the components the root depends on that the
+  repository defines). There is no switch: a package the build does not list (a test-only or optional
+  dependency, a module the SBOM of one artefact does not cover) is still checked as the scan found it.
+- **Counts per branch.** The branch line in `INVENTORY.md` and the Notes of `AUDIT.md` say how many
+  packages came from the import, how many were kept from the repository scan (not in the build SBOM, with
+  the number whose version is not resolved, and up to 20 of them by name and version) and how many
+  repository entries the import replaced. `package_source` carries `packages`, `kept_from_scan`,
+  `kept_unresolved`, `kept` (the names) and `replaced_entries`; `replaced` stays the list of ecosystems
+  the SBOM covers.
 - **Direct and transitive** come from the SBOM's `dependencies` graph: a package is direct when the root
   or one of the project's own modules depends on it. Without a usable graph (Syft on a fat JAR has none)
   the manifests decide as for a scan, and an ecosystem without a manifest reader stays unknown.
@@ -994,11 +1026,17 @@ python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from
   imported file, and its work-list hint says so instead of naming a manifest line.
 - **Not this commit's.** When the recorded commit differs from the scanned one, the import is still used
   and every coverage statement says so: the branch line in `INVENTORY.md`, the coverage line and Notes in
-  `AUDIT.md`, the gaps in `STATUS.md` and the limits in `REPORT.html`. A file committed in the repository,
-  or an `imports/` file changed after `import`, has no recorded commit and reads "commit not recorded".
+  `AUDIT.md`, the gaps in `STATUS.md` and the limits in `REPORT.html`. For a file committed in the
+  repository (config `sbom`) the commit is the last commit on the audited branch that changed the file,
+  read from git history (`git log -1 <scanned commit> -- <path>`, no hooks, fsmonitor or diff drivers;
+  `commit_from: "git history"`). When that is the scanned commit the line reads "committed in <sha> (the
+  scanned commit)"; when it is older, "file last changed in commit <sha>, not the scanned one": the
+  dependencies may have changed since. If git cannot name it, and for an `imports/` file changed after
+  `import`, the import reads "commit not recorded".
 - **Where it shows.** `package_source` on the inventory entry (`inventory.json`) and in
-  `audit.json` `imported_sboms` (tool, timestamp, sha256, commit, stale, replaced ecosystems, how direct
-  was decided), the `sbom-audit:package_source:*` properties of the `sbom/` document, and
+  `audit.json` `imported_sboms` (tool, timestamp, sha256, commit, `commit_from` (`provenance` or
+  `git history`), stale, covered ecosystems as `replaced`, how direct was decided, the counts above), the
+  `sbom-audit:package_source:*` properties of the `sbom/` document, and
   `"imported": true` on a vulnerability location from it. `cra check` counts the `sbom/` document as
   before; an imported package list is part of it.
 - **Untrusted input.** CycloneDX JSON spec 1.4 to 1.7, at most 64 MiB and 200,000 components. XML and

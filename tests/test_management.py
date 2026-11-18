@@ -218,6 +218,27 @@ class TestFullRun(ManagementTestCase):
         self.assertIn("keine Erreichbarkeitsanalyse", de)
         self.assertIn("top 1.0.0 direkte Abhängigkeit", de)
 
+    def test_unknown_dependency_type_is_not_counted_or_shown_as_transitive(self):
+        out = full_folder(self.tmp / "security")
+        doc = json.loads((out / "issues.json").read_text())
+        doc["issues"][1:2] = [
+            {"id": "u1", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "CRITICAL", "production": True, "title": "vague 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": None, "dev_only": False}, "fix": {"action": "upgrade", "target": "2.0.0"}},
+            {"id": "t1", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "CRITICAL", "production": True, "title": "deep 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": False, "dev_only": False}, "fix": {"action": "upgrade", "target": "2.0.0"}}]
+        write_json(out / "issues.json", doc)
+        en = text_of(management.render(management.load(out)))
+        self.assertIn("vague 1.0.0 dependency type unknown", en)
+        self.assertNotIn("vague 1.0.0 transitive", en)
+        self.assertIn("1 in transitive ones and 1 whose dependency type the scan could not tell", en)
+        self.assertLess(en.index("vague 1.0.0"), en.index("deep 1.0.0"))    # unknown before transitive
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertIn("vague 1.0.0 Abhängigkeitsart unbekannt", de)
+        self.assertIn("1 in transitiven Abhängigkeiten und 1, bei denen der Scan die Abhängigkeitsart nicht "
+                      "erkennen konnte", de)
+
     def test_release_breakdown_says_what_the_sboms_show(self):
         out = full_folder(self.tmp / "security")
         fixed = [{"id": "GHSA-a", "change": "affected_removed"}, {"id": "GHSA-b", "change": "upgraded"},
