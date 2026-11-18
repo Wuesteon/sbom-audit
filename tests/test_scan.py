@@ -226,6 +226,70 @@ class ScanTests(unittest.TestCase):
         self.assertEqual((sbom["junit"].scope, sbom["junit"].direct), ("optional", True))
         self.assertIsNone(sbom["hex"].direct)
 
+    def test_go_module_imported_only_by_tests_is_dev_only(self):
+        make_repo(self.root, "gosvc", {
+            "go.mod": "module example.com/svc\n\ngo 1.22\n\nrequire (\n\tgithub.com/stretchr/testify v1.9.0\n"
+                      "\tgithub.com/lib/pq v1.10.9\n)\n",
+            "main.go": 'package main\n\nimport _ "github.com/lib/pq"\n',
+            "main_test.go": 'package main\n\nimport "github.com/stretchr/testify/assert"\n'})
+        cfg = config.load(self.out)
+
+        def entry(name, purl):
+            return {"bom-ref": purl, "type": "library", "name": name, "purl": purl, "version": purl.split("@")[1],
+                    "properties": [{"name": "sbom-audit:scope", "value": "required"}]}
+        rows = [("github.com/stretchr/testify", "pkg:golang/github.com/stretchr/testify@v1.9.0"),
+                ("github.com/lib/pq", "pkg:golang/github.com/lib/pq@v1.10.9")]
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1, "components": [entry(*r) for r in rows]}
+        comps = [cyclonedx.components({"components": [entry(*r)]})[0] for r in rows]
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["gosvc"], fetch=False)
+        got = {c.name: (c.direct, c.scope) for c in result.inventories[0].components if c.kind == "package"}
+        self.assertEqual(got, {"github.com/stretchr/testify": (True, "optional"), "github.com/lib/pq": (True, "required")})
+        sbom = {c.name: c for c in cyclonedx.read_components(scan.sbom_path(self.out, "gosvc", "main"))}
+        self.assertEqual(sbom["github.com/stretchr/testify"].scope, "optional")
+
+    def test_gradle_direct_scope_unknown_direct_and_unlocked_modules(self):
+        make_repo(self.root, "droid", {
+            "settings.gradle.kts": 'include(":app", ":lib", ":legacy")\n',
+            "app/build.gradle.kts": 'dependencies {\n implementation("org.a:core:1.0")\n'
+                                    ' testImplementation("org.t:junit:4.13")\n}\n',
+            "app/gradle.lockfile": "org.a:core:1.0=runtimeClasspath\norg.a:dep:2.0=runtimeClasspath\n"
+                                   "org.t:junit:4.13=testRuntimeClasspath\norg.t:hamcrest:1.3=testRuntimeClasspath\n",
+            "lib/build.gradle.kts": 'dependencies {\n implementation(Deps.mystery)\n}\n',
+            "lib/gradle.lockfile": "org.m:mystery:3.0=runtimeClasspath\n",
+            "legacy/build.gradle": "dependencies {\n implementation 'org.u:unlocked:5.1'\n"
+                                   " implementation 'org.u:dynamic:1.+'\n}\n"})
+        cfg = config.load(self.out)
+
+        def entry(name, purl, loc):
+            return {"bom-ref": purl, "type": "library", "name": name, "purl": purl, "version": purl.split("@")[1],
+                    "properties": [{"name": "sbom-audit:scope", "value": "required"},
+                                   {"name": "syft:location:0:path", "value": "/" + loc}]}
+        rows = [("core", "pkg:maven/org.a/core@1.0", "app/gradle.lockfile"),
+                ("dep", "pkg:maven/org.a/dep@2.0", "app/gradle.lockfile"),
+                ("junit", "pkg:maven/org.t/junit@4.13", "app/gradle.lockfile"),
+                ("hamcrest", "pkg:maven/org.t/hamcrest@1.3", "app/gradle.lockfile"),
+                ("mystery", "pkg:maven/org.m/mystery@3.0", "lib/gradle.lockfile")]
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1,
+               "components": [entry(*r) for r in rows]}
+        comps = [cyclonedx.components({"components": [entry(*r)]})[0] for r in rows]
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["droid"], fetch=False)
+        got = {c.name: (c.direct, c.scope, c.version) for c in result.inventories[0].components
+               if c.kind == "package"}
+        self.assertEqual(got["core"], (True, "required", "1.0"))
+        self.assertEqual(got["dep"], (False, "required", "2.0"))
+        self.assertEqual(got["junit"], (True, "optional", "4.13"))
+        # test-only in the lock file, but `legacy` has no lock state: other routes onto a classpath are unknown
+        self.assertEqual(got["hamcrest"][:2], (False, "required"))
+        self.assertEqual(got["mystery"][:2], (None, "required"))   # its module declares something not understood
+        self.assertEqual(got["unlocked"], (True, "required", "5.1"))
+        self.assertEqual(got["dynamic"], (True, "required", ""))
+        self.assertEqual(got["Deps.mystery"][2], "")
+        sbom = {c.name: c for c in cyclonedx.read_components(scan.sbom_path(self.out, "droid", "main"))}
+        self.assertEqual(sbom["junit"].scope, "optional")
+        self.assertTrue(sbom["dynamic"].props.get("unresolved"))
+
     def test_only_filters_and_reports_unknown_names(self):
         make_repo(self.root, "a", {"README": "a\n"})
         make_repo(self.root, "b", {"README": "b\n"})

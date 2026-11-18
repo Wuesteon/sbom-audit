@@ -939,8 +939,9 @@ it is not a dependency.
 |---|---|---|---|---|
 | npm | `dependencies`, `devDependencies`, `optionalDependencies` of every `package.json` | `devDependencies` (from Syft's second run) | `package.json` `name` | `engines.node`, `.nvmrc`, `.node-version` |
 | PyPI | `pyproject.toml` (PEP 621, Poetry), `requirements*.txt` | not determined | `pyproject.toml` name | `requires-python`, `.python-version` |
-| Go | every `require` in every `go.mod` without `// indirect` (single-line and block) | **not determined**: go.mod and go.sum do not say which modules only tests import | the `module` of every `go.mod` | `toolchain`, else `go` line of each `go.mod`, labelled as the minimum Go for the build |
+| Go | every `require` in every `go.mod` without `// indirect` (single-line and block) | a directly required module that only `_test.go` files, files with the `tools` build tag or a go.mod `tool` directive use, in every go.mod that requires it (see [Go test-only modules](#go-test-only-modules)) | the `module` of every `go.mod` | `toolchain`, else `go` line of each `go.mod`, labelled as the minimum Go for the build |
 | Maven | `<dependencies>` (and profile dependencies) of every `pom.xml`; not `<dependencyManagement>`, not plugin dependencies | a dependency whose every declaration has `<scope>test</scope>`, its own or one a `<dependencyManagement>` entry in the repository sets | `groupId:artifactId` of every `pom.xml` (the reactor modules) | Java language level: `maven-compiler-plugin` `<release>`/`<target>`/`<source>`, then `maven.compiler.release`/`target`/`source`, then `java.version`; checked against Eclipse Temurin's support dates |
+| Gradle (Maven purls) | `dependencies { }` of every `build.gradle` and `build.gradle.kts` (projects in `settings.gradle(.kts)` included; not `buildscript`, not `plugins { }`, not `project(...)`) | every declaration in a test, debug or build-tool configuration, every Maven declaration `test` too; a package only in `gradle.lockfile` when all its lock configurations are test ones and every module is locked (see [Gradle](#gradle)) | none (`project(...)` dependencies are skipped) | none |
 | .NET | none (no NuGet reader) | none | none | `global.json` `sdk.version` and `<TargetFramework(s)>` in `*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Build.props` (`net5.0`+ and `netcoreappX.Y`; .NET Framework and .NET Standard skipped) |
 | others (Cargo, RubyGems, Composer, Swift, CocoaPods, GitHub Actions, …) | none | none | none | images in Dockerfiles and Compose files only |
 
@@ -957,8 +958,7 @@ it is not a dependency.
   A dependency declared as `test` in one module and without scope in another is production.
 - **Maven `${…}` in coordinates** resolves from the pom's own properties and coordinates, then from
   any pom in the repository; a property defined only in a parent outside the repository stays
-  unresolved and the dependency is neither direct nor dropped. Gradle (`build.gradle`,
-  `build.gradle.kts`, version catalogs) is not read: its packages have `direct: false`.
+  unresolved and the dependency is neither direct nor dropped.
 - **The Java runtime is a language level**, the release the code is compiled for, not the JDK in
   production. The JDK in a `FROM eclipse-temurin:…` image is listed separately. A level below 9
   (`1.8`) is read as `8`.
@@ -975,6 +975,78 @@ it is not a dependency.
 - **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
   repository yet.
 
+### Go test-only modules
+
+go.mod and go.sum do not say which modules only the tests need, so the plugin reads the code
+(`goread.py`). For each `go.mod` it reads the import declarations of every `.go` file of that module (a
+subdirectory with its own `go.mod` is another module) and maps each import path to the required module
+with the longest matching path. A module required without `// indirect` is dev-only (`optional`) when
+every import of it is in a `_test.go` file or in a file with a `tools` build constraint
+(`//go:build tools`, the tools.go convention), or when go.mod names it only in a `tool` directive, and
+that holds in every go.mod of the repository that requires it. A module no file imports stays production
+(unknown, not dev-only); `// indirect` modules are handled as before.
+
+- Only the file header is read (build constraints, `package`, imports) by a small tokenizer: single and
+  block imports, aliases, dot and blank imports, comments and raw strings.
+- `vendor/`, `testdata/` and directories starting with `.` or `_` are skipped, as the Go tool does.
+- Build tags other than `tools` are not evaluated: a file under `//go:build integration` that is not a
+  `_test.go` counts as production, and so does a test helper package (`internal/testutil/x.go`) that
+  only tests import. Generated code is read like any other file; cgo's `import "C"` is not a module.
+- Hostile input: regular files inside the tree only, no symlinks, at most 1 MiB per file and 20,000 Go
+  files per scan; a module where a file was skipped makes no dev-only claim.
+
+### Gradle
+
+Syft (checked with 1.56.0) reads only files named exactly `gradle.lockfile`: every
+`group:artifact:version` in it, all configurations flattened, so no scope and no direct/transitive
+split. It reads nothing from `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradle/libs.versions.toml`,
+`gradle.properties`, `buildscript-gradle.lockfile` or the legacy `gradle/dependency-locks/*.lockfile`.
+Gradle is never run; the plugin's reader (`gradleread.py`) adds, statically:
+
+- **Declarations** in `dependencies { }` blocks (also inside `if`/`forEach`, and Kotlin Multiplatform
+  source sets): string notation `"g:a:v"` (`@aar`, classifier, `!!` accepted), map notation
+  (`group: …, name: …, version: …` and the Kotlin `=` form), `kotlin("x")`, `platform(…)` and
+  `enforcedPlatform(…)` (the BOM itself is listed, `platform: true`), version catalogs (`libs.x.y`,
+  `libs.bundles.x`, `version.ref`, `strictly`/`require`/`prefer`, other catalogs created in
+  `settings.gradle` with `from(files(…))`), and a local `val x = platform(libs.y)`. A `constraints { }`
+  block only supplies a version to a declaration of the same file. `project(…)`, `files(…)`,
+  `fileTree(…)`, `buildscript { }` and `plugins { }` are not dependencies.
+- **Versions.** Literal versions, and `$x`/`${x}` when `x` has exactly one literal value across
+  `def`/`val`, `ext.x =`, `ext { }`, `extra["x"]`, `val x by extra(…)`, Groovy maps in `ext`
+  (`versions.kotlin`), `buildSrc` `object X { const val y = "…" }` and every `gradle.properties` in the
+  repository. Two different values for the same name, a computed value, a dynamic version (`1.+`,
+  `latest.release`, a range) and a version that comes from a platform/BOM, the Spring
+  dependency-management plugin or the Kotlin plugin stay **unresolved**: the package is listed with an
+  empty version, `requirement` and `reason`, and counted under "version not resolved". A declaration
+  whose coordinates are unknown (an alias missing from the catalog, `Deps.x`, a helper function) is
+  listed under its expression with no purl, also unresolved; nothing is dropped.
+- **Which version counts.** A module with a `gradle.lockfile` gets its versions from Syft's reading of
+  it; the reader adds only declarations missing from the lock file. A module without one gets its
+  declared versions, which are a lower bound: Gradle's conflict resolution may pick a higher one, and
+  transitive packages are not known at all. Legacy `gradle/dependency-locks/<configuration>.lockfile`
+  files are read by the plugin (Syft does not).
+- **Scope.** A configuration is dev-only when one of its camel-case words is `test`
+  (`testImplementation`, `androidTestImplementation`, `kspTest`, `testFixturesApi`,
+  `integrationTestImplementation`, `debugUnitTestRuntimeClasspath`), when it starts with `debug`
+  (`debugImplementation`, `debugRuntimeClasspath`), when it is an annotation processor (`kapt*`, `ksp*`,
+  `*annotationProcessor`) or a build tool (`developmentOnly`, `checkstyle`, `detektPlugins`,
+  `lintChecks`, `kotlinCompilerClasspath`, …). Everything else counts as production, including
+  `compileOnly`, unknown custom configurations and flavor/release variants. A package is dev-only only
+  when every declaration (Gradle and Maven) says so. A package found only in `gradle.lockfile` is
+  dev-only when all its lock configurations are dev ones, but only if every module that declares
+  dependencies is locked and there is no `pom.xml` in the repository; otherwise it might reach a
+  production classpath another way and stays production.
+- **Direct.** A declared `group:artifact` is direct. Lock file packages of a module that declares
+  something the reader could not identify get `direct` unknown (null) instead of `false`.
+- **Hostile input.** Only regular files inside the exported tree, no symlinks, at most 1 MiB per file and
+  2,000 build files; a `settings.gradle` path that leaves the tree is ignored; `build/`, `node_modules/`,
+  hidden folders and the configured `ignore` paths are skipped (`android/` is read: it is where React
+  Native and Flutter keep the Gradle build).
+
+For exact versions, scopes and the transitive tree, commit a lock file (`./gradlew dependencies
+--write-locks` with `dependencyLocking { lockAllConfigurations() }`) or import a build SBOM made with
+the CycloneDX Gradle plugin (see [Imported build SBOMs](#imported-build-sboms)).
+
 ## Imported build SBOMs
 
 The repository scan sees what the manifests declare. Where versions come from outside the repository
@@ -985,6 +1057,8 @@ project branch or release tag: where both name a package, the build's entry coun
 ```bash
 # in the build, for Maven (official plugin; writes target/bom.json)
 mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom -DoutputFormat=json
+# for Gradle (official plugin: plugins { id("org.cyclonedx.bom") version "<current>" }; writes build/reports/bom.json)
+./gradlew cyclonedxBom
 # then, on the machine that holds security/
 python3 scripts/sbom_audit_cli.py import --project shop-api --branch main target/bom.json
 python3 scripts/sbom_audit_cli.py import --project shop-api --tag v2.3.0 bom.json
@@ -1140,6 +1214,12 @@ NTIA's practices (frequency, delivery, access control) are outside a file check.
   resolved", neither vulnerable nor clean. In-repo Maven poms are resolved offline; external BOMs are
   not downloaded, and Maven profiles, `<version>` ranges and properties set on the command line or in
   `settings.xml` are not evaluated.
+- Gradle build files are read, not run: plugins that add dependencies (Spring Boot, Android Gradle
+  plugin, Kotlin), `allprojects`/`subprojects` blocks applied to other modules, convention plugins,
+  catalogs published as artifacts, version catalogs' `rejectAll`/rich versions beyond
+  `strictly`/`require`/`prefer` and anything computed are not evaluated. Without `gradle.lockfile` a
+  Gradle project has no transitive packages and its declared versions are lower bounds (see
+  [Gradle](#gradle)); use lock files or the CycloneDX Gradle plugin's SBOM.
 - An advisory that no source rates reads "not rated"; it ranks with CRITICAL/HIGH in production
   (issues priority 3) rather than below LOW, and someone has to read it to know how bad it is.
 - No reachability analysis: a vulnerable package in the lockfile counts as a finding until
