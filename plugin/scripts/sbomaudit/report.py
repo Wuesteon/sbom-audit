@@ -611,6 +611,9 @@ def write_audit_md(rep: dict, out: Path) -> Path:
     if rep.get("unresolved_versions"):
         L += coverage.unresolved_section(rep["unresolved_versions"])
     L += _notes_section(rep["notes"])
+    if "provenance" in rep:                     # tool versions and data source dates (manifest.py)
+        from .manifest import audit_md_section
+        L += audit_md_section(rep["provenance"])
     text = "\n".join(L) + "\n"
     path = out / AUDIT_FILE
     if path.exists():

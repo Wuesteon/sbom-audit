@@ -68,5 +68,55 @@
  },
  "production_projects": [
   "shop-web"
- ]
+ ],
+ "provenance": {
+  "sbom_audit": "fixture",
+  "python": "3.12.0",
+  "platform": "fixture",
+  "config_sha256": null,
+  "tools": {
+   "syft": "1.18.1",
+   "osv-scanner": "2.0.2",
+   "git": "2.47.1"
+  },
+  "data_sources": {
+   "osv": {
+    "status": "ok",
+    "origin": "live",
+    "queried_at": "2026-11-07T03:00:00Z",
+    "branches_scanned": 3,
+    "branches_failed": 0
+   },
+   "cisa_kev": {
+    "status": "ok",
+    "entries": 1400,
+    "origin": "live",
+    "fetched_at": "2026-11-07T02:59:00+00:00",
+    "catalog_version": "2026.11.06",
+    "catalog_date": "2026-11-06T15:00:00.000Z"
+   },
+   "endoflife": {
+    "status": "ok",
+    "answers": 0,
+    "live": 0,
+    "cached": 0,
+    "without_answer": 0,
+    "oldest_fetch": null,
+    "newest_fetch": null
+   },
+   "registries": {
+    "status": "ok",
+    "answers": 0,
+    "live": 0,
+    "cached": 0,
+    "without_answer": 0,
+    "oldest_fetch": null,
+    "newest_fetch": null
+   },
+   "openvex": {
+    "status": "ok",
+    "statements": 0
+   }
+  }
+ }
 }

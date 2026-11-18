@@ -76,3 +76,23 @@ None.
 
 None.
 
+## How this report was produced
+
+sbom-audit fixture on Python 3.12.0 (fixture). Configuration: `sbom-audit.toml` not read (defaults).
+
+| Tool | Version |
+|---|---|
+| syft | 1.18.1 |
+| osv-scanner | 2.0.2 |
+| git | 2.47.1 |
+
+| Data source | Status | Freshness |
+|---|---|---|
+| OSV (osv-scanner) | ok | queried live during this audit (2026-11-07T03:00:00Z) |
+| CISA KEV | ok | catalogue 2026-11-06T15:00:00.000Z (version 2026.11.06), fetched 2026-11-07T02:59:00+00:00, downloaded during this audit |
+| endoflife.date | ok | nothing to look up |
+| npm/PyPI/JSR registries | ok | nothing to look up |
+| OpenVEX | ok | 0 statements in `vex/` |
+
+The secrets engine and its version are in `SECRETS.md`. `manifest.json` records the run's start and end, the audited commits and the SHA-256 and size of every file the run wrote; `sbom_audit_cli.py verify` recomputes them.
+

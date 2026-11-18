@@ -17,8 +17,8 @@ import socket
 import time
 from pathlib import Path
 
-from . import (assess, config, enrich, evidence, issues, matching, preflight, releases, report, sbomimport, scan,
-               scheduler, status, vex)
+from . import (assess, config, enrich, evidence, issues, manifest, matching, preflight, releases, report, sbomimport,
+               scan, scheduler, status, vex)
 from .cache import Cache
 from .config import Config, Project
 from .errors import VexError
@@ -167,6 +167,7 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
         sources = {"git": {"branches": len(inventories), "failed": git_failed}, **sources}
 
     cache = Cache(cfg.out / ENRICH_CACHE_DIR)
+    since = time.time()                         # cache entries stored from here on were fetched by this audit
     say("CISA KEV …")
     kev_ids, kev_error = enrich.load_kev(cache, http)
     sources["cisa_kev"] = {"loaded": len(kev_ids), "flagged": enrich.mark_kev(findings, kev_ids),
@@ -188,6 +189,8 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
 
     release_ctx = releases.context(cfg, inventories)
     rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx)
+    rep["provenance"] = manifest.try_provenance(cfg, cache, since, sources=sources, eol_rows=eol_rows,
+                                                latest_keys=direct, generated_at=rep.get("generated_at"))
     rel_doc = releases.build(cfg, inventories, findings, kept, eol_rows, sources)
     written = [report.write_json(rep, cfg.out),
                report.write_inventory_md(cfg, inventories, cfg.out),
@@ -425,7 +428,7 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
         elif (out / config.CONFIG_NAME).exists():
             expected_commit["config"] = f"{config.CONFIG_NAME} not committed: {refusal}"
             say(f"commit: {expected_commit['config']}")
-    pending = (evidence.pending_hand_edits(out, set(written + status_paths))
+    pending = (evidence.pending_hand_edits(out, set(written + status_paths + [out / manifest.MANIFEST_FILE]))
                if own or cfg.mode == "single" else [])
     expected_commit["pending_hand_edits"] = pending
     expected_push = _expected_push(cfg, own, visibility, expected_commit)
@@ -450,12 +453,17 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     from . import cra, management
     written += cra.try_check(cfg, out, say)     # only with [cra.products]; never changes the exit code
     written += management.try_write(out, say, hosts_active=hosts_doc is not None)
+    written += manifest.try_write(       # lists every file above with its SHA-256; the commit covers it
+        out, rep, inventories, written, say, exit_code=code, secrets=secrets, hosts=hosts_result,
+        started_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=time.monotonic() - started),
+        gh_used=own or bool(cfg.discovery.github_owner))
     commit = _do_commit(cfg, doc["commit"], doc, written, say)
     push = _do_push(cfg, doc["push"], commit["status"], visibility, say)
     if commit != doc["commit"] or push != doc["push"]:
         doc = {**doc, "commit": commit, "push": push}
         status.write(out, doc)
         status.write_md(out, doc)
+        manifest.refresh_paths(out, status_paths, "run (commit and push outcome)")
     say((out / status.STATUS_FILE).read_text(encoding="utf-8").rstrip("\n"))
     return doc
 

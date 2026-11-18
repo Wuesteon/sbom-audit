@@ -47,6 +47,13 @@ class Cache:
             return None
         return value
 
+    def stored_at(self, key: str) -> float | None:
+        """When the entry was stored (epoch seconds), whatever its age; None when missing or unreadable."""
+        try:
+            return float(json.loads(self._path(key).read_text(encoding="utf-8"))["stored_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
     def put(self, key: str, obj) -> None:
         p = self._path(key)
         p.parent.mkdir(parents=True, exist_ok=True)

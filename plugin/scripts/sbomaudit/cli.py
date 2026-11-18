@@ -9,7 +9,7 @@ from . import __version__, config
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
-            "assess", "report", "cra", "releases", "import")
+            "assess", "report", "cra", "releases", "import", "verify")
 WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report", "cra",
                     "import")
 EXIT_READ_ONLY = 5
@@ -134,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_cra_args(sub.add_parser("cra", parents=[common],
                                 help="EU Cyber Resilience Act readiness per configured product ([cra.products]): "
                                      "evidence present, missing or stale; starter documents"), common)
+    verify_p = sub.add_parser("verify", parents=[common],
+                              help="recompute the SHA-256 of every file manifest.json lists: ok, changed or "
+                                   "missing (writes nothing)")
+    verify_p.add_argument("--json", action="store_true", help="print the full result as JSON")
     return parser
 
 
@@ -349,6 +353,15 @@ def _cra(args) -> int:
     return cra.cli(args)
 
 
+def _verify(args) -> int:
+    from . import manifest
+    return manifest.cli_verify(args)
+
+
+# commands that write outside the evidence folder (settings) or create it (setup): no manifest refresh
+NO_MANIFEST_REFRESH = ("run", "setup", "settings")
+
+
 def _refresh_integration() -> None:
     """After a plugin update, keep opted-in rules and the hook script on the current version (best effort)."""
     import os
@@ -390,18 +403,30 @@ def main(argv: list[str] | None = None) -> int:
     handler = HANDLERS.get(args.command)
     if handler is None:
         parser.error(f"{args.command}: not implemented yet")
+    before = None
+    if _writes(args) and args.command not in NO_MANIFEST_REFRESH:
+        from . import manifest                  # a later command rewrites reports: keep manifest.json honest
+        before = manifest.snapshot(Path(args.out))
     try:
         return handler(args)
     except ConfigError as exc:
         print(f"{config.CONFIG_NAME}: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if before is not None:
+            label = manifest.command_label(args)
+            changed = manifest.refresh_changed(Path(args.out), before, label)
+            if changed:
+                print(f"manifest.json: {len(changed)} entr{'y' if len(changed) == 1 else 'ies'} refreshed "
+                      f"by `{label}`", file=sys.stderr)
 
 
 HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run": _run,
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
                                "code": _code, "settings": _settings, "assess": _assess, "report": _report,
-                               "cra": _cra, "releases": _releases, "import": _import}
+                               "cra": _cra, "releases": _releases, "import": _import,
+                               "verify": _verify}
 
 
 if __name__ == "__main__":
