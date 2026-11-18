@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import unquote
 
-from . import gradleread
+from . import goread, gradleread
 from .model import Component
 from .versions import min_version_from_range, norm_py, runtime_cycle
 
@@ -452,7 +452,10 @@ def dev_only_deps(src: Path, ignore: list[str]) -> set[tuple[str, str]]:
     dev = {ga: s == {"test"} for ga, s in scopes.items()}
     for ga, found in gradleread.scopes(gradleread.analyse(src, ignore)).items():   # Gradle configurations
         dev[ga] = dev.get(ga, True) and found == {True}
-    return {("Maven", ga) for ga, is_dev in dev.items() if is_dev}
+    out = {("Maven", ga) for ga, is_dev in dev.items() if is_dev}
+    # Go: directly required modules that only `_test.go` files or `tools`-tagged files import (goread)
+    out.update(("Go", module) for module in goread.dev_only(src, ignore, parse_go_mod))
+    return out
 
 
 def gradle_unknown_direct(src: Path, ignore: list[str]) -> set[str]:
@@ -492,7 +495,7 @@ def package_key(ecosystem: str, name: str, purl: str = "") -> str:
 def parse_go_mod(text: str) -> dict:
     """{'module', 'go', 'toolchain', 'require': [(module path, indirect)]} from a go.mod; single-line and
     block `require`. A module marked `// indirect` is needed only by a dependency (or by a dependency's
-    tests); go.mod has no marker for modules only the project's own tests need."""
+    tests); go.mod has no marker for modules only the project's own tests need (goread reads the imports)."""
     out: dict = {"module": "", "go": "", "toolchain": "", "require": []}
     in_require = False
     for raw in text.splitlines():

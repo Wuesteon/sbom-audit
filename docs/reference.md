@@ -873,7 +873,7 @@ it is not a dependency.
 |---|---|---|---|---|
 | npm | `dependencies`, `devDependencies`, `optionalDependencies` of every `package.json` | `devDependencies` (from Syft's second run) | `package.json` `name` | `engines.node`, `.nvmrc`, `.node-version` |
 | PyPI | `pyproject.toml` (PEP 621, Poetry), `requirements*.txt` | not determined | `pyproject.toml` name | `requires-python`, `.python-version` |
-| Go | every `require` in every `go.mod` without `// indirect` (single-line and block) | **not determined**: go.mod and go.sum do not say which modules only tests import | the `module` of every `go.mod` | `toolchain`, else `go` line of each `go.mod`, labelled as the minimum Go for the build |
+| Go | every `require` in every `go.mod` without `// indirect` (single-line and block) | a directly required module that only `_test.go` files, files with the `tools` build tag or a go.mod `tool` directive use, in every go.mod that requires it (see [Go test-only modules](#go-test-only-modules)) | the `module` of every `go.mod` | `toolchain`, else `go` line of each `go.mod`, labelled as the minimum Go for the build |
 | Maven | `<dependencies>` (and profile dependencies) of every `pom.xml`; not `<dependencyManagement>`, not plugin dependencies | a dependency whose every declaration has `<scope>test</scope>`, its own or one a `<dependencyManagement>` entry in the repository sets | `groupId:artifactId` of every `pom.xml` (the reactor modules) | Java language level: `maven-compiler-plugin` `<release>`/`<target>`/`<source>`, then `maven.compiler.release`/`target`/`source`, then `java.version`; checked against Eclipse Temurin's support dates |
 | Gradle (Maven purls) | `dependencies { }` of every `build.gradle` and `build.gradle.kts` (projects in `settings.gradle(.kts)` included; not `buildscript`, not `plugins { }`, not `project(...)`) | every declaration in a test, debug or build-tool configuration, every Maven declaration `test` too; a package only in `gradle.lockfile` when all its lock configurations are test ones and every module is locked (see [Gradle](#gradle)) | none (`project(...)` dependencies are skipped) | none |
 | .NET | none (no NuGet reader) | none | none | `global.json` `sdk.version` and `<TargetFramework(s)>` in `*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Build.props` (`net5.0`+ and `netcoreappX.Y`; .NET Framework and .NET Standard skipped) |
@@ -896,6 +896,26 @@ it is not a dependency.
   `golang` build image, when there is one, says more.
 - **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
   repository yet.
+
+### Go test-only modules
+
+go.mod and go.sum do not say which modules only the tests need, so the plugin reads the code
+(`goread.py`). For each `go.mod` it reads the import declarations of every `.go` file of that module (a
+subdirectory with its own `go.mod` is another module) and maps each import path to the required module
+with the longest matching path. A module required without `// indirect` is dev-only (`optional`) when
+every import of it is in a `_test.go` file or in a file with a `tools` build constraint
+(`//go:build tools`, the tools.go convention), or when go.mod names it only in a `tool` directive, and
+that holds in every go.mod of the repository that requires it. A module no file imports stays production
+(unknown, not dev-only); `// indirect` modules are handled as before.
+
+- Only the file header is read (build constraints, `package`, imports) by a small tokenizer: single and
+  block imports, aliases, dot and blank imports, comments and raw strings.
+- `vendor/`, `testdata/` and directories starting with `.` or `_` are skipped, as the Go tool does.
+- Build tags other than `tools` are not evaluated: a file under `//go:build integration` that is not a
+  `_test.go` counts as production, and so does a test helper package (`internal/testutil/x.go`) that
+  only tests import. Generated code is read like any other file; cgo's `import "C"` is not a module.
+- Hostile input: regular files inside the tree only, no symlinks, at most 1 MiB per file and 20,000 Go
+  files per scan; a module where a file was skipped makes no dev-only claim.
 
 ### Gradle
 

@@ -226,6 +226,28 @@ class ScanTests(unittest.TestCase):
         self.assertEqual((sbom["junit"].scope, sbom["junit"].direct), ("optional", True))
         self.assertIsNone(sbom["hex"].direct)
 
+    def test_go_module_imported_only_by_tests_is_dev_only(self):
+        make_repo(self.root, "gosvc", {
+            "go.mod": "module example.com/svc\n\ngo 1.22\n\nrequire (\n\tgithub.com/stretchr/testify v1.9.0\n"
+                      "\tgithub.com/lib/pq v1.10.9\n)\n",
+            "main.go": 'package main\n\nimport _ "github.com/lib/pq"\n',
+            "main_test.go": 'package main\n\nimport "github.com/stretchr/testify/assert"\n'})
+        cfg = config.load(self.out)
+
+        def entry(name, purl):
+            return {"bom-ref": purl, "type": "library", "name": name, "purl": purl, "version": purl.split("@")[1],
+                    "properties": [{"name": "sbom-audit:scope", "value": "required"}]}
+        rows = [("github.com/stretchr/testify", "pkg:golang/github.com/stretchr/testify@v1.9.0"),
+                ("github.com/lib/pq", "pkg:golang/github.com/lib/pq@v1.10.9")]
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1, "components": [entry(*r) for r in rows]}
+        comps = [cyclonedx.components({"components": [entry(*r)]})[0] for r in rows]
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["gosvc"], fetch=False)
+        got = {c.name: (c.direct, c.scope) for c in result.inventories[0].components if c.kind == "package"}
+        self.assertEqual(got, {"github.com/stretchr/testify": (True, "optional"), "github.com/lib/pq": (True, "required")})
+        sbom = {c.name: c for c in cyclonedx.read_components(scan.sbom_path(self.out, "gosvc", "main"))}
+        self.assertEqual(sbom["github.com/stretchr/testify"].scope, "optional")
+
     def test_gradle_direct_scope_unknown_direct_and_unlocked_modules(self):
         make_repo(self.root, "droid", {
             "settings.gradle.kts": 'include(":app", ":lib", ":legacy")\n',
