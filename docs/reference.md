@@ -311,7 +311,8 @@ from `[releases]`. Unknown keys are refused.
   announced end) or `(version unknown)` (no version to look up). An empty `eol_before_support_end`
   therefore never hides a runtime without a date; `RELEASES.md` has an "EOL unknown" column, and
   `REPORT.html` and `CRA.md` name them per release. Both lists are empty when the release has no
-  support period to compare with.
+  support period to compare with. A go.mod build minimum (status `minimum`, see "The Go runtime is a
+  minimum" below) is in neither list.
 - **Remediation evidence.** For each release, `fixed_since_previous` lists the advisories that matched
   a package in the SBOM of the previous kept release and match none in the SBOM of this one, with
   `first_seen` (the earliest kept release of the unbroken run that held it;
@@ -906,7 +907,15 @@ it is not a dependency.
   production. The JDK in a `FROM eclipse-temurin:…` image is listed separately. A level below 9
   (`1.8`) is read as `8`.
 - **The Go runtime is a minimum.** The Go version in a binary is the toolchain that built it; the
-  `golang` build image, when there is one, says more.
+  `golang` build image, when there is one, says more. A go.mod `go` or `toolchain` line is therefore
+  never reported as an end-of-life runtime: when every source of a Go cycle on a branch is a go.mod
+  line, its `audit.json` `runtimes` row (and the `eol` row behind it) has status `minimum`, `basis`
+  `"go.mod"` and the cycle's own endoflife.date status in `cycle_status`; `eol_date` and `latest`
+  stay. `AUDIT.md` lists it last as `build minimum (cycle EOL)` with a footnote. It is not counted in
+  the summary, the log or the exit code, is not an `eol` issue in `issues.json`, is not in
+  `STATUS.md` or `MANAGEMENT.md`, and is in neither release list. A `golang` image of the same cycle
+  on the same branch is what builds or runs the code, so that cycle stays a normal runtime row with
+  its real status. The rule lives in `enrich.build_minimum` and `enrich.eol`.
 - **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
   repository yet.
 

@@ -236,6 +236,27 @@ class AuditMdTests(unittest.TestCase):
         self.assertIn("| org.unrated:unrated-core | 1.0 |", section(text, "Severity not rated"))
         self.assertIn("| org.high:high-core | Maven |", inventory)
 
+    def test_go_mod_minimum_is_listed_apart_and_not_counted_as_eol(self):
+        eol = [{"project": "zeta", "branch": "main", "product": "go", "cycle": "1.20", "status": "minimum",
+                "basis": "go.mod", "cycle_status": "EOL", "eol_date": "2024-02-06", "latest": "1.20.14",
+                "source": "go.mod: go.mod go 1.20 (minimum Go for the build)"},
+               {"project": "alpha", "branch": "main", "product": "go", "cycle": "1.20", "status": "EOL",
+                "eol_date": "2024-02-06", "latest": "1.20.14", "source": "Dockerfile: image golang:1.20"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            rep = report.build(cfg, [inv("zeta", "main", [LODASH]), inv("alpha", "main", [LODASH])], [], [], eol,
+                               [], SOURCES_OK)
+            text = self.write(Path(tmp), [], eol=eol)
+        # the go.mod row and the image row of the same cycle are not merged into one status
+        self.assertEqual(sorted((r["status"], r.get("basis")) for r in rep["runtimes"]),
+                         [("EOL", None), ("minimum", "go.mod")])
+        self.assertIn("| Runtimes / images past end-of-life | 1 |", section(text, "Summary"))
+        sec = section(text, "Runtimes and base images")
+        self.assertIn("| build minimum (cycle EOL) | go | 1.20 | 2024-02-06 |", sec)
+        self.assertIn("zeta@main", sec)
+        self.assertIn("not the Go that runs", sec)
+        self.assertLess(sec.index("🔴 EOL"), sec.index("build minimum"))
+
     def test_runtime_and_floating_sections(self):
         eol = [{"project": "zeta", "branch": "main", "product": "nodejs", "cycle": "18", "status": "EOL",
                 "eol_date": "2025-04-30", "latest": "18.20.8", "source": "package.json: engines.node >=18"}]

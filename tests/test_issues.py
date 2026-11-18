@@ -95,6 +95,13 @@ class BuildTest(unittest.TestCase):
         self.assertNotIn("sk_live_VALUE", text)
         self.assertNotIn("v-fp-a", text)            # the value id stays in secrets.json
 
+    def test_go_mod_minimum_is_not_an_eol_issue(self):
+        rep = make_rep(runtimes=[{"product": "go", "cycle": "1.20", "status": "minimum", "basis": "go.mod",
+                                  "cycle_status": "EOL", "eol_date": "2024-02-06", "latest": "1.20.14",
+                                  "locations": [{"project": "prod", "branch": "main", "source": "go.mod: go 1.20"}]}])
+        doc = issues.build(rep, None, None)
+        self.assertEqual(doc["issues"], [])
+
     def test_eol_and_floating_tags(self):
         rep = make_rep(
             runtimes=[{"product": "nodejs", "cycle": "18", "status": "EOL", "eol_date": "2025-04-30", "latest": "18.20.8",

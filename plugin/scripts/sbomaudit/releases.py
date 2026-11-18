@@ -229,6 +229,8 @@ def _eol_before(rows: list[dict], until: str | None) -> list[str]:
         return []
     flagged = set()
     for r in rows:
+        if r.get("status") == "minimum":                # a go.mod build minimum is not a runtime (enrich.eol)
+            continue
         date = r.get("eol_date") or ""
         if date and date < until:
             flagged.add(f"{r['product']} {r.get('cycle', '')} (EOL {date})")
@@ -246,8 +248,9 @@ def _eol_unknown(rows: list[dict], until: str | None) -> list[str]:
         return []
     unknown = set()
     for r in rows:
-        if r.get("eol_date") or r.get("status") == "EOL":
-            continue                                    # a date, or already past end of life: `_eol_before`
+        if r.get("eol_date") or r.get("status") in ("EOL", "minimum"):
+            continue                                    # a date, or already past end of life: `_eol_before`;
+                                                        # a go.mod build minimum is in neither list
         product, cycle = r.get("product", ""), r.get("cycle") or ""
         if not cycle:
             unknown.add(f"{product} (version unknown)")

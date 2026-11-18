@@ -382,6 +382,15 @@ class BuildTests(unittest.TestCase):
         [row] = releases.build(self.cfg(), [a], [], [], eol, {})["projects"]["app"]["releases"]
         self.assertEqual(row["eol_unknown"], [])
 
+    def test_go_mod_minimum_is_neither_eol_nor_unknown(self):
+        a = self.inv("v1.0", 0, "2025-01-01")
+        eol = [{"project": "app", "branch": a.branch, "product": "go", "cycle": "1.20", "eol_date": "2024-02-06",
+                "status": "minimum", "basis": "go.mod", "cycle_status": "EOL"},
+               {"project": "app", "branch": a.branch, "product": "go", "cycle": "1.19", "eol_date": "",
+                "status": "minimum", "basis": "go.mod", "cycle_status": "unknown"}]
+        [row] = releases.build(self.cfg(support_months=60), [a], [], [], eol, {})["projects"]["app"]["releases"]
+        self.assertEqual((row["eol_before_support_end"], row["eol_unknown"]), ([], []))
+
     def test_project_without_release_scanning_is_absent(self):
         main = BranchInventory(project="app", branch="main", ref="main", commit="a" * 40)
         doc = releases.build(self.cfg(), [main], [], [], [], {})

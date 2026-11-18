@@ -30,7 +30,7 @@ OUTDATED_CAP = 60
 SEVERITY_ROWS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 ACTIONABLE = ("CRITICAL", "HIGH")
 EOL_ICON = {"EOL": "🔴 EOL", "EOL soon": "🟠 EOL soon", "supported": "🟢 supported", "unknown": "⚪ unknown"}
-EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3}
+EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3, "minimum": 4}   # minimum: enrich.build_minimum
 # INVENTORY.md overview columns: (header, component kind, names)
 OVERVIEW_COLUMNS = [("Node", "runtime", ("nodejs",)), ("Python", "runtime", ("python",)),
                     ("Deno", "runtime", ("deno",)), ("Expo/React Native", "package", ("expo", "react-native")),
@@ -193,10 +193,14 @@ def _runtimes(eol_rows: list[dict], releases: dict | None = None) -> list[dict]:
     for r in eol_rows:
         if out_of_support(releases, r["project"], r["branch"]):
             continue
-        key = (r["product"], r.get("cycle", ""))
+        # a go.mod build minimum (status `minimum`, enrich.build_minimum) is its own row, never merged into
+        # the runtime row of the same cycle
+        key = (r["product"], r.get("cycle", ""), r.get("basis"))
         g = groups.setdefault(key, {"product": r["product"], "cycle": r.get("cycle", ""),
                                     "status": r.get("status", "unknown"), "eol_date": r.get("eol_date"),
                                     "latest": r.get("latest"), "locations": []})
+        if r.get("basis"):
+            g.update(basis=r["basis"], cycle_status=r.get("cycle_status", "unknown"))
         loc = {"project": r["project"], "branch": r["branch"], "source": r.get("source", "")}
         if (r["project"], r["branch"]) in (releases or {}):
             loc["release"] = releases[(r["project"], r["branch"])]["tag"]
@@ -473,11 +477,18 @@ def _runtime_section(runtimes: list[dict]) -> list[str]:
     for r in runtimes:
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in r["locations"]}))
         via = "; ".join(sorted({l["source"] for l in r["locations"] if l.get("source")}))
-        L.append(f"| {EOL_ICON.get(r['status'], r['status'])} | {r['product']} | {r['cycle'] or '?'} | "
+        status = (f"build minimum (cycle {r.get('cycle_status') or 'unknown'})" if r["status"] == "minimum"
+                  else EOL_ICON.get(r["status"], r["status"]))
+        L.append(f"| {status} | {r['product']} | {r['cycle'] or '?'} | "
                  f"{r.get('eol_date') or '–'} | {r.get('latest') or '–'} | {md(where)} | {md(via)} |")
     L += ["", "_`engines` / `requires-python` give the lowest version the manifest allows (what runs depends on the "
           "host); Dockerfile and compose images are what actually runs in containers; Supabase edge runtime and "
           "Postgres are managed but still age out._", ""]
+    if any(r["status"] == "minimum" for r in runtimes):
+        L += ["_`build minimum`: the Go version in a go.mod (`go` or `toolchain` line) is the lowest Go that may "
+              "build the module, not the Go that runs it: the binary carries the runtime of whichever toolchain "
+              "builds it. It is listed for information and not counted as end of life; the cycle's own status is "
+              "in brackets. To check what you ship, look at the `golang` build image or the CI's Go version._", ""]
     return L
 
 
