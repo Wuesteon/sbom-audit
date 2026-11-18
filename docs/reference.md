@@ -724,7 +724,7 @@ records how the reports were produced and what they were when the run finished:
 | `run` | `command`, `started_at`, `finished_at` (UTC), `exit_code` |
 | `config` | SHA-256 of the `sbom-audit.toml` the run read (`null` when it read none) |
 | `tools` | version of syft, osv-scanner and git as each tool reports it (`syft version`, `osv-scanner --version`, `git --version`), gh when the run uses it, and the secrets engine actually used (gitleaks or betterleaks); `unknown` when a tool does not answer, `not installed` when it is not on PATH |
-| `data_sources` | per source (`osv`, `cisa_kev`, `endoflife`, `registries`, `openvex`, `secrets`, `hosts`): `status` (ok, partial, failed, skipped, not run) and freshness: OSV is queried live by osv-scanner; CISA KEV gives catalogue version and date, fetch time and whether it came live or from the 24 h cache; endoflife.date and the registries give the number of lookups answered live and from the cache and the oldest and newest fetch time |
+| `data_sources` | per source (`osv`, `cisa_kev`, `endoflife`, `registries`, `openvex`, `secrets`, `hosts`): `status` (ok, partial, failed, skipped, not run) and freshness: OSV is queried live by osv-scanner (`queried_at`, the audit's time in UTC); CISA KEV gives catalogue version and date, fetch time and whether it came live or from the 24 h cache; endoflife.date and the registries give the number of lookups answered live and from the cache and the oldest and newest fetch time |
 | `audited` | per project and branch or release tag: the audited commit, `release_tag`, `complete` (no error on that branch), and for an imported build SBOM its file, SHA-256, commit and staleness |
 | `files` | `{path: {sha256, bytes}}` for every file the run wrote (reports, JSON, dated copies, `sbom/**/*.cdx.json`, imported SBOMs) and every decision file it read (`vex/*.openvex.json`, `secrets-decisions.toml`, `hosts-decisions.toml`); `append_only: true` on `AUDIT.md` and `log.md` |
 | `refreshed` | one line per later command that rewrote evidence: `at`, `command`, `files`, `removed` |
@@ -758,6 +758,10 @@ the next run commits them.
 
 The same facts appear in plain words in a "How this report was produced" section at the end of `AUDIT.md`
 (before carried-over assessments) and as section 6 of `REPORT.html`, both from `audit.json` `provenance`.
+Its tool table lists every tool the manifest records: `run` writes `AUDIT.md` before the secrets scan, so
+it asks the secrets engine and gh for their versions up front (`audit` on its own, which runs neither,
+lists syft, osv-scanner and git only). The OSV query time there is UTC like the manifest's; `audit.json`
+`generated_at` keeps the run's own offset.
 
 **Inventory overview.** The Overview table of `INVENTORY.md` always has the columns Node, Python,
 Deno, Expo/React Native, SvelteKit, NestJS, Astro, Vite, FastAPI and Postgres. Java/JDK (`java`,

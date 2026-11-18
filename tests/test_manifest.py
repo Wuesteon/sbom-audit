@@ -119,7 +119,14 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(ds["endoflife"]["status"], "partial")
         self.assertEqual(ds["registries"]["status"], "ok")
         self.assertEqual(ds["openvex"]["statements"], 4)
-        self.assertEqual(ds["osv"]["queried_at"], "2026-11-18T10:00:00Z")
+        self.assertEqual(ds["osv"]["queried_at"], "2026-11-18T10:00:00+00:00")
+
+    def test_utc_iso(self):
+        self.assertEqual(manifest.utc_iso("2026-11-18T11:00:00+01:00"), "2026-11-18T10:00:00+00:00")
+        self.assertEqual(manifest.utc_iso("2026-11-18T10:00:00Z"), "2026-11-18T10:00:00+00:00")
+        self.assertEqual(manifest.utc_iso("2026-11-18T10:00:00"), "2026-11-18T10:00:00")   # zone unknown: as it is
+        for bad in (None, "", "yesterday", 5):
+            self.assertIsNone(manifest.utc_iso(bad))
 
     def test_kev_from_cache_without_meta_and_failed(self):
         self.cache.put("kev-catalog", ["CVE-1"])
@@ -224,6 +231,42 @@ class RunManifestTests(unittest.TestCase):
         self.assertIn("verify", page)
         audit = json.loads((self.out / "audit.json").read_text(encoding="utf-8"))
         self.assertEqual(audit["provenance"]["tools"]["osv-scanner"], "2.0.2")
+
+    def test_audit_md_lists_every_tool_the_manifest_records(self):
+        from sbomaudit.secrets import engine
+        stub = engine.Engine("/stub/bin/gitleaks", "gitleaks", "8.30.0")
+        with mock.patch.object(engine, "find_engine", return_value=stub):
+            self.run_pipeline()                       # its own repository: the run also asks gh
+        doc = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(doc["tools"].get("gitleaks"), "8.30.0")
+        self.assertEqual(doc["tools"].get("gh"), "2.63.0")
+        section = (self.out / "AUDIT.md").read_text(encoding="utf-8").split("## How this report was produced", 1)[1]
+        for name, version in doc["tools"].items():
+            self.assertIn(f"| {name} | {version} |", section)
+        audit = json.loads((self.out / "audit.json").read_text(encoding="utf-8"))
+        self.assertEqual(audit["provenance"]["tools"], doc["tools"])
+
+    def test_audit_md_without_secrets_lists_no_engine(self):
+        from sbomaudit.secrets import engine
+        with mock.patch.object(engine, "find_engine", return_value=engine.EngineProblem("missing")):
+            self.run_pipeline(commit=False)
+        doc = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
+        section = (self.out / "AUDIT.md").read_text(encoding="utf-8").split("## How this report was produced", 1)[1]
+        self.assertNotIn("gitleaks", doc["tools"])
+        self.assertNotIn("| gitleaks |", section)
+        for name, version in doc["tools"].items():
+            self.assertIn(f"| {name} | {version} |", section)
+
+    def test_osv_query_time_is_utc_in_audit_md_and_manifest(self):
+        with mock.patch.object(pipeline.report, "_now", return_value="2026-11-18T11:30:00+01:00"):
+            self.run_pipeline(commit=False)
+        audit = json.loads((self.out / "audit.json").read_text(encoding="utf-8"))
+        self.assertEqual(audit["generated_at"], "2026-11-18T11:30:00+01:00")        # unchanged: other readers
+        manifest_doc = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest_doc["data_sources"]["osv"]["queried_at"], "2026-11-18T10:30:00+00:00")
+        section = (self.out / "AUDIT.md").read_text(encoding="utf-8").split("## How this report was produced", 1)[1]
+        self.assertIn("queried live during this audit (2026-11-18T10:30:00+00:00)", section)
+        self.assertNotIn("11:30:00+01:00", section)
 
     def test_verify_ok_changed_missing_appended(self):
         self.run_pipeline(commit=False)
