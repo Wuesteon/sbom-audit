@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cyclonedx, gitio, pomresolve, preflight, readers, sbomimport, syft
+from . import config, cyclonedx, gitio, pomresolve, preflight, readers, sbomimport, sbomquality, syft
 from .config import Config, Project
 from .errors import ToolError
 from .model import BranchInventory, Component
@@ -173,6 +173,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
     path = sbom_path(cfg.out, project.name, branch)
     cyclonedx.write(bom, path)
     inv.sbom_path = path.relative_to(cfg.out).as_posix()
+    inv.sbom_quality = sbomquality.summary(sbomquality.check(bom))
     inv.components = packages + extra
     return inv
 

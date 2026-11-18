@@ -20,6 +20,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import sbomquality
 from .cache import atomic_write
 from .errors import ConfigError
 
@@ -412,9 +413,11 @@ def check_product(cfg, ccfg: CraConfig, product: Product, out: Path, *, audit: d
             f"{CRA_DIR}/{product.key}/art14-procedure.md")
     obs.append(_ob("reporting", status, evidence, note))
     # SBOM and the audit
-    sbom = f"sbom/{product.key}/{res['branch']}.cdx.json" if res["branch"] else None
+    sbom = f"sbom/{product.key}/{res['branch'].replace('/', '__')}.cdx.json" if res["branch"] else None
     if sbom and (out / sbom).is_file():
-        obs.append(_ob("sbom", "present", [sbom]))
+        # a file with structural errors is not usable evidence: "missing", the path and the errors in the note
+        quality = sbomquality.summary(sbomquality.check_path(out / sbom))
+        obs.append(_ob("sbom", "present" if quality["valid"] else "missing", [sbom], sbomquality.cra_note(quality)))
     else:
         obs.append(_ob("sbom", "missing", [], f"no {sbom or f'sbom/{product.key}/'} (run /sbom-audit:run)"))
     generated = _parse_time((audit or {}).get("generated_at"))

@@ -12,7 +12,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import __version__, coverage, sbomimport
+from . import __version__, coverage, sbomimport, sbomquality
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import fixed_in
@@ -843,6 +843,7 @@ def write_inventory_md(cfg: Config, inventories: list[BranchInventory], out: Pat
         images = ", ".join(sorted({f"`{c.props.get('image', c.name)}`" for c in inv.components if c.kind == "image"})) or "–"
         L.append(f"| {md(inv.project)} | {inv.branch} | " + " | ".join(cells) + f" | {images} |")
     L.append("")
+    L += sbomquality.inventory_section(invs + releases)
     by_project: dict[str, list[BranchInventory]] = defaultdict(list)
     for inv in invs:
         by_project[inv.project].append(inv)

@@ -192,6 +192,8 @@ class CheckTests(CraTestCase):
         p = self.check(today=dt.date.today())["products"]["shop"]
         s = statuses(p)
         self.assertEqual(s["sbom"]["evidence"], ["sbom/shop/main.cdx.json"])
+        self.assertEqual(s["sbom"]["status"], "missing")              # "{}" is a file, not a CycloneDX SBOM
+        self.assertIn("structural errors (bom-format, spec-version)", s["sbom"]["note"])
         self.assertEqual(s["vulnerability_handling"]["status"], "present")
         self.assertEqual(s["decisions_trail"]["status"], "present")
         self.assertIn("vex/shop.openvex.json", s["decisions_trail"]["evidence"])
@@ -203,6 +205,23 @@ class CheckTests(CraTestCase):
         (self.out / "audit.json").write_text(json.dumps({"generated_at": old, "vulnerabilities": []}))
         s = statuses(self.check()["products"]["shop"])
         self.assertEqual(s["vulnerability_handling"]["status"], "stale")
+
+    def test_sbom_valid_with_coverage_note_and_slash_branch(self):
+        make_repo(self.tmp, "shop", {"README.md": "x\n"}, branches=["main", "release/1"])
+        self.config('[cra.products."shop"]\nbranch = "release/1"\n')
+        doc = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+               "serialNumber": "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+               "metadata": {"timestamp": "2026-11-18T10:00:00Z",
+                            "component": {"bom-ref": "shop", "type": "application", "name": "shop", "version": "1"}},
+               "components": [{"bom-ref": "a", "type": "library", "name": "a", "version": "1", "purl": "pkg:npm/a@1"}],
+               "dependencies": [{"ref": "shop", "dependsOn": ["a"]}]}
+        (self.out / "sbom" / "shop").mkdir(parents=True)
+        (self.out / "sbom" / "shop" / "release__1.cdx.json").write_text(json.dumps(doc))
+        s = statuses(self.check()["products"]["shop"])
+        self.assertEqual((s["sbom"]["status"], s["sbom"]["evidence"]), ("present", ["sbom/shop/release__1.cdx.json"]))
+        self.assertIn("1 components: version 100%, purl 100%, licence 0%", s["sbom"]["note"])
+        self.assertIn("dependency graph yes", s["sbom"]["note"])
+        self.assertNotRegex(s["sbom"]["note"], r"(?i)compl(y|ies|iant)|meets")
 
     def test_releases_json_present(self):
         make_repo(self.tmp, "shop", {"README.md": "x\n"})
