@@ -112,6 +112,21 @@ def branch_ref(repo: Path, branch: str) -> tuple[str, str, int]:
     return ref, sha, behind
 
 
+def last_change(repo: Path, commit: str, path: str) -> str | None:
+    """Full sha of the last commit reachable from `commit` that changed the file `path` (a literal path),
+    or None. Read from git objects only; repository config cannot make it prompt or run anything (no
+    fsmonitor, hooks, external diff or textconv)."""
+    if not commit or commit.startswith("-"):
+        return None
+    try:
+        out = git(repo, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=",
+                  "--literal-pathspecs", "log", "-1", "--no-ext-diff", "--no-textconv", "--format=%H",
+                  commit, "--", path, env=net_env()).strip()
+    except (GitError, OSError):
+        return None
+    return out if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", out) else None
+
+
 def list_tags(repo: Path, pattern: str) -> list[dict]:
     """Local tags whose name matches the glob `pattern` and that point (peeled) at a commit.
 

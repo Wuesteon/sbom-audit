@@ -207,8 +207,8 @@ STRINGS: dict[str, dict] = {
             "language setting applies only to this report and the cra init templates.",
         ],
         "limit_imports": "For {n} project branches or releases, the packages of some ecosystems come from an "
-                         "imported build SBOM instead of the repository scan; the plugin checks its format, not "
-                         "its completeness.",
+                         "imported build SBOM, with the packages only the repository scan found kept in addition; "
+                         "the plugin checks its format, not its completeness.",
         "limit_imports_off": "Not built from the scanned commit, or with no commit recorded ({n}): {which}.",
         "limit_actions": "GitHub Actions used in workflows are inventoried but not checked for vulnerabilities "
                          "(OSV does not match versions for this ecosystem): {n} in this run's branches.",
@@ -492,8 +492,8 @@ STRINGS: dict[str, dict] = {
             "Einstellung language gilt nur für diesen Bericht und die Vorlagen von cra init.",
         ],
         "limit_imports": "Bei {n} Branches oder Releases stammen die Pakete einiger Ökosysteme aus einer "
-                         "importierten Build-SBOM statt aus dem Repository-Scan; das Plugin prüft ihr Format, nicht "
-                         "ihre Vollständigkeit.",
+                         "importierten Build-SBOM; Pakete, die nur der Repository-Scan gefunden hat, bleiben "
+                         "zusätzlich erhalten. Das Plugin prüft ihr Format, nicht ihre Vollständigkeit.",
         "limit_imports_off": "Nicht aus dem gescannten Commit gebaut oder ohne Commit-Angabe ({n}): {which}.",
         "limit_actions": "In Workflows verwendete GitHub Actions werden inventarisiert, aber nicht auf "
                          "Schwachstellen geprüft (OSV gleicht für dieses Ökosystem keine Versionen ab): {n} in den "

@@ -11,7 +11,9 @@ from .syft import ECOSYSTEM_BY_PURL_TYPE, SCOPE_PROPERTY, purl_type
 PREFIX = "sbom-audit:"
 TYPE_BY_KIND = {"image": "container", "runtime": "platform", "package": "library"}
 LIST_PROPS = {"unpinned_requirements"}
-BOOL_PROPS = {"floating", "own", "digest", "unresolved", "imported"}
+BOOL_PROPS = {"floating", "own", "digest", "unresolved", "imported", "not_in_build_sbom"}
+# Set on a repository-scan package that an imported build SBOM of its ecosystem does not name: kept, not dropped
+NOT_IN_BUILD_SBOM = "not_in_build_sbom"
 
 
 def empty_bom() -> dict:
@@ -98,6 +100,18 @@ def mark_scope(bom: dict, scope_of) -> None:
         props.append({"name": SCOPE_PROPERTY, "value": value})
 
 
+def mark_not_in_build_sbom(bom: dict, should_mark) -> None:
+    """Add `sbom-audit:not_in_build_sbom` = true to the Syft package entries where `should_mark(entry)`."""
+    for entry in bom.get("components", []) or []:
+        if not entry.get("purl") or not should_mark(entry):
+            continue
+        props = entry.setdefault("properties", [])
+        if any(p.get("name") == PREFIX + "kind" for p in props):
+            continue
+        props[:] = [p for p in props if p.get("name") != PREFIX + NOT_IN_BUILD_SBOM]
+        props.append(_prop(NOT_IN_BUILD_SBOM, True))
+
+
 def drop_components(bom: dict, should_drop, keep_ref: str | None = None) -> list[dict]:
     """Remove entries where `should_drop(entry)`; their dependency rows move to `keep_ref`."""
     comps = bom.get("components", []) or []
@@ -142,8 +156,8 @@ def set_package_source(bom: dict, src: dict) -> None:
     props = bom.setdefault("metadata", {}).setdefault("properties", [])
     props[:] = [p for p in props if not str(p.get("name", "")).startswith(PREFIX + "package_source")]
     props.append(_prop("package_source", src.get("kind", "import")))
-    for key in ("file", "in", "sha256", "spec_version", "tool", "timestamp", "commit", "stale", "replaced",
-                "direct_from"):
+    for key in ("file", "in", "sha256", "spec_version", "tool", "timestamp", "commit", "commit_from", "stale",
+                "replaced", "direct_from", "packages", "kept_from_scan", "kept_unresolved", "replaced_entries"):
         value = src.get(key)
         if value is not None and value != "":
             props.append(_prop(f"package_source:{key}", value))
@@ -193,6 +207,8 @@ def _syft_component(entry: dict, props: dict[str, str]) -> Component:
     extra = {}
     if props.get("syft:package:foundBy"):
         extra["found_by"] = props["syft:package:foundBy"]
+    if props.get(PREFIX + NOT_IN_BUILD_SBOM) == "true":
+        extra[NOT_IN_BUILD_SBOM] = True
     direct_raw = props.get(PREFIX + "direct")
     return Component(
         kind="package", ecosystem=ECOSYSTEM_BY_PURL_TYPE.get(purl_type(purl), purl_type(purl)),

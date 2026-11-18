@@ -580,7 +580,8 @@ def _imports_line(imports: list[dict]) -> list[str]:
         return []
     off = [r for r in imports if sbomimport.staleness(r)]
     text = (f"Imported build SBOMs: {len(imports)} project branches or releases take the packages of some ecosystems "
-            "from a build SBOM instead of the repository scan (details under Notes and in `INVENTORY.md`)")
+            "from a build SBOM; packages only the repository scan found are kept in addition (counts under Notes "
+            "and in `INVENTORY.md`)")
     if off:
         text += (f"; {len(off)} of them not built from the scanned commit or with no commit recorded: "
                  + ", ".join(f"{md(r['project'])}@{md(r['branch'])} ({sbomimport.staleness(r)})" for r in off))

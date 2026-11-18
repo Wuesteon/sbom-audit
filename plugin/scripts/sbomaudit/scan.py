@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cyclonedx, gitio, pomresolve, preflight, readers, sbomimport, syft
+from . import config, cyclonedx, gitio, matching, pomresolve, preflight, readers, sbomimport, syft
 from .config import Config, Project
 from .errors import ToolError
 from .model import BranchInventory, Component
@@ -79,18 +79,28 @@ def _read_import(cfg: Config, project: Project, branch: str, src: Path, inv: Bra
         inv.errors.append(f"import: {where or project.sbom}: {exc}; the repository scan is used")
         return None
     provenance = sbomimport.read_provenance(path) if from_evidence else {}
-    return doc, sbomimport.source(doc, raw, where, from_evidence, provenance, inv.commit)
+    # a file committed in the repository: its commit is the last one on this branch that changed it
+    last = None if from_evidence else gitio.last_change(project.path, inv.commit, where)
+    return doc, sbomimport.source(doc, raw, where, from_evidence, provenance, inv.commit, last_change=last)
+
+
+def _kept_label(c: Component) -> str:
+    version = c.version if c.version and not matching.version_unresolved(c.version) else "(version not resolved)"
+    return f"{c.qualified_name()} {version}"
 
 
 def _apply_import(bom: dict, subject_ref: str, imported, packages: list[Component], extra: list[Component],
                   own_names: set, direct: dict, dev_only: set,
                   inv: BranchInventory) -> tuple[list[Component], list[Component]]:
-    """Replace the scan's packages of every ecosystem the import holds with the import's; other ecosystems,
-    images and runtime pins stay. An imported package keeps the manifests the scan found it in (or that declare
-    it), else it points at the import file."""
+    """Add the import's packages to the scan's. In every ecosystem the import holds, a package both name is the
+    import's (version, scope, direct); a scan package the import does not name stays, marked
+    `not_in_build_sbom` (with an unresolved version it stays listed as not checked). Other ecosystems, images
+    and runtime pins are untouched. An imported package keeps the manifests the scan found it in (or that
+    declare it), else it points at the import file."""
     doc, src = imported
     comps, via = sbomimport.packages(doc, own_names, direct)
     replaced = sorted({c.ecosystem for c in comps})
+    named = {_direct_key(c) for c in comps}
     manifests: dict[tuple, list[str]] = {}
     for c in packages + [e for e in extra if e.kind == "package"]:
         for loc in c.locations:
@@ -104,13 +114,21 @@ def _apply_import(bom: dict, subject_ref: str, imported, packages: list[Componen
         # dependency is on that one's classpath whatever its own declarations say
         if key in dev_only and c.direct is not False:
             c.scope = "optional"
-    cyclonedx.drop_components(bom, lambda e: bool(e.get("purl")) and _entry_key(e)[0] in replaced,
-                              keep_ref=subject_ref)
+    cyclonedx.drop_components(bom, lambda e: bool(e.get("purl")) and _entry_key(e) in named, keep_ref=subject_ref)
+    cyclonedx.mark_not_in_build_sbom(bom, lambda e: _entry_key(e)[0] in replaced and _entry_key(e) not in named)
+    covered = [c for c in packages + extra if c.kind == "package" and c.ecosystem in replaced]
+    kept = [c for c in covered if _direct_key(c) not in named]
+    for c in kept:
+        c.props[cyclonedx.NOT_IN_BUILD_SBOM] = True
+    labels = sorted({_kept_label(c) for c in kept})
     inv.package_source = {**src, "replaced": replaced, "direct_from": via, "packages": len(comps),
+                          "kept_from_scan": len(labels),
+                          "kept_unresolved": sum(1 for x in labels if x.endswith("(version not resolved)")),
+                          "kept": labels, "replaced_entries": len(covered) - len(kept),
                           "skipped_no_purl": doc.skipped_no_purl, "invalid": doc.invalid}
-    kept = [c for c in packages if c.ecosystem not in replaced]
-    extra = [c for c in extra if c.kind != "package" or c.ecosystem not in replaced]
-    return kept, extra + comps
+    packages = [c for c in packages if c.ecosystem not in replaced or _direct_key(c) not in named]
+    extra = [c for c in extra if c.kind != "package" or c.ecosystem not in replaced or _direct_key(c) not in named]
+    return packages, extra + comps
 
 
 def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None = None) -> BranchInventory:

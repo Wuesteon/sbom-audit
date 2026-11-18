@@ -118,7 +118,8 @@ The repository scan reads manifests and lockfiles. When versions come from outsi
 Maven parent or BOM it does not hold, Gradle), it lists them as "version not resolved". A CycloneDX JSON
 SBOM from the build fills that gap: `sbom_audit_cli.py import --project shop-api --branch main bom.json`
 (or `--tag v2.3.0`) stores it in `security/imports/`, and every later run uses its packages for the
-ecosystems it covers, with direct and transitive dependencies from its graph. Every coverage statement
+ecosystems it covers, with direct and transitive dependencies from its graph; packages only the
+repository scan found stay in the inventory, marked as not in the build SBOM. Every coverage statement
 names the imported file and says when it was not built from the scanned commit. Details:
 [Imported build SBOMs](docs/reference.md#imported-build-sboms).
 
