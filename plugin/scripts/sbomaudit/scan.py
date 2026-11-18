@@ -188,6 +188,14 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
     known = {c.key() for c in packages}            # a package Syft already catalogued is not added twice
     extra = [c for c in extra if c.kind != "package" or c.key() not in known]
     cyclonedx.merge(bom, extra)
+    if imported is not None and imported[0].graph:
+        # the import's dependency graph, in the bom-refs its packages were written under
+        written = {e.get("bom-ref") for e in bom.get("components", []) or []}
+        rows, cut = sbomimport.graph_rows(
+            imported[0], lambda c: ref if (ref := cyclonedx.bom_ref(c)) in written else None, subject_ref)
+        inv.package_source["graph_edges"] = cyclonedx.add_dependencies(bom, rows)
+        if cut:
+            inv.package_source["graph_truncated"] = True
     if inv.package_source:
         cyclonedx.set_package_source(bom, inv.package_source)
 

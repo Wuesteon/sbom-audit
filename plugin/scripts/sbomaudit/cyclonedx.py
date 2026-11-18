@@ -47,8 +47,14 @@ def _prop(name: str, value) -> dict:
     return {"name": PREFIX + name, "value": str(value)}
 
 
-def _entry(c: Component) -> dict:
-    """A CycloneDX component for an own-reader Component."""
+def bom_ref(c: Component) -> str:
+    """The bom-ref `merge` writes an own-reader Component under."""
+    return c.purl + "?sbom-audit=" + "|".join(c.locations)
+
+
+def _entry(c: Component, spec: str = "") -> dict:
+    """A CycloneDX component for an own-reader Component; an imported package also carries the fields of its
+    build SBOM entry (`Component.cdx`, as far as the document's spec version defines them)."""
     props = [_prop("kind", c.kind), _prop("ecosystem", c.ecosystem), _prop("scope", c.scope)]
     for i, loc in enumerate(c.locations):
         props.append(_prop(f"location:{i}", loc))
@@ -57,7 +63,7 @@ def _entry(c: Component) -> dict:
     for key in sorted(c.props):
         props.append(_prop(key, c.props[key]))
     entry = {
-        "bom-ref": c.purl + "?sbom-audit=" + "|".join(c.locations),
+        "bom-ref": bom_ref(c),
         "type": TYPE_BY_KIND.get(c.kind, "library"),
         "name": c.name,
         "purl": c.purl,
@@ -65,6 +71,10 @@ def _entry(c: Component) -> dict:
     }
     if c.version:
         entry["version"] = c.version
+    if c.cdx:
+        from .sbomimport import for_spec
+        for key, value in for_spec(c.cdx, spec).items():
+            entry.setdefault(key, value)
     return entry
 
 
@@ -72,8 +82,9 @@ def merge(bom: dict, extra: list[Component]) -> dict:
     """Append own-reader components; the document is modified in place and returned."""
     comps = bom.setdefault("components", [])
     seen = {e.get("bom-ref") for e in comps}
+    spec = str(bom.get("specVersion", ""))
     for c in extra:
-        entry = _entry(c)
+        entry = _entry(c, spec)
         if entry["bom-ref"] in seen:
             continue
         seen.add(entry["bom-ref"])
@@ -163,6 +174,41 @@ def drop_components(bom: dict, should_drop, keep_ref: str | None = None) -> list
     return dropped
 
 
+def add_dependencies(bom: dict, rows: dict[str, list[str]]) -> int:
+    """Add dependency rows (`ref` -> `dependsOn`), merged into an existing row of the same ref; returns how
+    many edges were new. Only refs the document defines (a component or the subject) are written."""
+    if not rows:
+        return 0
+    defined = {e.get("bom-ref") for e in bom.get("components", []) or [] if isinstance(e, dict)}
+    defined.add(_dict(_dict(bom.get("metadata")).get("component")).get("bom-ref"))
+    defined.discard(None)
+    deps = bom.get("dependencies")
+    if not isinstance(deps, list):
+        deps = bom["dependencies"] = []
+    index = {r.get("ref"): r for r in deps if isinstance(r, dict)}
+    added = 0
+    for ref, targets in rows.items():
+        if ref not in defined:
+            continue
+        row = index.get(ref)
+        if row is None:
+            row = index[ref] = {"ref": ref, "dependsOn": []}
+            deps.append(row)
+        if not isinstance(row.get("dependsOn"), list):
+            row["dependsOn"] = []
+        have = set(row["dependsOn"])
+        for t in targets:
+            if t in defined and t not in have:
+                have.add(t)
+                row["dependsOn"].append(t)
+                added += 1
+    return added
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def set_subject(bom: dict, name: str, purl: str, version: str) -> str:
     """metadata.component := the project; returns its bom-ref."""
     ref = purl
@@ -178,7 +224,8 @@ def set_package_source(bom: dict, src: dict) -> None:
     props[:] = [p for p in props if not str(p.get("name", "")).startswith(PREFIX + "package_source")]
     props.append(_prop("package_source", src.get("kind", "import")))
     for key in ("file", "in", "sha256", "spec_version", "tool", "timestamp", "commit", "commit_from", "stale",
-                "replaced", "direct_from", "packages", "kept_from_scan", "kept_unresolved", "replaced_entries"):
+                "replaced", "direct_from", "packages", "kept_from_scan", "kept_unresolved", "replaced_entries",
+                "graph_edges", "graph_truncated"):
         value = src.get(key)
         if value is not None and value != "":
             props.append(_prop(f"package_source:{key}", value))

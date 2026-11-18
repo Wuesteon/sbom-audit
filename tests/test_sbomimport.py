@@ -57,6 +57,22 @@ def maven_doc(graph: bool = True, spec: str = "1.6") -> dict:
     return doc
 
 
+RICH_FIELDS = {
+    "group": "org.lib",
+    "publisher": "Lib Foundation",
+    "hashes": [{"alg": "SHA-1", "content": "a" * 40}, {"alg": "SHA-512", "content": "b" * 128}],
+    "licenses": [{"license": {"id": "Apache-2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"}},
+                 {"license": {"name": "Custom licence", "acknowledgement": "declared"}}],
+    "supplier": {"name": "Lib Foundation", "url": ["https://lib.example"],
+                 "contact": [{"name": "Security", "email": "security@lib.example"}]},
+    "manufacturer": {"name": "Lib GmbH"},
+    "cpe": "cpe:2.3:a:lib:lib:1.0:*:*:*:*:*:*:*",
+    "externalReferences": [{"type": "vcs", "url": "https://github.com/lib/lib"},
+                           {"type": "distribution", "url": "https://repo.example/lib-1.0.jar",
+                            "hashes": [{"alg": "SHA-256", "content": "c" * 64}]}],
+}
+
+
 def raw(doc) -> bytes:
     return json.dumps(doc).encode()
 
@@ -180,6 +196,67 @@ class ParseTests(unittest.TestCase):
                          [("npm", "ok"), ("weird-type", "thing")])   # an unknown purl type is kept
         self.assertEqual(doc.graph, {"a": [], "c": ["d"]})
         self.assertEqual((doc.tool, doc.timestamp), ("", ""))
+
+
+class PassthroughTests(unittest.TestCase):
+    def test_well_formed_fields_are_kept_unchanged(self):
+        self.assertEqual(sbomimport.passthrough(RICH_FIELDS), RICH_FIELDS)
+        doc = maven_doc()
+        doc["components"][1].update(RICH_FIELDS)
+        comps, _ = sbomimport.packages(sbomimport.parse(raw(doc)), own=set(), direct_fallback={})
+        self.assertEqual(next(c for c in comps if c.name == "lib").cdx, RICH_FIELDS)
+        self.assertEqual(next(c for c in comps if c.name == "junit").cdx, {})
+
+    def test_untrusted_values_are_bounded_and_never_repaired(self):
+        hostile = {
+            "group": "x" * 600, "publisher": "bell\x07", "cpe": "not-a-cpe",
+            "hashes": [{"alg": "SHA-256", "content": "d" * 63}, {"alg": "CRC32", "content": "e" * 32},
+                       {"alg": "SHA-256", "content": "f" * 64, "bom-ref": "x"}, "nope"]
+                      + [{"alg": "MD5", "content": "0" * 32}] * 100,
+            "licenses": [{"license": {"id": "not an spdx id", "text": {"content": "x" * 10_000},
+                                      "bom-ref": "lic"}},
+                         {"license": {"name": 5}}, {"license": "x"}],
+            "supplier": {"name": "S", "bom-ref": "dup", "url": ["https://ok", 5, "x" * 3000],
+                         "contact": [{"email": "a@b", "bom-ref": "c"}, {"nested": {"deep": 1}}]},
+            "manufacturer": "a string",
+            "externalReferences": [{"type": "website", "url": "https://w"}, {"type": "made-up", "url": "https://m"},
+                                   {"type": "vcs", "url": ""}, {"type": "vcs", "url": "https://v", "x": [1]}],
+            "description": "not carried",
+        }
+        got = sbomimport.passthrough(hostile)
+        self.assertEqual(got, {
+            "hashes": [{"alg": "SHA-256", "content": "f" * 64}] + [{"alg": "MD5", "content": "0" * 32}] * 28,   # the first 32 entries are read
+            "licenses": [{"license": {"name": "not an spdx id"}}],
+            "supplier": {"name": "S", "url": ["https://ok"], "contact": [{"email": "a@b"}]},
+            "externalReferences": [{"type": "website", "url": "https://w"}, {"type": "vcs", "url": "https://v"}],
+        })
+        self.assertEqual(sbomimport.passthrough({"licenses": [{"expression": "MIT", "bom-ref": "e"},
+                                                              {"license": {"id": "MIT"}}]}),
+                         {"licenses": [{"expression": "MIT"}]})          # one expression, as CycloneDX allows
+        self.assertEqual(sbomimport.passthrough({"hashes": "x", "licenses": {"a": 1}, "supplier": [],
+                                                 "externalReferences": None}), {})
+
+    def test_older_documents_get_only_fields_their_spec_defines(self):
+        fields = sbomimport.passthrough(RICH_FIELDS)
+        old = sbomimport.for_spec(fields, "1.4")
+        self.assertNotIn("manufacturer", old)
+        self.assertEqual(old["licenses"][1], {"license": {"name": "Custom licence"}})
+        self.assertEqual(sbomimport.for_spec(fields, "1.6"), fields)
+        self.assertEqual(sbomimport.for_spec({"externalReferences": [{"type": "rfc-9116", "url": "u"}]}, "1.5"), {})
+        c = Component(kind="package", ecosystem="Maven", name="lib", version="1.0", purl="pkg:maven/org.lib/lib@1.0",
+                      scope="required", locations=["pom.xml"], props={"imported": True}, cdx=fields)
+        entry = cyclonedx.merge({"specVersion": "1.4", "components": []}, [c])["components"][0]
+        self.assertNotIn("manufacturer", entry)
+        self.assertEqual(entry["hashes"], RICH_FIELDS["hashes"])
+        self.assertNotIn("cdx", c.to_dict())
+
+    def test_graph_is_cut_at_the_edge_limit(self):
+        doc = sbomimport.parse(raw(maven_doc()))
+        sbomimport.packages(doc, own=set(), direct_fallback={})
+        with mock.patch.object(sbomimport, "MAX_EDGES", 2):
+            rows, cut = sbomimport.graph_rows(doc, lambda c: "ref:" + c.name, "subject")
+        self.assertTrue(cut)
+        self.assertEqual(sum(len(v) for v in rows.values()), 2)
 
 
 class SourceTests(unittest.TestCase):
@@ -368,6 +445,50 @@ class ScanImportTests(unittest.TestCase):
         text = report.write_inventory_md(cfg, result.inventories, self.out).read_text()
         self.assertIn("kept from the repository scan (not in the build SBOM", text)
         self.assertIn("org.testcontainers:testcontainers 1.19.0", text)
+
+    def test_import_fields_and_graph_reach_the_written_sbom(self):
+        """Hashes, licences, supplier, manufacturer, cpe, external references and the dependency graph of the
+        build SBOM are in the written SBOM unchanged, and `sbomquality` counts them."""
+        from sbomaudit import sbomquality
+        doc = maven_doc()
+        lib = doc["components"][1]
+        lib.update(RICH_FIELDS)
+        lib["hashes"].append({"alg": "SHA-256", "content": "not hex"})          # dropped, not repaired
+        doc["components"][2]["licenses"] = [{"expression": "Apache-2.0 OR MIT"}]
+        # lib-core reaches junit only through a component without purl: the path is kept through it
+        doc["components"].append({"bom-ref": "nopurl", "name": "shaded"})
+        doc["dependencies"].append({"ref": "pkg:maven/org.lib/lib-core@2.0?type=jar", "dependsOn": ["nopurl"]})
+        doc["dependencies"].append({"ref": "nopurl", "dependsOn": ["pkg:maven/org.junit/junit@4.13?type=jar"]})
+        source = self.write_doc(doc)
+        self.assertEqual(self.cli("--branch", "main", str(source))[0], 0)
+        inv = next(i for i in self.run_scan().inventories if i.branch == "main")
+        sbom = json.loads(scan.sbom_path(self.out, "java", "main").read_text())
+        written = {c["name"]: c for c in sbom["components"]}
+        expected = dict(RICH_FIELDS, hashes=RICH_FIELDS["hashes"][:2])
+        for key, value in expected.items():
+            self.assertEqual(written["lib"][key], value, key)
+        self.assertEqual(written["lib-core"]["licenses"], [{"expression": "Apache-2.0 OR MIT"}])
+        self.assertNotIn("hashes", written["junit"])                            # nothing invented
+        # the graph: own module core became the subject, edges kept, the path through `nopurl` kept
+        refs = {c["name"]: c["bom-ref"] for c in sbom["components"]}
+        rows = {r["ref"]: r["dependsOn"] for r in sbom["dependencies"]}
+        subject = sbom["metadata"]["component"]["bom-ref"]
+        self.assertTrue({refs["lib"], refs["junit"], refs["opt"]} <= set(rows[subject]))
+        self.assertIn(refs["lib-core"], rows[refs["lib"]])
+        self.assertIn(refs["junit"], rows[refs["lib-core"]])
+        self.assertEqual(inv.package_source["graph_edges"], 5)
+        self.assertIn("its dependency graph kept (5 edges)", sbomimport.describe(inv.package_source))
+        # sbomquality counts what the import had: the source and the written SBOM agree on the imported ones
+        result = sbomquality.check(sbom)
+        self.assertTrue(result["valid"], result["findings"])
+        cov = result["coverage"]
+        self.assertEqual((cov["hash"], cov["licence"], cov["supplier"], cov["sha512"]), (1, 2, 1, 1))
+        self.assertEqual(cov["in_graph"], 4)                    # the four imported packages; left-pad is Syft's
+        source_cov = sbomquality.check(json.loads(source.read_text()))["coverage"]
+        self.assertEqual((source_cov["hash"], source_cov["licence"], source_cov["supplier"]), (1, 2, 1))
+        # inventory.json does not carry the CycloneDX fields
+        self.assertNotIn("cdx", json.loads((self.out / "inventory.json").read_text())["inventories"][0]
+                         ["components"][0])
 
     def test_stale_import_is_used_and_reported(self):
         first = git(self.repo, "rev-parse", "main")

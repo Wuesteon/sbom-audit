@@ -69,6 +69,10 @@ class Document:
     graph: dict[str, list[str]] = field(default_factory=dict)
     skipped_no_purl: int = 0
     invalid: int = 0
+    # set by `packages`: the import's bom-refs of the project's own modules, and every other kept bom-ref with
+    # the package it became (duplicates merged)
+    own_refs: set[str] = field(default_factory=set)
+    by_ref: dict[str, Component] = field(default_factory=dict)
 
 
 def label(branch: str) -> str:
@@ -98,6 +102,164 @@ def _list(value) -> list:
 
 def _text(value, limit: int = 256) -> str:
     return value[:limit] if isinstance(value, str) else ""
+
+
+# --------------------------------------------------------------------------- fields carried through
+
+MAX_ITEMS = 32              # hashes, licences, external references, urls and contacts per component
+MAX_URL = 2048
+MAX_EDGES = 10 * MAX_COMPONENTS
+HASH_ALGS = frozenset(("MD5", "SHA-1", "SHA-256", "SHA-384", "SHA-512", "SHA3-256", "SHA3-384", "SHA3-512",
+                       "BLAKE2b-256", "BLAKE2b-384", "BLAKE2b-512", "BLAKE3"))
+_HASH_RE = re.compile(r"^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[0-9a-fA-F]{96}|[0-9a-fA-F]{128})$")
+_SPDX_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]{0,127}$")
+# external reference types of CycloneDX 1.4; the 1.5/1.6 additions are kept only in a 1.6+ document
+EXTREF_TYPES_14 = frozenset((
+    "vcs", "issue-tracker", "website", "advisories", "bom", "mailing-list", "social", "chat", "documentation",
+    "support", "distribution", "license", "build-meta", "build-system", "release-notes", "other"))
+EXTREF_TYPES_16 = EXTREF_TYPES_14 | frozenset((
+    "source-distribution", "distribution-intake", "security-contact", "model-card", "log", "configuration",
+    "evidence", "formulation", "attestation", "threat-model", "adversary-model", "risk-assessment",
+    "vulnerability-assertion", "exploitability-statement", "pentest-report", "static-analysis-report",
+    "dynamic-analysis-report", "runtime-analysis-report", "component-analysis-report", "maturity-report",
+    "certification-report", "codified-infrastructure", "quality-metrics", "poam", "electronic-signature",
+    "digital-signature", "rfc-9116"))
+SINCE_16 = ("manufacturer",)        # component fields that a CycloneDX document before 1.6 does not define
+
+
+def _clean(value, limit: int) -> str:
+    """A non-empty printable string of at most `limit` characters, else '' (never truncated: a cut hash, URL or
+    licence expression would be a different value)."""
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        return ""
+    return value if all(ch.isprintable() for ch in value) else ""
+
+
+def _hash_list(value) -> list[dict]:
+    out = []
+    for h in _list(value)[:MAX_ITEMS]:
+        h = _obj(h)
+        alg, content = _clean(h.get("alg"), 16), _clean(h.get("content"), 128)
+        if alg in HASH_ALGS and _HASH_RE.match(content):
+            out.append({"alg": alg, "content": content})
+    return out
+
+
+def _licences(value) -> list[dict]:
+    """CycloneDX `licenses`: either one SPDX expression, or licence entries (id, name, url, acknowledgement). An
+    id that is not SPDX-shaped is kept as the name; licence text, bom-refs and anything else are left out."""
+    items = [_obj(i) for i in _list(value)[:MAX_ITEMS]]
+    for item in items:
+        expression = _clean(item.get("expression"), 1024)
+        if expression:
+            out = {"expression": expression}
+            if item.get("acknowledgement") in ("declared", "concluded"):
+                out["acknowledgement"] = item["acknowledgement"]
+            return [out]
+    out = []
+    for item in items:
+        lic = _obj(item.get("license"))
+        entry = {}
+        lid, name = _clean(lic.get("id"), 128), _clean(lic.get("name"), 256)
+        if lid and _SPDX_ID_RE.match(lid):
+            entry["id"] = lid
+        elif lid or name:
+            entry["name"] = name or lid
+        else:
+            continue
+        url = _clean(lic.get("url"), MAX_URL)
+        if url:
+            entry["url"] = url
+        if lic.get("acknowledgement") in ("declared", "concluded"):
+            entry["acknowledgement"] = lic["acknowledgement"]
+        out.append({"license": entry})
+    return out
+
+
+def _party(value) -> dict:
+    """An organizational entity: name, urls, contacts (name, email, phone); its bom-ref is left out."""
+    party = _obj(value)
+    out = {}
+    name = _clean(party.get("name"), 256)
+    if name:
+        out["name"] = name
+    urls = [u for u in (_clean(u, MAX_URL) for u in _list(party.get("url"))[:MAX_ITEMS]) if u]
+    if urls:
+        out["url"] = urls
+    contacts = []
+    for contact in _list(party.get("contact"))[:MAX_ITEMS]:
+        contact = _obj(contact)
+        kept = {k: v for k in ("name", "email", "phone") if (v := _clean(contact.get(k), 256))}
+        if kept:
+            contacts.append(kept)
+    if contacts:
+        out["contact"] = contacts
+    return out
+
+
+def _external_refs(value) -> list[dict]:
+    out = []
+    for ref in _list(value)[:MAX_ITEMS]:
+        ref = _obj(ref)
+        rtype, url = _clean(ref.get("type"), 40), _clean(ref.get("url"), MAX_URL)
+        if rtype not in EXTREF_TYPES_16 or not url:
+            continue
+        entry = {"type": rtype, "url": url}
+        comment = _clean(ref.get("comment"), 256)
+        if comment:
+            entry["comment"] = comment
+        hashes = _hash_list(ref.get("hashes"))
+        if hashes:
+            entry["hashes"] = hashes
+        out.append(entry)
+    return out
+
+
+def passthrough(entry: dict) -> dict:
+    """The CycloneDX fields of an imported component that are written unchanged into the SBOM: group, publisher,
+    hashes, licenses, supplier, manufacturer, cpe, externalReferences. Each value is type-checked and bounded;
+    a value that fails a check is left out, never repaired or invented."""
+    out: dict = {}
+    for key, limit in (("group", 512), ("publisher", 256)):
+        text = _clean(entry.get(key), limit)
+        if text:
+            out[key] = text
+    cpe = _clean(entry.get("cpe"), 1024)
+    if cpe.startswith("cpe:"):
+        out["cpe"] = cpe
+    for key, value in (("hashes", _hash_list(entry.get("hashes"))), ("licenses", _licences(entry.get("licenses"))),
+                       ("supplier", _party(entry.get("supplier"))),
+                       ("manufacturer", _party(entry.get("manufacturer"))),
+                       ("externalReferences", _external_refs(entry.get("externalReferences")))):
+        if value:
+            out[key] = value
+    return out
+
+
+def for_spec(fields: dict, spec: str) -> dict:
+    """`passthrough` fields fit for a document of CycloneDX `spec`: before 1.6 without manufacturer, licence
+    acknowledgement and the external reference types 1.4 does not define."""
+    if _spec_at_least(spec, "1.6"):
+        return fields
+    out = {k: v for k, v in fields.items() if k not in SINCE_16}
+    if "licenses" in out:
+        out["licenses"] = [{k: ({kk: vv for kk, vv in v.items() if kk != "acknowledgement"}
+                                if isinstance(v, dict) else v)
+                            for k, v in item.items() if k != "acknowledgement"} for item in out["licenses"]]
+    if "externalReferences" in out:
+        refs = [r for r in out["externalReferences"] if r["type"] in EXTREF_TYPES_14]
+        if refs:
+            out["externalReferences"] = refs
+        else:
+            del out["externalReferences"]
+    return out
+
+
+def _spec_at_least(spec, wanted: str) -> bool:
+    try:
+        return tuple(int(x) for x in str(spec).split(".")) >= tuple(int(x) for x in wanted.split("."))
+    except ValueError:
+        return False
 
 
 # --------------------------------------------------------------------------- parsing
@@ -220,7 +382,8 @@ def parse(raw: bytes) -> Document:
         ref = _text(entry.get("bom-ref"), MAX_FIELD) or purl
         doc.entries.append(Entry(ref=ref, component=Component(
             kind="package", ecosystem=syft.ECOSYSTEM_BY_PURL_TYPE.get(ptype, ptype), name=name, version=version,
-            purl=purl, scope=_scope(entry), locations=[], direct=None, props={"imported": True})))
+            purl=purl, scope=_scope(entry), locations=[], direct=None, props={"imported": True},
+            cdx=passthrough(entry))))
     for row in _list(data.get("dependencies")):
         row = _obj(row)
         ref = _text(row.get("ref"), MAX_FIELD)
@@ -249,6 +412,7 @@ def packages(doc: Document, own: set[tuple[str, str]],
     direct_refs = {d for r in own_refs for d in doc.graph.get(r, [])} - own_refs
     via = "graph" if direct_refs & {e.ref for e in kept} else "manifests"
     merged: dict[tuple, Component] = {}
+    doc.own_refs, doc.by_ref = own_refs, {}
     for e in kept:
         c = e.component
         if via == "graph":
@@ -259,12 +423,63 @@ def packages(doc: Document, own: set[tuple[str, str]],
         seen = merged.get(key)
         if seen is None:
             merged[key] = c
+            doc.by_ref[e.ref] = c
             continue
+        doc.by_ref[e.ref] = seen
         if seen.direct is None or c.direct:
             seen.direct = c.direct if seen.direct is None else True
         if c.scope == "required":
             seen.scope = "required"
+        for name, value in c.cdx.items():           # a field only the duplicate carries is kept, never mixed
+            seen.cdx.setdefault(name, value)
     return list(merged.values()), via
+
+
+def graph_rows(doc: Document, ref_of, subject_ref: str) -> tuple[dict[str, list[str]], bool]:
+    """The import's dependency graph in the written SBOM's bom-refs, and whether it was cut at MAX_EDGES.
+    `ref_of(component)` is the bom-ref a kept package was written under (None when it was not written). The
+    project's own modules become the subject `subject_ref`; an edge through a component that was not written
+    (no purl, malformed) is followed through it, so no dependency path is lost; edges between own modules and
+    self-loops are left out. Call after `packages`."""
+    target: dict[str, str | None] = {ref: subject_ref for ref in doc.own_refs}
+    for ref, comp in doc.by_ref.items():
+        target[ref] = ref_of(comp)
+    passed: dict[str, set[str]] = {}
+
+    def reach(start: str) -> set[str]:
+        """The written refs reached from `start`, passing through refs that were not written."""
+        if target.get(start):
+            return {target[start]}
+        if start in passed:
+            return passed[start]
+        found: set[str] = set()
+        stack, seen = [start], {start}
+        while stack and len(seen) <= MAX_COMPONENTS:
+            for d in doc.graph.get(stack.pop(), []):
+                if target.get(d):
+                    found.add(target[d])
+                elif d not in seen:
+                    seen.add(d)
+                    stack.append(d)
+        passed[start] = found
+        return found
+
+    rows: dict[str, list[str]] = {}
+    edges = 0
+    for ref, deps in doc.graph.items():
+        source = target.get(ref)
+        if not source:
+            continue
+        row = rows.setdefault(source, [])
+        for d in deps:
+            for t in sorted(reach(d)):
+                if t == source or t in row:
+                    continue
+                edges += 1
+                if edges > MAX_EDGES:
+                    return rows, True
+                row.append(t)
+    return rows, False
 
 
 # --------------------------------------------------------------------------- sources
@@ -359,6 +574,9 @@ def describe(src: dict) -> str:
         bits.append(text)
     if src.get("replaced_entries") is not None:
         bits.append(_plural(src["replaced_entries"], "repository entry replaced", "repository entries replaced"))
+    if src.get("graph_edges") is not None:
+        bits.append(f"its dependency graph kept ({_plural(src['graph_edges'], 'edge', 'edges')}"
+                    + (f", cut at {MAX_EDGES})" if src.get("graph_truncated") else ")"))
     if src.get("tool"):
         bits.append(f"by {src['tool']}")
     if src.get("timestamp"):

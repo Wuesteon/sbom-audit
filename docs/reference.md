@@ -1098,6 +1098,22 @@ python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from
   plugin leaves test-scope dependencies out unless `includeTestScope` is set.
 - **Locations.** A package the scan also found keeps its manifests; one only the SBOM lists points at the
   imported file, and its work-list hint says so instead of naming a manifest line.
+- **Fields carried through.** An imported package is written into the `sbom/` document with the
+  build SBOM's `group`, `publisher`, `hashes`, `licenses`, `supplier`, `manufacturer`, `cpe` and
+  `externalReferences`, unchanged, so `sbom check` counts what the build stated. Each value is checked
+  and bounded (known hash algorithms with hex content of a CycloneDX length; licence id, name, URL and
+  `acknowledgement`, or one SPDX expression; organisation name, URLs and contacts; external references
+  of a CycloneDX type with a URL; at most 32 entries per list, no control characters, no nested
+  bom-refs, licence texts or other fields); a value that fails a check is left out, never repaired. A
+  `sbom/` document older than CycloneDX 1.6 gets no `manufacturer`, no `acknowledgement` and only the
+  external reference types of 1.4. Two import entries for the same package version merge, the first
+  value of each field wins. These fields are in the `sbom/` document only, not in `inventory.json`.
+- **Dependency graph carried through.** The import's `dependencies` are written in the bom-refs of the
+  `sbom/` document: the project's own modules become the subject (`metadata.component`), an edge
+  through a component that was not written (no purl, malformed) is followed through it, so no path is
+  lost, and edges between own modules are left out. At most 2,000,000 edges; `package_source`
+  records `graph_edges` (and `graph_truncated` when the limit cut it), and the branch line says "its
+  dependency graph kept (N edges)".
 - **Not this commit's.** When the recorded commit differs from the scanned one, the import is still used
   and every coverage statement says so: the branch line in `INVENTORY.md`, the coverage line and Notes in
   `AUDIT.md`, the gaps in `STATUS.md` and the limits in `REPORT.html`. For a file committed in the
