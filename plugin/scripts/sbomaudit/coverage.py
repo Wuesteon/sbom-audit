@@ -79,7 +79,9 @@ def unresolved_section(rows: list[dict]) -> list[str]:
     from .report import md                 # report imports this module
     L = ["## Version not resolved", "",
          f"Packages with no resolved version ({UNRESOLVED_TEXT}). Syft writes `UNKNOWN` when a Maven version comes "
-         "from a BOM or parent outside the repository; a manifest without a lockfile gives no version at all. "
+         "from a BOM or parent outside the repository; a manifest without a lockfile gives no version at all; a "
+         "Gradle declaration without `gradle.lockfile` has none when the version comes from a platform/BOM or "
+         "plugin, is dynamic (`1.+`, a range) or is a variable the reader cannot evaluate. "
          "osv-scanner would treat such a package as affected by every advisory ever published for it, so it is "
          "left out of the sections above: neither vulnerable nor clean. Add a lockfile, or pin the version in the "
          "manifest. The full list is in `audit.json` under `unresolved_versions`.", ""]

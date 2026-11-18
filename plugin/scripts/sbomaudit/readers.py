@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import unquote
 
+from . import gradleread
 from .model import Component
 from .versions import min_version_from_range, norm_py, runtime_cycle
 
@@ -416,14 +417,19 @@ def direct_deps(src: Path, ignore: list[str]) -> dict[tuple[str, str], list[str]
             ga = _maven_ga(group, artifact, pom, props)
             if ga:
                 add("Maven", ga, pom.rel)
+    for ga, rels in gradleread.direct(gradleread.analyse(src, ignore)).items():   # build.gradle(.kts)
+        for rel in rels:
+            add("Maven", ga, rel)
     return out
 
 
 def dev_only_deps(src: Path, ignore: list[str]) -> set[tuple[str, str]]:
-    """(ecosystem, key) of the packages every declaration in the tree marks as test-only. Maven only: a
+    """(ecosystem, key) of the packages every declaration in the tree marks as test-only. Maven and Gradle: a
     dependency whose every `<dependencies>` entry has `<scope>test</scope>`, its own or the one a
     `<dependencyManagement>` entry of any pom in the tree sets. `provided`, `runtime` and `system` count as
-    production (provided code is on the production classpath, only supplied by the container or JDK)."""
+    production (provided code is on the production classpath, only supplied by the container or JDK). In
+    Gradle, every declaration and lock file configuration is a test, debug or build-tool one
+    (`gradleread.config_is_dev`); a package declared in both needs both to agree."""
     poms = maven_poms(src, ignore)
     props = _maven_global_props(poms)
     managed: dict[str, set[str]] = {}
@@ -443,7 +449,15 @@ def dev_only_deps(src: Path, ignore: list[str]) -> set[tuple[str, str]]:
             else:
                 found = managed.get(ga) or {"compile"}
             scopes.setdefault(ga, set()).update(found)
-    return {("Maven", ga) for ga, s in scopes.items() if s == {"test"}}
+    dev = {ga: s == {"test"} for ga, s in scopes.items()}
+    for ga, found in gradleread.scopes(gradleread.analyse(src, ignore)).items():   # Gradle configurations
+        dev[ga] = dev.get(ga, True) and found == {True}
+    return {("Maven", ga) for ga, is_dev in dev.items() if is_dev}
+
+
+def gradle_unknown_direct(src: Path, ignore: list[str]) -> set[str]:
+    """Gradle lock files whose packages cannot be told direct or transitive (see gradleread)."""
+    return gradleread.unknown_direct_locations(gradleread.analyse(src, ignore))
 
 
 # --------------------------------------------------------------------------- Maven, Go, .NET
@@ -799,6 +813,10 @@ def read_tree(src: Path, ignore: list[str], remote: str | None = None) -> list[C
         except (ValueError, tomllib.TOMLDecodeError, OSError, ET.ParseError) as exc:
             comps.append(Component(kind="package", ecosystem="", name=rel, version="", purl="",
                                    scope="unknown", locations=[rel], props={"error": f"{type(exc).__name__}: {exc}"}))
+    gradle = gradleread.analyse(src, ignore)            # declarations Syft does not read; never raises
+    if gradle.modules or gradle.locks:
+        dev = {key for eco, key in dev_only_deps(src, ignore) if eco == "Maven"}
+        comps.extend(gradleread.components(gradle, dev))
     if has_pom:                                        # `${…}` in a child pom may resolve from a parent's properties
         comps.extend(java_runtimes(src, ignore))
     return comps

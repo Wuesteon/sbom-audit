@@ -140,6 +140,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
         own_names = readers.self_packages(src)
         direct = readers.direct_deps(src, project.ignore)
         dev_only = readers.dev_only_deps(src, project.ignore)
+        gradle_unknown = readers.gradle_unknown_direct(src, project.ignore)
         extra = readers.read_tree(src, project.ignore, remote=project.remote)
         imported = _read_import(cfg, project, branch, src, inv)
     for image in [c for c in extra if c.kind == "image"]:
@@ -159,6 +160,8 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
     for c in packages:
         # no manifest reader for the ecosystem: unknown (None), never a guessed "transitive"
         c.direct = _direct_key(c) in direct if c.ecosystem in readers.DIRECT_ECOSYSTEMS else None
+        if c.direct is False and gradle_unknown.intersection(c.locations):   # a Gradle declaration not understood
+            c.direct = None
         if _direct_key(c) in dev_only:     # Maven <scope>test</scope> everywhere it is declared
             c.scope = "optional"
     direct_by_purl = {c.purl: c.direct for c in packages}
