@@ -102,6 +102,12 @@ class RowsTests(unittest.TestCase):
             self.assertEqual(len(lookup.rows(cfg.out, ["LODASH"])), 2)
             self.assertEqual(lookup.rows(cfg.out, ["nothing-here"]), [])
 
+    def test_how_is_unknown_when_the_scan_could_not_tell(self):
+        def c(direct):
+            return Component(kind="package", ecosystem="npm", name="x", version="1", purl="pkg:npm/x@1",
+                             scope="required", locations=["package.json"], direct=direct)
+        self.assertEqual([lookup._how(c(d)) for d in (True, False, None)], ["direct", "transitive", "unknown"])
+
     def test_lookup_cli_table_and_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = write_state(Path(tmp))

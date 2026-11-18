@@ -15,7 +15,7 @@ from .config import Config
 from .coverage import UNRESOLVED_TEXT as UNRESOLVED_EVIDENCE
 from .enrich import http_get_json
 from .matching import version_unresolved
-from .model import BranchInventory, Component
+from .model import BranchInventory, Component, direct_text
 from .versions import norm_py
 
 OSV_VULN_API = "https://api.osv.dev/v1/vulns/"
@@ -34,7 +34,7 @@ class Row:
     branch: str
     manifest: str
     version: str
-    how: str                 # direct | transitive | image | runtime
+    how: str                 # direct | transitive | unknown | image | runtime
     ecosystem: str = ""
 
 
@@ -74,7 +74,7 @@ def _norm(ecosystem: str, name: str) -> str:
 def _how(c: Component) -> str:
     if c.kind in ("image", "runtime"):
         return c.kind
-    return "direct" if c.direct else "transitive"
+    return direct_text(c.direct)            # "unknown" when the scan could not tell, never "transitive"
 
 
 def _names(c: Component) -> set[str]:

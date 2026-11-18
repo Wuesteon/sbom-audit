@@ -221,13 +221,15 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
   informational host output are not in it. An id is stable from run to run and the entry disappears
   when the issue does.
 - `incomplete` lists failed sources. When it is not empty, a short list is not a clean one.
-- `details.direct` says whether the package is a direct dependency of that manifest (`false`:
+- `details.direct` says whether the package is a direct dependency of that manifest (`true`), a
+  transitive one (`false`) or that the scan could not tell (`null`: unknown, never counted as
   transitive), `details.dev_only` whether only dev-only scopes hold it. The list is ordered by
-  priority, production first, then direct dependencies before transitive ones, then severity, place
-  and id: a direct dependency's fix lands in your own
-  manifest; a transitive one is fixed through the parent that pulls it in or a lockfile refresh. The
-  priority never depends on it. `ISSUES.md` and `REPORT.html` say how many vulnerabilities at
-  priority 2 and 3 are direct and how many transitive, and mark each row. Transitive does not mean
+  priority, production first, then direct dependencies, then unknown, then transitive ones, then
+  severity, place and id: a direct dependency's fix lands in your own
+  manifest; a transitive one is fixed through the parent that pulls it in or a lockfile refresh; for an
+  unknown one check the manifest first. The priority never depends on it. `ISSUES.md` and
+  `REPORT.html` say how many vulnerabilities at priority 2 and 3 are direct, how many transitive and,
+  when there are any, how many unknown, and mark each row. Transitive does not mean
   harmless: the package is installed and can run like a direct one, and there is no reachability
   analysis (see [Limitations](#limitations)), so it stays a finding until it is fixed or a VEX
   decision says otherwise.
@@ -886,9 +888,13 @@ it is not a dependency.
 | others (Cargo, RubyGems, Composer, Swift, CocoaPods, GitHub Actions, …) | none | none | none | images in Dockerfiles and Compose files only |
 
 - **Unknown is not transitive.** For an ecosystem without a reader, `direct` is left out of
-  `inventory.json` and the SBOM (null), instead of claiming `false`. `audit.json` and the work list
-  still sort such a package with the transitive ones, because they only tell "direct" from "not
-  direct".
+  `inventory.json` and the SBOM (null), instead of claiming `false`; the same holds for an imported
+  build SBOM without a dependency graph. It stays null downstream: `audit.json` location `direct` and
+  the coverage `direct` value, `issues.json` `details.direct`, and `lookup` print `unknown` (never
+  `transitive`); `AUDIT.md` shows `unknown` in the Direct column, `ISSUES.md` "dependency type unknown",
+  the management report "dependency type unknown" / "Abhängigkeitsart unbekannt". Several places of one
+  package merge to `true` when any is direct, `false` only when every one is known transitive, else
+  null.
 - **Maven `provided`, `runtime` and `system` count as production.** `provided` code is on the
   production classpath, supplied by the container or the JDK; a finding there is still yours to judge.
   A dependency declared as `test` in one module and without scope in another is production.

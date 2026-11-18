@@ -27,6 +27,22 @@ def qualified_name(ecosystem: str, name: str, purl: str = "") -> str:
     return name
 
 
+def merge_direct(values) -> bool | None:
+    """One `direct` for several places of a package: True when any place declares it, False only when every
+    place is known to be transitive, else None. Unknown is never turned into transitive."""
+    values = list(values)
+    if any(v is True for v in values):
+        return True
+    if values and all(v is False for v in values):
+        return False
+    return None
+
+
+def direct_text(direct: bool | None) -> str:
+    """'direct', 'transitive' or 'unknown' for a `direct` value."""
+    return "direct" if direct is True else "transitive" if direct is False else "unknown"
+
+
 @dataclass
 class Component:
     kind: str = "package"          # package | image | runtime

@@ -180,6 +180,31 @@ class AuditMdTests(unittest.TestCase):
         self.assertIn("URLError: timeout", sec)
         self.assertLess(text.index("## Source status"), text.index("## Summary"))
 
+    def test_unknown_dependency_type_is_printed_unknown_not_transitive(self):
+        unk = pkg("mystery", "1.0.0", direct=None)
+        dev = pkg("devmystery", "1.0.0", scope="optional", direct=None)
+        loose = pkg("loose", "", direct=None)                      # unresolved: in coverage
+        trans = pkg("deep", "1.0.0", direct=False)
+        findings = [Finding("zeta", "main", unk, [vuln("GHSA-u", "HIGH", 7.5)]),
+                    Finding("zeta", "main", dev, [vuln("GHSA-d", "HIGH", 7.5)]),
+                    Finding("zeta", "main", trans, [vuln("GHSA-t", "HIGH", 7.5)])]
+        invs = [inv("zeta", "main", [unk, dev, loose, trans])]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            rep = report.build(cfg, invs, findings, [], [], [], SOURCES_OK)
+            text = self.write(Path(tmp), findings, invs=invs)
+        rows = {v["name"]: v for v in rep["vulnerabilities"]}
+        self.assertIsNone(rows["mystery"]["locations"][0]["direct"])
+        self.assertFalse(rows["deep"]["locations"][0]["direct"])
+        self.assertFalse(rows["mystery"]["direct_anywhere"])
+        [cov] = rep["unresolved_versions"]
+        self.assertIsNone(cov["packages"][0]["direct"])
+        by_project = section(text, "Critical and high severity by project")
+        self.assertRegex(by_project, r"\| mystery \| 1\.0\.0 \|[^\n]*\| unknown \| `package.json`")
+        self.assertRegex(by_project, r"\| deep \| 1\.0\.0 \|[^\n]*\| no \| `package.json`")
+        self.assertIn("`unknown` = the scan could not tell", by_project)
+        self.assertRegex(section(text, "Dev-only findings"), r"\| devmystery \| 1\.0\.0 \|[^\n]*\| unknown \| zeta@main")
+
     def test_maven_packages_are_named_group_and_artifact_everywhere(self):
         def maven(group, artifact, scope="required"):
             return Component(kind="package", ecosystem="Maven", name=artifact, version="1.0",

@@ -69,6 +69,11 @@ def _pkg(v: dict) -> str:
     return v.get("package") or v["name"]
 
 
+def _direct_cell(direct) -> str:
+    """The Direct column: `yes`, `no` (transitive) or `unknown` (the scan could not tell; never shown as `no`)."""
+    return {True: "yes", False: "no"}.get(direct, "unknown")
+
+
 def _sev_label(v: dict) -> str:
     label = base_label(v.get("severity") or "UNKNOWN").upper()
     if label == "MODERATE":
@@ -150,7 +155,7 @@ def _vulnerabilities(findings: list[Finding], releases: dict | None = None) -> l
                                "scope": "unknown", "direct_anywhere": False, "locations": [], "vulns": []}
         scopes[key].add(c.scope)
         loc = {"project": f.project, "branch": f.branch, "manifest": _manifest(c),
-               "direct": bool(c.direct), "scope": c.scope}
+               "direct": c.direct, "scope": c.scope}
         if c.props.get("imported"):          # from an imported build SBOM (only then: audit.json unchanged)
             loc["imported"] = True
         if (f.project, f.branch) in (releases or {}):
@@ -433,8 +438,9 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
     L = ["## Critical and high severity by project", "",
          "KEV, CRITICAL and HIGH package versions with runtime scope; dev-only occurrences are listed further down. "
          "Production projects come first. `Fix target` is the lowest version that closes every listed advisory "
-         "(`–` = no fix released). `direct` = the manifest declares the package itself; otherwise it is transitive "
-         "and the fix is a lockfile refresh of the parent.", ""]
+         "(`–` = no fix released). Direct `yes` = the manifest declares the package itself; `no` = it is transitive "
+         "and the fix is a lockfile refresh of the parent; `unknown` = the scan could not tell whether the manifest "
+         "declares it, which is not the same as transitive: check the manifest first.", ""]
     per: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for v in vulns:
         if not _actionable(v):
@@ -454,7 +460,7 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
             for v, l in rows:
                 sev, fix, worst = _fix_cells(v)
                 L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
-                         f"{'yes' if l['direct'] else 'no'} | `{md(l['manifest'])}` | {worst} |")
+                         f"{_direct_cell(l.get('direct'))} | `{md(l['manifest'])}` | {worst} |")
             L.append("")
     return L
 
@@ -525,7 +531,7 @@ def _dev_only_section(vulns: list[dict]) -> list[str]:
     for v, l in rows:
         sev, fix, _ = _fix_cells(v)
         L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
-                 f"{'yes' if l['direct'] else 'no'} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
+                 f"{_direct_cell(l.get('direct'))} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
     return L + [""]
 
 

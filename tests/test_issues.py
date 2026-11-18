@@ -179,7 +179,7 @@ class BuildTest(unittest.TestCase):
                                "vuln:prod:p.json:npm:crit@1.0.0", "vuln:prod:tools.json:npm:dev@1.0.0"])
         self.assertEqual([i["priority"] for i in doc["issues"]], [2, 3, 3, 6])
         self.assertEqual(issues.dependency_split(doc["issues"]),
-                         {"total": 3, "direct": 1, "transitive": 2, "dev_only": 0})
+                         {"total": 3, "direct": 1, "transitive": 2, "unknown": 0, "dev_only": 0})
         self.assertFalse(issues.is_transitive({"kind": "secret", "details": {}}))
         text = issues.render_md(doc)
         self.assertIn("priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): 3, of which "
@@ -191,6 +191,41 @@ class BuildTest(unittest.TestCase):
         self.assertIn("| 6 | vulnerability, transitive, dev-only | dev 1.0.0", text)
         # nothing urgent: no split sentence
         self.assertNotIn("transitive ones", issues.render_md(issues.build(make_rep(), None, None)))
+
+    def test_unknown_dependency_type_is_not_transitive(self):
+        def unknown(v, imported=False):
+            for loc in v["locations"]:
+                loc["direct"] = None
+                if imported:
+                    loc["imported"] = True
+            return v
+        rep = make_rep(vulnerabilities=[
+            unknown(vuln("unk", "CRITICAL", [("prod", "main", "p.json", "required")])),
+            vuln("high", "HIGH", [("prod", "main", "p.json", "required")]),
+            unknown(vuln("imp", "HIGH", [("prod", "main", "pom.xml", "required")]), imported=True),
+            dict(vuln("mixed", "HIGH", [("prod", "main", "q.json", "required"), ("prod", "dev", "q.json", "required")])),
+        ])
+        rep["vulnerabilities"][3]["locations"][0]["direct"] = None     # one branch unknown, the other direct
+        doc = issues.build(rep, None, None)
+        got = by_id(doc)
+        unk = got["vuln:prod:p.json:npm:unk@1.0.0"]
+        self.assertIsNone(unk["details"]["direct"])
+        self.assertTrue(got["vuln:prod:q.json:npm:mixed@1.0.0"]["details"]["direct"])
+        self.assertFalse(issues.is_transitive(unk))
+        self.assertNotIn("transitive", unk["fix"]["hint"])
+        self.assertIn("could not tell", unk["fix"]["hint"])
+        imp = got["vuln:prod:pom.xml:npm:imp@1.0.0"]
+        self.assertNotIn("transitive", imp["fix"]["hint"])
+        self.assertIn("build SBOM", imp["fix"]["hint"])
+        self.assertEqual(issues.dependency_split(doc["issues"]),
+                         {"total": 4, "direct": 2, "transitive": 0, "unknown": 2, "dev_only": 0})
+        # direct first, then unknown, then transitive
+        self.assertEqual([i["id"] for i in doc["issues"]][:2],
+                         ["vuln:prod:p.json:npm:high@1.0.0", "vuln:prod:q.json:npm:mixed@1.0.0"])
+        text = issues.render_md(doc)
+        self.assertIn("| 3 | vulnerability, dependency type unknown | unk 1.0.0", text)
+        self.assertIn("4, of which 2 in direct dependencies, 0 in transitive ones and 2 whose dependency type the "
+                      "scan could not tell", text)
 
     def test_maven_title_names_group_and_artifact_and_the_id_is_unchanged(self):
         v = vuln("lib", "HIGH", [("prod", "main", "pom.xml", "required")])

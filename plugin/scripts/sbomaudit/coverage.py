@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .cvss import base_label
 from .matching import version_unresolved
-from .model import BranchInventory
+from .model import BranchInventory, merge_direct
 
 UNRATED = "UNKNOWN"
 UNRATED_TEXT = "not rated"
@@ -57,11 +57,11 @@ def unresolved_versions(inventories: list[BranchInventory], releases: dict | Non
             name = c.qualified_name()
             entry = packages.setdefault((c.ecosystem, name), {
                 "ecosystem": c.ecosystem, "name": name, "version": c.version or "", "purl": c.purl,
-                "manifests": [], "direct": False, "scope": c.scope})
+                "manifests": [], "direct": c.direct, "scope": c.scope})
             for loc in c.locations:
                 if loc not in entry["manifests"]:
                     entry["manifests"].append(loc)
-            entry["direct"] = entry["direct"] or bool(c.direct)
+            entry["direct"] = merge_direct([entry["direct"], c.direct])   # unknown stays unknown
             if c.props.get("requirement") and "requirement" not in entry:
                 entry["requirement"] = c.props["requirement"]
         if not packages:

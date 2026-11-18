@@ -120,10 +120,14 @@ STRINGS: dict[str, dict] = {
         "fix_unfixed": "{n} advisory(ies) without a fix",
         "dep_direct": "direct dependency",
         "dep_transitive": "transitive dependency",
+        "dep_unknown": "dependency type unknown",
         "dep_dev_only": "dev-only",
+        "action_deps_split": "{direct} in direct dependencies and {transitive} in transitive ones",
+        "action_deps_split_unknown": "{direct} in direct dependencies, {transitive} in transitive ones and {unknown} "
+                                     "whose dependency type the scan could not tell (unknown is not transitive: "
+                                     "check the manifest first; listed after the direct ones)",
         "action_deps": "Vulnerability issues at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported "
-                       "release): {n}, of which {direct} in direct dependencies "
-                       "and {transitive} in transitive ones. Within a priority, direct dependencies are listed "
+                       "release): {n}, of which {split}. Within a priority, direct dependencies are listed "
                        "first: they are fixed in your own manifest. Transitive does not mean harmless: a transitive "
                        "package is installed and can run like a direct one, and there is no reachability analysis, "
                        "so each one stays a finding until it is fixed or a decision says otherwise.",
@@ -399,10 +403,14 @@ STRINGS: dict[str, dict] = {
         "fix_unfixed": "{n} Advisory(s) ohne Fix",
         "dep_direct": "direkte Abhängigkeit",
         "dep_transitive": "transitive Abhängigkeit",
+        "dep_unknown": "Abhängigkeitsart unbekannt",
         "dep_dev_only": "nur Entwicklung",
+        "action_deps_split": "{direct} in direkten und {transitive} in transitiven Abhängigkeiten",
+        "action_deps_split_unknown": "{direct} in direkten, {transitive} in transitiven Abhängigkeiten und {unknown}, "
+                                     "bei denen der Scan die Abhängigkeitsart nicht erkennen konnte (unbekannt heißt "
+                                     "nicht transitiv: zuerst das Manifest prüfen; sie stehen nach den direkten)",
         "action_deps": "Schwachstellen mit Priorität 2 und 3 (KEV, oder CRITICAL/HIGH in Produktion oder einem "
-                       "unterstützten Release): {n}, davon {direct} in direkten und {transitive} in "
-                       "transitiven Abhängigkeiten. Innerhalb einer Priorität stehen direkte "
+                       "unterstützten Release): {n}, davon {split}. Innerhalb einer Priorität stehen direkte "
                        "Abhängigkeiten zuerst: Sie werden im eigenen Manifest behoben. Transitiv heißt nicht harmlos: "
                        "Ein transitives Paket wird installiert und kann laufen wie ein direktes, und es gibt keine "
                        "Erreichbarkeitsanalyse; jeder Punkt bleibt ein Befund, bis er behoben ist oder eine "
@@ -1086,11 +1094,12 @@ def _action(data: dict, S: dict) -> str:
         L.append(f'<p class="warn">{S["action_incomplete"].format(what=names)}</p>')
     items = [i for i in doc.get("issues") or [] if isinstance(i, dict)]
     urgent = [i for i in items if isinstance(i.get("priority"), int) and i["priority"] <= TOP_PRIORITY]
-    # direct before transitive within a priority, also for an issues.json written before that order existed
-    urgent.sort(key=lambda i: (i["priority"], not i.get("production"), issues.is_transitive(i)))
+    # direct, then unknown, then transitive within a priority, also for an issues.json written before that order
+    urgent.sort(key=lambda i: (i["priority"], not i.get("production"), issues.dependency_rank(i)))
     split = issues.dependency_split(urgent)
     if split["total"]:
-        deps = S["action_deps"].format(n=split["total"], direct=split["direct"], transitive=split["transitive"])
+        parts = S["action_deps_split_unknown" if split["unknown"] else "action_deps_split"].format(**split)
+        deps = S["action_deps"].format(n=split["total"], split=parts)
         L.append(f"<p>{e(deps)}</p>")
     if urgent:
         rows = []
@@ -1106,7 +1115,7 @@ def _action(data: dict, S: dict) -> str:
             what = (f'<span class="label">{e(str(sev).upper())}</span> ' if sev and i.get("kind") != "secret" else "") \
                 + e(i.get("title"))
             if i.get("kind") == "vulnerability" and isinstance(i.get("details"), dict):
-                dep = [S["dep_transitive"] if issues.is_transitive(i) else S["dep_direct"]]
+                dep = [S["dep_" + (issues.dependency_type(i) or "direct")]]
                 if i["details"].get("dev_only"):
                     dep.append(S["dep_dev_only"])
                 what += f'<br><span class="note">{e(", ".join(dep))}</span>'

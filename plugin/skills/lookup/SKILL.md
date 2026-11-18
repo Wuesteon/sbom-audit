@@ -23,4 +23,4 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py" lookup $ARGUMENTS
 
 Exit 2 means there is no inventory yet: run `/sbom-audit:run` first. Exit 1 means no match: say so, do not guess from memory.
 
-Show the table as is. For a `transitive` row the fix lands on the parent: find it with `npm ls <pkg>`, `pnpm why <pkg>` or `uv tree --package <pkg>` inside that project (read-only) when the user wants to remediate.
+Show the table as is. For a `transitive` row the fix lands on the parent: find it with `npm ls <pkg>`, `pnpm why <pkg>` or `uv tree --package <pkg>` inside that project (read-only) when the user wants to remediate. An `unknown` row means the scan could not tell: it is not transitive; read the manifest before saying which it is.
