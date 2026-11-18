@@ -1054,7 +1054,8 @@ Gradle is never run; the plugin's reader (`gradleread.py`) adds, statically:
 
 For exact versions, scopes and the transitive tree, commit a lock file (`./gradlew dependencies
 --write-locks` with `dependencyLocking { lockAllConfigurations() }`) or import a build SBOM made with
-the CycloneDX Gradle plugin (see [Imported build SBOMs](#imported-build-sboms)).
+the CycloneDX Gradle plugin (`org.cyclonedx.bom`; see [Imported build SBOMs](#imported-build-sboms) for
+the task and the file it writes, which differ between plugin 2.x and 3.x).
 
 ## Imported build SBOMs
 
@@ -1064,10 +1065,12 @@ build knows better. A CycloneDX JSON SBOM from the build supplements the scan's 
 project branch or release tag: where both name a package, the build's entry counts.
 
 ```bash
-# in the build, for Maven (official plugin; writes target/bom.json)
+# in the build, for Maven (official plugin, checked with 2.9.1; writes target/bom.json)
 mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom -DoutputFormat=json
-# for Gradle (official plugin: plugins { id("org.cyclonedx.bom") version "<current>" }; writes build/reports/bom.json)
-./gradlew cyclonedxBom
+# for Gradle (official plugin 3.x, Gradle 8.4+: plugins { id("org.cyclonedx.bom") version "3.6.1" })
+./gradlew cyclonedxBom        # whole build, aggregated: build/reports/cyclonedx/bom.json
+./gradlew cyclonedxDirectBom  # one per project: build/reports/cyclonedx-direct/bom.json
+# (plugin 2.x, e.g. 2.4.1: ./gradlew cyclonedxBom writes build/reports/bom.json)
 # then, on the machine that holds security/
 python3 scripts/sbom_audit_cli.py import --project shop-api --branch main target/bom.json
 python3 scripts/sbom_audit_cli.py import --project shop-api --tag v2.3.0 bom.json
