@@ -228,6 +228,9 @@ def _counts(rep: dict, now_open: dict, secrets: dict | None, hosts: dict | None 
               "suppressed": len(rep.get("suppressed", [])),
               "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
               "hosts": _hosts_counts(hosts)}
+    if stats.get("imported_sboms"):          # only with an imported build SBOM
+        counts["imported_sboms"] = {"total": stats["imported_sboms"],
+                                    "not_current": stats.get("imported_sboms_not_current", 0)}
     if rep.get("releases"):                  # only with release scanning
         counts["releases"] = {"scanned": len(rep["releases"]),
                               "supported": sum(1 for r in rep["releases"] if r.get("supported"))}
@@ -493,6 +496,13 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
         gaps.append(f"{n['unrated_production']} with severity not rated in production")
     if n.get("unresolved_versions"):
         gaps.append(f"{n['unresolved_versions']} packages with version not resolved, not checked for vulnerabilities")
+    imports = n.get("imported_sboms")
+    if imports:
+        text = f"{imports['total']} package lists from an imported build SBOM"
+        if imports.get("not_current"):
+            text += (f" ({imports['not_current']} not built from the scanned commit or with no commit recorded, "
+                     "see AUDIT.md)")
+        gaps.append(text)
     if gaps:
         L[-2] = L[-2][:-1] + "; " + ", ".join(gaps) + "."
     if n.get("releases"):

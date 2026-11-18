@@ -12,7 +12,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import __version__, coverage
+from . import __version__, coverage, sbomimport
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import fixed_in
@@ -145,6 +145,8 @@ def _vulnerabilities(findings: list[Finding], releases: dict | None = None) -> l
         scopes[key].add(c.scope)
         loc = {"project": f.project, "branch": f.branch, "manifest": _manifest(c),
                "direct": bool(c.direct), "scope": c.scope}
+        if c.props.get("imported"):          # from an imported build SBOM (only then: audit.json unchanged)
+            loc["imported"] = True
         if (f.project, f.branch) in (releases or {}):
             loc["release"] = releases[(f.project, f.branch)]["tag"]
         if loc not in g["locations"]:
@@ -223,7 +225,17 @@ def _notes(inventories: list[BranchInventory]) -> list[str]:
                              "non-pinned requirements, so the image may run versions other than the lockfile "
                              "audited here. Pin them (`uv export --format requirements-txt`) or install from the lockfile.")
     # packages without a version: `unresolved_versions` (coverage.py)
-    return notes + _unchecked_actions_notes(inventories)
+    return notes + _import_notes(inventories) + _unchecked_actions_notes(inventories)
+
+
+def imported_sboms(inventories: list[BranchInventory]) -> list[dict]:
+    """One row per inventory whose packages (of some ecosystems) come from an imported build SBOM."""
+    return [{"project": inv.project, "branch": inv.branch, "scanned_commit": inv.commit, **inv.package_source}
+            for inv in sorted(inventories, key=lambda i: (i.project.lower(), i.branch)) if inv.package_source]
+
+
+def _import_notes(inventories: list[BranchInventory]) -> list[str]:
+    return [f"{md(r['project'])}@{md(r['branch'])}: {md(sbomimport.describe(r))}" for r in imported_sboms(inventories)]
 
 
 def is_github_action(c) -> bool:
@@ -286,6 +298,11 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
     }
     if unresolved:                           # only when some package was not checked (coverage.py)
         rep["unresolved_versions"] = unresolved
+    imports = imported_sboms(inventories)
+    if imports:                              # only with an imported build SBOM (sbomimport.py)
+        rep["imported_sboms"] = imports
+        stats["imported_sboms"] = len(imports)
+        stats["imported_sboms_not_current"] = sum(1 for r in imports if sbomimport.staleness(r))
     if releases:                             # only with release scanning: audit.json is unchanged without it
         stats["releases"] = len(releases)
         rep["releases"] = [{"project": p, "branch": b, "tag": r["tag"], "date": r.get("date"),
@@ -557,6 +574,19 @@ def carried_over(previous: str) -> str:
     return "\n" + previous[m.start():].rstrip("\n") + "\n"
 
 
+def _imports_line(imports: list[dict]) -> list[str]:
+    """Coverage: which package lists come from an imported build SBOM, and which of those are not this commit's."""
+    if not imports:
+        return []
+    off = [r for r in imports if sbomimport.staleness(r)]
+    text = (f"Imported build SBOMs: {len(imports)} project branches or releases take the packages of some ecosystems "
+            "from a build SBOM instead of the repository scan (details under Notes and in `INVENTORY.md`)")
+    if off:
+        text += (f"; {len(off)} of them not built from the scanned commit or with no commit recorded: "
+                 + ", ".join(f"{md(r['project'])}@{md(r['branch'])} ({sbomimport.staleness(r)})" for r in off))
+    return [text + ".", ""]
+
+
 def write_audit_md(rep: dict, out: Path) -> Path:
     out = Path(out)
     production = set(rep.get("production_projects", []))
@@ -565,6 +595,7 @@ def write_audit_md(rep: dict, out: Path) -> Path:
          "(committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), "
          "endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements "
          "in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.", ""]
+    L += _imports_line(rep.get("imported_sboms") or [])
     L += _source_status(rep.get("sources") or {})
     L += _summary(rep)
     L += _kev_section(rep["vulnerabilities"])
@@ -722,6 +753,8 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
         L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {len(pkgs)} packages ({eco}; "
                  f"{sum(1 for c in pkgs if c.direct)} direct, {sum(1 for c in pkgs if c.scope == 'optional')} dev-only), "
                  f"{n_images} images, {n_runtimes} runtime pins")
+        if inv.package_source:
+            L.append(f"  - packages: {md(sbomimport.describe(inv.package_source))}")
         for err in inv.errors:
             L.append(f"  - error: {md(err)}")
     L.append("")
@@ -785,6 +818,8 @@ def _inventory_releases(releases: list[BranchInventory]) -> list[str]:
         sbom = f"`{inv.sbom_path}`" if inv.sbom_path else "–"
         L.append(f"| {md(inv.project)} | `{md(inv.release.get('tag', inv.branch))}` | {inv.commit[:7] or '–'} | "
                  f"{(inv.release.get('date') or '?')[:10]} | {pkgs} | {imgs} | {rts} | {sbom} |")
+        if inv.package_source:
+            L.append(f"| | | | | | | | packages: {md(sbomimport.describe(inv.package_source))} |")
         for err in inv.errors:
             L.append(f"| | | | | | | | error: {md(err)} |")
     return L + [""]
@@ -798,7 +833,8 @@ def write_inventory_md(cfg: Config, inventories: list[BranchInventory], out: Pat
     L = ["# Inventory", "",
          f"Generated {_now()} from `{cfg.root}` ({cfg.mode} mode, branches {branches}). Components come from the "
          "Syft SBOM of each branch's committed tree (`sbom/<project>/<branch>.cdx.json`) plus own readers for "
-         "images and runtime pins; the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.", "",
+         "images and runtime pins, or, for the ecosystems it holds, from a build SBOM imported for that branch (marked "
+         "below); the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.", "",
          "## Overview", "",
          "| Project | Branch | " + " | ".join(md(h) for h, _, _ in columns) + " | Images |",
          "|" + "---|" * (len(columns) + 3)]

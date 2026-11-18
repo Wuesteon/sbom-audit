@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cyclonedx, gitio, pomresolve, preflight, readers, syft
+from . import config, cyclonedx, gitio, pomresolve, preflight, readers, sbomimport, syft
 from .config import Config, Project
 from .errors import ToolError
 from .model import BranchInventory, Component
@@ -64,6 +64,55 @@ def _syft_excludes(ignore: list[str]) -> list[str]:
     return out
 
 
+def _read_import(cfg: Config, project: Project, branch: str, src: Path, inv: BranchInventory):
+    """(Document, package_source) of the build SBOM imported for this project@branch, or None. A broken file is
+    an error on the inventory, and the repository scan stands."""
+    where = None
+    try:
+        found = sbomimport.find(cfg.out, project.name, branch, src, project.sbom)
+        if found is None:
+            return None
+        path, where, from_evidence = found
+        raw = sbomimport.read_capped(path)
+        doc = sbomimport.parse(raw)
+    except (sbomimport.Rejected, OSError) as exc:
+        inv.errors.append(f"import: {where or project.sbom}: {exc}; the repository scan is used")
+        return None
+    provenance = sbomimport.read_provenance(path) if from_evidence else {}
+    return doc, sbomimport.source(doc, raw, where, from_evidence, provenance, inv.commit)
+
+
+def _apply_import(bom: dict, subject_ref: str, imported, packages: list[Component], extra: list[Component],
+                  own_names: set, direct: dict, dev_only: set,
+                  inv: BranchInventory) -> tuple[list[Component], list[Component]]:
+    """Replace the scan's packages of every ecosystem the import holds with the import's; other ecosystems,
+    images and runtime pins stay. An imported package keeps the manifests the scan found it in (or that declare
+    it), else it points at the import file."""
+    doc, src = imported
+    comps, via = sbomimport.packages(doc, own_names, direct)
+    replaced = sorted({c.ecosystem for c in comps})
+    manifests: dict[tuple, list[str]] = {}
+    for c in packages + [e for e in extra if e.kind == "package"]:
+        for loc in c.locations:
+            manifests.setdefault(_direct_key(c), [])
+            if loc not in manifests[_direct_key(c)]:
+                manifests[_direct_key(c)].append(loc)
+    for c in comps:
+        key = _direct_key(c)
+        c.locations = sorted(manifests.get(key) or direct.get(key) or [src["file"]])
+        # Maven <scope>test</scope> everywhere it is declared; a package the build reaches through another
+        # dependency is on that one's classpath whatever its own declarations say
+        if key in dev_only and c.direct is not False:
+            c.scope = "optional"
+    cyclonedx.drop_components(bom, lambda e: bool(e.get("purl")) and _entry_key(e)[0] in replaced,
+                              keep_ref=subject_ref)
+    inv.package_source = {**src, "replaced": replaced, "direct_from": via, "packages": len(comps),
+                          "skipped_no_purl": doc.skipped_no_purl, "invalid": doc.invalid}
+    kept = [c for c in packages if c.ecosystem not in replaced]
+    extra = [c for c in extra if c.kind != "package" or c.ecosystem not in replaced]
+    return kept, extra + comps
+
+
 def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None = None) -> BranchInventory:
     """SBOM and inventory of one branch, or of one release tag when `release` (from `gitio.list_tags`
     plus `order` and `index`) is given; `branch` is then the label `tags/<tag>`."""
@@ -92,6 +141,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
         direct = readers.direct_deps(src, project.ignore)
         dev_only = readers.dev_only_deps(src, project.ignore)
         extra = readers.read_tree(src, project.ignore, remote=project.remote)
+        imported = _read_import(cfg, project, branch, src, inv)
     for image in [c for c in extra if c.kind == "image"]:
         runtime = readers.runtime_from_image(image)
         if runtime is not None:
@@ -104,6 +154,8 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
     cyclonedx.drop_components(bom, lambda e: _entry_key(e) in own_names if e.get("purl") else False,
                               keep_ref=subject_ref)
     packages = [c for c in packages if _direct_key(c) not in own_names]
+    if imported is not None:
+        packages, extra = _apply_import(bom, subject_ref, imported, packages, extra, own_names, direct, dev_only, inv)
     for c in packages:
         # no manifest reader for the ecosystem: unknown (None), never a guessed "transitive"
         c.direct = _direct_key(c) in direct if c.ecosystem in readers.DIRECT_ECOSYSTEMS else None
@@ -115,6 +167,8 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
     known = {c.key() for c in packages}            # a package Syft already catalogued is not added twice
     extra = [c for c in extra if c.kind != "package" or c.key() not in known]
     cyclonedx.merge(bom, extra)
+    if inv.package_source:
+        cyclonedx.set_package_source(bom, inv.package_source)
 
     path = sbom_path(cfg.out, project.name, branch)
     cyclonedx.write(bom, path)

@@ -65,12 +65,16 @@ class BranchInventory:
     errors: list[str] = field(default_factory=list)
     # a release tag instead of a branch: {"tag", "date", "order"}; `branch` is then "tags/<tag>"
     release: dict | None = None
+    # an imported build SBOM supplied the packages of some ecosystems (sbomimport.source plus "replaced", the
+    # ecosystems it replaced); None: everything comes from the repository scan
+    package_source: dict | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["components"] = [c.to_dict() for c in self.components]
-        if d["release"] is None:            # a branch: the inventory.json entry stays as before
-            del d["release"]
+        for key in ("release", "package_source"):   # absent: the inventory.json entry stays as before
+            if d[key] is None:
+                del d[key]
         return d
 
     @classmethod

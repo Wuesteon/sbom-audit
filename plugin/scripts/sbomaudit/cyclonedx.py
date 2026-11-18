@@ -11,7 +11,7 @@ from .syft import ECOSYSTEM_BY_PURL_TYPE, SCOPE_PROPERTY, purl_type
 PREFIX = "sbom-audit:"
 TYPE_BY_KIND = {"image": "container", "runtime": "platform", "package": "library"}
 LIST_PROPS = {"unpinned_requirements"}
-BOOL_PROPS = {"floating", "own", "digest", "unresolved"}
+BOOL_PROPS = {"floating", "own", "digest", "unresolved", "imported"}
 
 
 def empty_bom() -> dict:
@@ -135,6 +135,18 @@ def set_subject(bom: dict, name: str, purl: str, version: str) -> str:
         "bom-ref": ref, "type": "application", "name": name, "version": version, "purl": purl,
     }
     return ref
+
+
+def set_package_source(bom: dict, src: dict) -> None:
+    """Record an imported build SBOM in `metadata.properties` (`sbom-audit:package_source:<key>`)."""
+    props = bom.setdefault("metadata", {}).setdefault("properties", [])
+    props[:] = [p for p in props if not str(p.get("name", "")).startswith(PREFIX + "package_source")]
+    props.append(_prop("package_source", src.get("kind", "import")))
+    for key in ("file", "in", "sha256", "spec_version", "tool", "timestamp", "commit", "stale", "replaced",
+                "direct_from"):
+        value = src.get(key)
+        if value is not None and value != "":
+            props.append(_prop(f"package_source:{key}", value))
 
 
 def write(bom: dict, path: Path) -> None:

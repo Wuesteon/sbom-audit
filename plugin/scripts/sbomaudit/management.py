@@ -14,7 +14,7 @@ import html
 import json
 from pathlib import Path
 
-from . import __version__
+from . import __version__, sbomimport
 from .cra import MANUFACTURER, OBLIGATIONS
 from .cache import atomic_write
 
@@ -206,6 +206,10 @@ STRINGS: dict[str, dict] = {
             "RELEASES.md, ISSUES.md, CRA.md and the other Markdown and JSON files are always in English; the "
             "language setting applies only to this report and the cra init templates.",
         ],
+        "limit_imports": "For {n} project branches or releases, the packages of some ecosystems come from an "
+                         "imported build SBOM instead of the repository scan; the plugin checks its format, not "
+                         "its completeness.",
+        "limit_imports_off": "Not built from the scanned commit, or with no commit recorded ({n}): {which}.",
         "limit_actions": "GitHub Actions used in workflows are inventoried but not checked for vulnerabilities "
                          "(OSV does not match versions for this ecosystem): {n} in this run's branches.",
         "e_intro": "Where the artefacts of this folder serve the EU Cyber Resilience Act (Regulation (EU) "
@@ -487,6 +491,10 @@ STRINGS: dict[str, dict] = {
             "RELEASES.md, ISSUES.md, CRA.md und die übrigen Markdown- und JSON-Dateien sind immer englisch; die "
             "Einstellung language gilt nur für diesen Bericht und die Vorlagen von cra init.",
         ],
+        "limit_imports": "Bei {n} Branches oder Releases stammen die Pakete einiger Ökosysteme aus einer "
+                         "importierten Build-SBOM statt aus dem Repository-Scan; das Plugin prüft ihr Format, nicht "
+                         "ihre Vollständigkeit.",
+        "limit_imports_off": "Nicht aus dem gescannten Commit gebaut oder ohne Commit-Angabe ({n}): {which}.",
         "limit_actions": "In Workflows verwendete GitHub Actions werden inventarisiert, aber nicht auf "
                          "Schwachstellen geprüft (OSV gleicht für dieses Ökosystem keine Versionen ab): {n} in den "
                          "Branches dieses Laufs.",
@@ -1318,6 +1326,13 @@ def _coverage(data: dict, S: dict) -> str:
     actions = (audit.get("stats") or {}).get("github_actions_unchecked")
     if actions:
         limits.insert(2, S["limit_actions"].format(n=actions))
+    imports = [r for r in audit.get("imported_sboms") or [] if isinstance(r, dict)]
+    if imports:
+        text = S["limit_imports"].format(n=len(imports))
+        off = [f"{r.get('project')}@{r.get('branch')}" for r in imports if sbomimport.staleness(r)]
+        if off:
+            text += " " + S["limit_imports_off"].format(n=len(off), which=", ".join(off))
+        limits.insert(1, text)
     L.append(f"<h3>{S['c_limits']}</h3><ul>" + "".join(f"<li>{e(x)}</li>" for x in limits) + "</ul></section>")
     return "".join(L)
 

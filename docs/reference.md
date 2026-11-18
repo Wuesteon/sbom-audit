@@ -18,6 +18,7 @@ mapping, what leaves your machine and the known limitations. For installation an
 - [Cyber Resilience Act](#cyber-resilience-act)
 - [Privacy: what leaves your machine](#privacy-what-leaves-your-machine)
 - [What is read per ecosystem](#what-is-read-per-ecosystem)
+- [Imported build SBOMs](#imported-build-sboms)
 - [Limitations](#limitations)
 
 ## The loop: setup → run → incident → vex
@@ -895,6 +896,59 @@ it is not a dependency.
   `golang` build image, when there is one, says more.
 - **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
   repository yet.
+
+## Imported build SBOMs
+
+The repository scan sees what the manifests declare. Where versions come from outside the repository
+(a Maven parent or BOM that is not in it, Gradle) or where you ship more than the manifests show, the
+build knows better. A CycloneDX JSON SBOM from the build can stand in for the scan's package list of a
+project branch or release tag.
+
+```bash
+# in the build, for Maven (official plugin; writes target/bom.json)
+mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom -DoutputFormat=json
+# then, on the machine that holds security/
+python3 scripts/sbom_audit_cli.py import --project shop-api --branch main target/bom.json
+python3 scripts/sbom_audit_cli.py import --project shop-api --tag v2.3.0 bom.json
+python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from-artifact app.jar
+```
+
+- **Where it is read from.** `import` validates the file and copies it to
+  `imports/<project>/<label>.cdx.json` (`<label>` as under `sbom/`: `main`, `release__1`, `tags__v2.3.0`)
+  with `<label>.import.json` next to it: sha256, generating tool, the document's timestamp, the commit it
+  was built from (`--commit`, default the current commit of the branch or tag) and the import time.
+  Alternatively `sbom = "target/bom.json"` under `[projects."<name>"]` takes a file committed in the
+  repository, read from the scanned commit, never from the working tree. When both exist, the
+  `imports/` file wins. `--from-artifact` runs Syft on a built JAR, WAR, folder or image instead.
+- **What it replaces.** Syft and the readers still run. For each ecosystem (purl type) in the imported
+  SBOM, its packages replace the scan's packages of that ecosystem; other ecosystems, images and runtime
+  pins stay as the scan found them. The project's own modules are dropped (the SBOM's
+  `metadata.component` and its sub-components, the components the root depends on that the repository
+  defines). An SBOM of one artefact therefore replaces the whole repository's packages of its ecosystem:
+  import the aggregate SBOM, or the one of the artefact you ship.
+- **Direct and transitive** come from the SBOM's `dependencies` graph: a package is direct when the root
+  or one of the project's own modules depends on it. Without a usable graph (Syft on a fat JAR has none)
+  the manifests decide as for a scan, and an ecosystem without a manifest reader stays unknown.
+- **Dev-only** (`optional`) only on evidence: the CycloneDX scope `excluded`, the cyclonedx-npm property
+  `cdx:npm:package:development`, or a Maven dependency the build lists directly that every pom declares
+  `<scope>test</scope>`. CycloneDX `optional` is not read as dev-only: the Maven plugin uses it for
+  `<optional>true</optional>` and cyclonedx-npm for `optionalDependencies`, which both ship. The Maven
+  plugin leaves test-scope dependencies out unless `includeTestScope` is set.
+- **Locations.** A package the scan also found keeps its manifests; one only the SBOM lists points at the
+  imported file, and its work-list hint says so instead of naming a manifest line.
+- **Not this commit's.** When the recorded commit differs from the scanned one, the import is still used
+  and every coverage statement says so: the branch line in `INVENTORY.md`, the coverage line and Notes in
+  `AUDIT.md`, the gaps in `STATUS.md` and the limits in `REPORT.html`. A file committed in the repository,
+  or an `imports/` file changed after `import`, has no recorded commit and reads "commit not recorded".
+- **Where it shows.** `package_source` on the inventory entry (`inventory.json`) and in
+  `audit.json` `imported_sboms` (tool, timestamp, sha256, commit, stale, replaced ecosystems, how direct
+  was decided), the `sbom-audit:package_source:*` properties of the `sbom/` document, and
+  `"imported": true` on a vulnerability location from it. `cra check` counts the `sbom/` document as
+  before; an imported package list is part of it.
+- **Untrusted input.** CycloneDX JSON spec 1.4 to 1.7, at most 64 MiB and 200,000 components. XML and
+  SPDX are refused with the generator's JSON option. Components without a purl are skipped and counted;
+  unknown purl types are kept. A file that cannot be used is an error on the branch (`errors` in
+  `inventory.json`) and the repository scan stands.
 
 ## Limitations
 

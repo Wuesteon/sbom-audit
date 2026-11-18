@@ -119,10 +119,19 @@ def _vulnerabilities(rep: dict) -> list[dict]:
                             "advisories": [_advisory(a) for a in advisories]},
                 "fix": {"action": "upgrade" if target else "no_fix_released", "target": target,
                         "unfixed_advisories": sum(1 for f in fixes if not f),
-                        "hint": ("bump the package in the manifest and refresh the lockfile" if direct else
-                                 "transitive: upgrade the parent that pulls it in, or refresh the lockfile")},
+                        "hint": _upgrade_hint(direct, locs)},
             })
     return issues
+
+
+def _upgrade_hint(direct: bool, locs: list[dict]) -> str:
+    if direct:
+        return "bump the package in the manifest and refresh the lockfile"
+    if any(l.get("imported") for l in locs):
+        # found only by an imported build SBOM: there is no manifest line or lockfile entry to point at
+        return ("transitive, listed by the imported build SBOM: upgrade the parent that pulls it in, or pin the "
+                "version where the build manages versions (Maven: <dependencyManagement>), then re-import the SBOM")
+    return "transitive: upgrade the parent that pulls it in, or refresh the lockfile"
 
 
 def _secrets(doc: dict | None, production: set[str]) -> list[dict]:

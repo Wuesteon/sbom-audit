@@ -53,7 +53,10 @@ push = false
 
 # Per-project options: production = true puts CRITICAL/HIGH findings first;
 # ignore = ["path/"] drops subtrees from the inventory.
+# sbom = "<path>" takes the package list of the ecosystems a CycloneDX JSON build SBOM committed at that
+# path contains from it (read from the scanned commit); a file written by `import` wins over it.
 [projects]
 # [projects."<name>"]
 # github = "owner/repo"
+# sbom = "target/bom.json"
 "shop-web" = { production = true }

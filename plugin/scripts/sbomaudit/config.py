@@ -11,7 +11,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlsplit
 
 from .errors import ConfigError
@@ -46,6 +46,7 @@ class ProjectOpts:
     ignore: list[str] = field(default_factory=list)
     github: str | None = None  # "owner/repo"
     releases: ReleasesOpts | bool | None = None  # None: the portfolio [releases] default; False: off
+    sbom: str | None = None    # a build SBOM committed in the repository (path in the tree)
 
 
 @dataclass
@@ -153,6 +154,7 @@ class Project:
     production: bool = False
     ignore: list[str] = field(default_factory=list)
     releases: ReleasesOpts | None = None
+    sbom: str | None = None
 
 
 def detect_mode(out: Path) -> str:
@@ -209,6 +211,17 @@ def _int(value, key: str, minimum: int = 1) -> int:
 def _str(value, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{key} must be a non-empty string")
+    return value
+
+
+def _tree_path(value, key: str) -> str | None:
+    """A relative path inside a repository tree (no `..`, not absolute), or None when unset."""
+    if value is None:
+        return None
+    value = _str(value, key).strip()
+    parts = PurePosixPath(value).parts
+    if value.startswith(("/", "\\")) or ".." in parts or "\\" in value or any(ord(c) < 32 for c in value):
+        raise ConfigError(f"{key} must be a relative path inside the repository")
     return value
 
 
@@ -432,7 +445,8 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
         name: ProjectOpts(production=_bool(opts.get("production", False), f'[projects."{name}"] production'),
                           ignore=list(opts.get("ignore", [])),
                           github=opts.get("github"),
-                          releases=_project_releases(opts.get("releases"), releases, f'[projects."{name}"]'))
+                          releases=_project_releases(opts.get("releases"), releases, f'[projects."{name}"]'),
+                          sbom=_tree_path(opts.get("sbom"), f'[projects."{name}"] sbom'))
         for name, opts in (data.get("projects") or {}).items()
     }
     discovery = data.get("discovery") or {}
@@ -528,7 +542,7 @@ def _project(cfg: Config, path: Path) -> Project:
     opts = cfg.projects.get(path.name, ProjectOpts())
     return Project(name=path.name, path=path, remote=remote_url(path),
                    production=opts.production, ignore=list(opts.ignore),
-                   releases=release_opts(cfg, path.name))
+                   releases=release_opts(cfg, path.name), sbom=opts.sbom)
 
 
 _SLUG_PART_RE = re.compile(r"[A-Za-z0-9._-]+")
@@ -598,7 +612,7 @@ def _cloned_github_projects(cfg: Config) -> list[Project]:
         opts = cfg.projects[name]
         found.append(Project(name=name, path=path, remote=remote_url(path),
                              production=opts.production, ignore=list(opts.ignore),
-                             releases=release_opts(cfg, name)))
+                             releases=release_opts(cfg, name), sbom=opts.sbom))
     return found
 
 
@@ -685,11 +699,14 @@ def write_default(out: Path, cfg: Config, discovered: list[Project] | None = Non
         "",
         "# Per-project options: production = true puts CRITICAL/HIGH findings first;",
         "# ignore = [\"path/\"] drops subtrees from the inventory.",
+        "# sbom = \"<path>\" takes the package list of the ecosystems a CycloneDX JSON build SBOM committed at that",
+        "# path contains from it (read from the scanned commit); a file written by `import` wins over it.",
         "[projects]",
     ]
     for p in discovered or []:
         lines.append(f'# "{p.name}" = {{ production = false }}')
     lines.append('# [projects."<name>"]')
     lines.append('# github = "owner/repo"')
+    lines.append('# sbom = "target/bom.json"')
     path.write_text("\n".join(lines) + "\n")
     return path

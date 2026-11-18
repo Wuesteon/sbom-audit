@@ -9,8 +9,9 @@ from . import __version__, config
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
-            "assess", "report", "cra", "releases")
-WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report", "cra")
+            "assess", "report", "cra", "releases", "import")
+WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report", "cra",
+                    "import")
 EXIT_READ_ONLY = 5
 SECRETS_STATUSES = ("open", "rotated", "false_positive", "test_fixture", "accepted")  # = secrets.store.STATUSES
 
@@ -127,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
                                          "(records no decision)")
     draft_p.add_argument("--dry-run", action="store_true",
                          help="print the request body (no key) and exit; sends and writes nothing")
+    add_import_args(sub.add_parser("import", parents=[common],
+                                   help="use a CycloneDX JSON build SBOM as the package list of a project branch or "
+                                        "release tag (validates it, copies it to imports/, records provenance)"))
     add_cra_args(sub.add_parser("cra", parents=[common],
                                 help="EU Cyber Resilience Act readiness per configured product ([cra.products]): "
                                      "evidence present, missing or stale; starter documents"), common)
@@ -145,6 +149,20 @@ def add_cra_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) ->
     init_p.add_argument("--lang", default=None, choices=("en", "de"),
                         help="template language (default: [report] language in the config, else en)")
     init_p.add_argument("--yes", action="store_true", help="write the planned files (after the user confirmed)")
+
+
+def add_import_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--root", type=Path, default=None, help="folder of projects (default: parent of --out)")
+    p.add_argument("--project", required=True, help="project folder name")
+    ref = p.add_mutually_exclusive_group(required=True)
+    ref.add_argument("--branch", default=None, help="an audited branch")
+    ref.add_argument("--tag", default=None, help="a release tag")
+    p.add_argument("--commit", default=None, metavar="SHA",
+                   help="the commit the SBOM was built from (default: the current commit of the branch or tag)")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("file", nargs="?", type=Path, default=None, help="CycloneDX JSON file from the build")
+    source.add_argument("--from-artifact", default=None, metavar="PATH_OR_IMAGE",
+                        help="generate the SBOM with Syft from a built artefact (JAR, WAR, folder or image)")
 
 
 def add_code_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
@@ -321,6 +339,11 @@ def _assess(args) -> int:
     return draft.cli(args)
 
 
+def _import(args) -> int:
+    from . import sbomimport
+    return sbomimport.cli(args)
+
+
 def _cra(args) -> int:
     from . import cra
     return cra.cli(args)
@@ -378,7 +401,7 @@ HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
                                "code": _code, "settings": _settings, "assess": _assess, "report": _report,
-                               "cra": _cra, "releases": _releases}
+                               "cra": _cra, "releases": _releases, "import": _import}
 
 
 if __name__ == "__main__":

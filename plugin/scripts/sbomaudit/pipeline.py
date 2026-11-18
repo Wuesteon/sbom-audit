@@ -17,8 +17,8 @@ import socket
 import time
 from pathlib import Path
 
-from . import (assess, config, enrich, evidence, issues, matching, preflight, releases, report, scan, scheduler,
-               status, vex)
+from . import (assess, config, enrich, evidence, issues, matching, preflight, releases, report, sbomimport, scan,
+               scheduler, status, vex)
 from .cache import Cache
 from .config import Config, Project
 from .errors import VexError
@@ -353,6 +353,10 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     written = [Path(p) if Path(p).is_absolute() else out / p for p in written]
     written.append(out / scan.INVENTORY_FILE)
     written += [out / inv.sbom_path for inv in inventories if inv.sbom_path]
+    for inv in inventories:                     # imported build SBOMs used by this run are evidence too
+        if (inv.package_source or {}).get("in") == "evidence":
+            path = sbomimport.import_path(out, inv.project, inv.branch)
+            written += [p for p in (path, sbomimport.provenance_path(path)) if p.is_file()]
     try:
         written += [out / "sbom" / name for name in _prune(cfg, inventories, say)]
     except Exception as exc:
