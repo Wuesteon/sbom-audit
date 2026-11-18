@@ -54,6 +54,9 @@ class Component:
     locations: list[str] = field(default_factory=list)   # repo-relative manifest paths
     direct: bool | None = None
     props: dict = field(default_factory=dict)
+    # CycloneDX fields carried unchanged from an imported build SBOM (hashes, licenses, supplier, ...), already
+    # checked by `sbomimport.passthrough`; written into the SBOM document only, not into inventory.json
+    cdx: dict = field(default_factory=dict, compare=False, repr=False)
 
     def key(self) -> tuple[str, str, str, str]:
         return (self.kind, self.ecosystem, self.name, self.version)
@@ -62,7 +65,9 @@ class Component:
         return qualified_name(self.ecosystem, self.name, self.purl)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        del d["cdx"]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Component":

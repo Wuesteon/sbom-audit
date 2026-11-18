@@ -73,6 +73,20 @@ def _iso(ts: float | None) -> str | None:
         return None
 
 
+def utc_iso(value) -> str | None:
+    """An ISO 8601 time with an offset, as UTC (`…+00:00`); a time without an offset is returned as it is
+    (its zone is not known, so it is not called UTC), anything unparsable as None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        at = dt.datetime.fromisoformat(value.replace("Z", "+00:00") if value.endswith("Z") else value)
+    except ValueError:
+        return None
+    if at.tzinfo is None or at.utcoffset() is None:
+        return value
+    return at.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
 # --------------------------------------------------------------------------- tool versions
 
 def parse_version(text: str) -> str | None:
@@ -157,7 +171,7 @@ def data_sources(sources: dict, cache, since: float, *, eol_keys=(), latest_keys
     reg = sources.get("registries")
     vex = sources.get("openvex")
     return {
-        "osv": {"status": _source_status(osv), "origin": "live", "queried_at": generated_at,
+        "osv": {"status": _source_status(osv), "origin": "live", "queried_at": utc_iso(generated_at),
                 "via": "osv-scanner (OSV.dev, queried during the audit)",
                 "branches_scanned": (osv or {}).get("scanned"), "branches_failed": len((osv or {}).get("failed") or [])},
         "cisa_kev": kev_doc,
@@ -237,7 +251,7 @@ def audit_md_section(prov: dict | None) -> list[str]:
     for key, info in (prov.get("data_sources") or {}).items():
         if isinstance(info, dict):
             L.append(f"| {SOURCE_NAMES.get(key, _md(key))} | {_md(info.get('status'))} | {_freshness(key, info)} |")
-    L += ["", "The secrets engine and its version are in `SECRETS.md`. `manifest.json` records the run's start and "
+    L += ["", "The secrets scan's own results are in `SECRETS.md`. `manifest.json` records the run's start and "
           "end, the audited commits and the SHA-256 and size of every file the run wrote; "
           "`sbom_audit_cli.py verify` recomputes them.", ""]
     return L

@@ -149,9 +149,33 @@ def purl_of(cfg: Config, inventories: list[BranchInventory]) -> dict[str, str]:
     return mapping
 
 
+def _gh_used(cfg: Config) -> bool:
+    """Whether the run asks `gh` (the visibility of the own repository, or GitHub discovery)."""
+    return (cfg.mode == "portfolio" and evidence.is_own_repo(cfg.out.resolve())) or bool(cfg.discovery.github_owner)
+
+
+def finish_tools(cfg: Config) -> dict[str, str]:
+    """The tools the steps after the audit will run and `manifest.json` records next to syft, osv-scanner and git:
+    the secrets engine (when `[secrets]` is on and an engine is found) and `gh` (when used). AUDIT.md is written
+    before those steps, so its tool table takes them from here; never raises."""
+    tools: dict[str, str] = {}
+    try:
+        if cfg.secrets.enabled:
+            from .secrets import engine
+            found = engine.find_engine()
+            if isinstance(found, engine.Engine):
+                tools[found.name] = found.version
+        if _gh_used(cfg):
+            tools.update(manifest.tool_versions(("gh",)))
+    except Exception:
+        pass
+    return tools
+
+
 def audit(cfg: Config, inventories: list[BranchInventory], log=None,
-          http=None) -> tuple[dict, list[Path]]:
+          http=None, extra_tools: dict | None = None) -> tuple[dict, list[Path]]:
     """Match, enrich, apply VEX and write every report; returns the report and the paths written.
+    `extra_tools`: tools later steps of the same run use (`finish_tools`), listed in the report's tool table.
 
     Raises VexError before any matching.
 
@@ -189,8 +213,10 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
 
     release_ctx = releases.context(cfg, inventories)
     rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx)
+    tools = {**manifest.tool_versions(), **(extra_tools or {})}
     rep["provenance"] = manifest.try_provenance(cfg, cache, since, sources=sources, eol_rows=eol_rows,
-                                                latest_keys=direct, generated_at=rep.get("generated_at"))
+                                                latest_keys=direct, generated_at=rep.get("generated_at"),
+                                                tools=tools)
     rel_doc = releases.build(cfg, inventories, findings, kept, eol_rows, sources)
     written = [report.write_json(rep, cfg.out),
                report.write_inventory_md(cfg, inventories, cfg.out),
@@ -456,7 +482,7 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     written += manifest.try_write(       # lists every file above with its SHA-256; the commit covers it
         out, rep, inventories, written, say, exit_code=code, secrets=secrets, hosts=hosts_result,
         started_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=time.monotonic() - started),
-        gh_used=own or bool(cfg.discovery.github_owner))
+        gh_used=own or bool(cfg.discovery.github_owner))   # the same test as `_gh_used`
     commit = _do_commit(cfg, doc["commit"], doc, written, say)
     push = _do_push(cfg, doc["push"], commit["status"], visibility, say)
     if commit != doc["commit"] or push != doc["push"]:
@@ -533,7 +559,7 @@ def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, l
         result = scan.scan(cfg, only=only, fetch=fetch, log=say)
         for s in result.skipped:
             say(f"skipped {s['project']}: {s['reason']}")
-        rep, written = audit(cfg, result.inventories, log=say, http=http)
+        rep, written = audit(cfg, result.inventories, log=say, http=http, extra_tools=finish_tools(cfg))
     except VexError as exc:
         say(f"OpenVEX: {exc}")
         return EXIT_VEX

@@ -724,7 +724,7 @@ records how the reports were produced and what they were when the run finished:
 | `run` | `command`, `started_at`, `finished_at` (UTC), `exit_code` |
 | `config` | SHA-256 of the `sbom-audit.toml` the run read (`null` when it read none) |
 | `tools` | version of syft, osv-scanner and git as each tool reports it (`syft version`, `osv-scanner --version`, `git --version`), gh when the run uses it, and the secrets engine actually used (gitleaks or betterleaks); `unknown` when a tool does not answer, `not installed` when it is not on PATH |
-| `data_sources` | per source (`osv`, `cisa_kev`, `endoflife`, `registries`, `openvex`, `secrets`, `hosts`): `status` (ok, partial, failed, skipped, not run) and freshness: OSV is queried live by osv-scanner; CISA KEV gives catalogue version and date, fetch time and whether it came live or from the 24 h cache; endoflife.date and the registries give the number of lookups answered live and from the cache and the oldest and newest fetch time |
+| `data_sources` | per source (`osv`, `cisa_kev`, `endoflife`, `registries`, `openvex`, `secrets`, `hosts`): `status` (ok, partial, failed, skipped, not run) and freshness: OSV is queried live by osv-scanner (`queried_at`, the audit's time in UTC); CISA KEV gives catalogue version and date, fetch time and whether it came live or from the 24 h cache; endoflife.date and the registries give the number of lookups answered live and from the cache and the oldest and newest fetch time |
 | `audited` | per project and branch or release tag: the audited commit, `release_tag`, `complete` (no error on that branch), and for an imported build SBOM its file, SHA-256, commit and staleness |
 | `files` | `{path: {sha256, bytes}}` for every file the run wrote (reports, JSON, dated copies, `sbom/**/*.cdx.json`, imported SBOMs) and every decision file it read (`vex/*.openvex.json`, `secrets-decisions.toml`, `hosts-decisions.toml`); `append_only: true` on `AUDIT.md` and `log.md` |
 | `refreshed` | one line per later command that rewrote evidence: `at`, `command`, `files`, `removed` |
@@ -758,6 +758,10 @@ the next run commits them.
 
 The same facts appear in plain words in a "How this report was produced" section at the end of `AUDIT.md`
 (before carried-over assessments) and as section 6 of `REPORT.html`, both from `audit.json` `provenance`.
+Its tool table lists every tool the manifest records: `run` writes `AUDIT.md` before the secrets scan, so
+it asks the secrets engine and gh for their versions up front (`audit` on its own, which runs neither,
+lists syft, osv-scanner and git only). The OSV query time there is UTC like the manifest's; `audit.json`
+`generated_at` keeps the run's own offset.
 
 **Inventory overview.** The Overview table of `INVENTORY.md` always has the columns Node, Python,
 Deno, Expo/React Native, SvelteKit, NestJS, Astro, Vite, FastAPI and Postgres. Java/JDK (`java`,
@@ -1025,6 +1029,15 @@ Gradle is never run; the plugin's reader (`gradleread.py`) adds, statically:
   declared versions, which are a lower bound: Gradle's conflict resolution may pick a higher one, and
   transitive packages are not known at all. Legacy `gradle/dependency-locks/<configuration>.lockfile`
   files are read by the plugin (Syft does not).
+- **Next to a `pom.xml` (or a legacy lock file).** A repository that builds with both Maven and Gradle
+  (spring-petclinic) declares most packages twice. A Gradle declaration with the same name and version as
+  a package Syft lists adds no second entry; its build file joins that entry's locations. A Gradle
+  declaration without a resolved version whose `group:artifact` another reader on the branch resolves
+  (Syft from a `pom.xml`, a legacy lock file) adds no unresolved duplicate either: its build file joins
+  every resolved entry of that coordinate and is named in `gradle_unversioned` there, because the Gradle
+  build may still pick another version. In the `sbom/` document these build files are
+  `sbom-audit:location:<i>` properties next to Syft's `syft:location:*`, plus `sbom-audit:gradle_unversioned`.
+  A coordinate only Gradle declares, or that nothing resolves, stays as described above.
 - **Scope.** A configuration is dev-only when one of its camel-case words is `test`
   (`testImplementation`, `androidTestImplementation`, `kspTest`, `testFixturesApi`,
   `integrationTestImplementation`, `debugUnitTestRuntimeClasspath`), when it starts with `debug`
@@ -1045,7 +1058,8 @@ Gradle is never run; the plugin's reader (`gradleread.py`) adds, statically:
 
 For exact versions, scopes and the transitive tree, commit a lock file (`./gradlew dependencies
 --write-locks` with `dependencyLocking { lockAllConfigurations() }`) or import a build SBOM made with
-the CycloneDX Gradle plugin (see [Imported build SBOMs](#imported-build-sboms)).
+the CycloneDX Gradle plugin (`org.cyclonedx.bom`; see [Imported build SBOMs](#imported-build-sboms) for
+the task and the file it writes, which differ between plugin 2.x and 3.x).
 
 ## Imported build SBOMs
 
@@ -1055,10 +1069,12 @@ build knows better. A CycloneDX JSON SBOM from the build supplements the scan's 
 project branch or release tag: where both name a package, the build's entry counts.
 
 ```bash
-# in the build, for Maven (official plugin; writes target/bom.json)
+# in the build, for Maven (official plugin, checked with 2.9.1; writes target/bom.json)
 mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom -DoutputFormat=json
-# for Gradle (official plugin: plugins { id("org.cyclonedx.bom") version "<current>" }; writes build/reports/bom.json)
-./gradlew cyclonedxBom
+# for Gradle (official plugin 3.x, Gradle 8.4+: plugins { id("org.cyclonedx.bom") version "3.6.1" })
+./gradlew cyclonedxBom        # whole build, aggregated: build/reports/cyclonedx/bom.json
+./gradlew cyclonedxDirectBom  # one per project: build/reports/cyclonedx-direct/bom.json
+# (plugin 2.x, e.g. 2.4.1: ./gradlew cyclonedxBom writes build/reports/bom.json)
 # then, on the machine that holds security/
 python3 scripts/sbom_audit_cli.py import --project shop-api --branch main target/bom.json
 python3 scripts/sbom_audit_cli.py import --project shop-api --tag v2.3.0 bom.json
@@ -1085,9 +1101,13 @@ python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from
 - **Counts per branch.** The branch line in `INVENTORY.md` and the Notes of `AUDIT.md` say how many
   packages came from the import, how many were kept from the repository scan (not in the build SBOM, with
   the number whose version is not resolved, and up to 20 of them by name and version) and how many
-  repository entries the import replaced. `package_source` carries `packages`, `kept_from_scan`,
-  `kept_unresolved`, `kept` (the names) and `replaced_entries`; `replaced` stays the list of ecosystems
-  the SBOM covers.
+  repository entries the import replaced, and how many of those had no version in the repository (a
+  Gradle declaration that leaves it to a platform, a Maven version managed outside the repository) and
+  got one from the import. `package_source` carries `packages`, `kept_from_scan`, `kept_unresolved`,
+  `kept` (the names), `replaced_entries` and `resolved_by_import`; `replaced` stays the list of
+  ecosystems the SBOM covers. A Gradle declaration counts like any other scan entry: the import's entry
+  takes its build file as a location (and `gradle_unversioned` when it left the version open); one the
+  import does not name is kept and marked `not_in_build_sbom`.
 - **Direct and transitive** come from the SBOM's `dependencies` graph: a package is direct when the root
   or one of the project's own modules depends on it. Without a usable graph (Syft on a fat JAR has none)
   the manifests decide as for a scan, and an ecosystem without a manifest reader stays unknown.
@@ -1098,6 +1118,22 @@ python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from
   plugin leaves test-scope dependencies out unless `includeTestScope` is set.
 - **Locations.** A package the scan also found keeps its manifests; one only the SBOM lists points at the
   imported file, and its work-list hint says so instead of naming a manifest line.
+- **Fields carried through.** An imported package is written into the `sbom/` document with the
+  build SBOM's `group`, `publisher`, `hashes`, `licenses`, `supplier`, `manufacturer`, `cpe` and
+  `externalReferences`, unchanged, so `sbom check` counts what the build stated. Each value is checked
+  and bounded (known hash algorithms with hex content of a CycloneDX length; licence id, name, URL and
+  `acknowledgement`, or one SPDX expression; organisation name, URLs and contacts; external references
+  of a CycloneDX type with a URL; at most 32 entries per list, no control characters, no nested
+  bom-refs, licence texts or other fields); a value that fails a check is left out, never repaired. A
+  `sbom/` document older than CycloneDX 1.6 gets no `manufacturer`, no `acknowledgement` and only the
+  external reference types of 1.4. Two import entries for the same package version merge, the first
+  value of each field wins. These fields are in the `sbom/` document only, not in `inventory.json`.
+- **Dependency graph carried through.** The import's `dependencies` are written in the bom-refs of the
+  `sbom/` document: the project's own modules become the subject (`metadata.component`), an edge
+  through a component that was not written (no purl, malformed) is followed through it, so no path is
+  lost, and edges between own modules are left out. At most 2,000,000 edges; `package_source`
+  records `graph_edges` (and `graph_truncated` when the limit cut it), and the branch line says "its
+  dependency graph kept (N edges)".
 - **Not this commit's.** When the recorded commit differs from the scanned one, the import is still used
   and every coverage statement says so: the branch line in `INVENTORY.md`, the coverage line and Notes in
   `AUDIT.md`, the gaps in `STATUS.md` and the limits in `REPORT.html`. For a file committed in the
