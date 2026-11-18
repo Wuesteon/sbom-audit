@@ -205,7 +205,7 @@ class RunTests(unittest.TestCase):
             day = json.loads((cfg.out / "secrets.json").read_text())["generated_at"][:10]
             run_wrote = {"AUDIT.md", "INVENTORY.md", "audit.json", "log.md", "status.json", "STATUS.md",
                          "issues.json", "ISSUES.md", "CLAUDE.md", "README.md", *dated, "secrets.json", "SECRETS.md",
-                         f"reports/{day}-secrets.md", "REPORT.html", "releases.json", "RELEASES.md",
+                         f"reports/{day}-secrets.md", "REPORT.html", "releases.json", "RELEASES.md", "manifest.json",
                          *[d.replace("-audit.md", "-report.html") for d in dated]}
             self.assertEqual(committed, run_wrote)
             self.assertIn("?? notes.md", git(cfg.out, "status", "--porcelain"))
@@ -438,7 +438,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(doc["commit"]["status"], "committed")
             self.assertEqual(doc["exit_code"], 1)
             self.assertEqual(set(git(cfg.out, "status", "--porcelain").splitlines()),
-                             {" M STATUS.md", " M status.json"})
+                             {" M STATUS.md", " M status.json", " M manifest.json"})   # next run commits them
             self.assertIn("push: failed (timed out)", self.said)
 
     def test_push_failure_never_shows_the_remote_url(self):

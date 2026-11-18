@@ -63,6 +63,19 @@ def main() -> None:
     rep = report.build(cfg, INVS, [Finding("shop-web", "main", LODASH_OLD, [LODASH_VULN])], [], [], [],
                        {"osv-scanner": {"scanned": 3, "failed": []}})
     rep["generated_at"] = AUDIT_AT
+    rep["provenance"] = {  # fixed values: what manifest.provenance records on a real run
+        "sbom_audit": "fixture", "python": "3.12.0", "platform": "fixture", "config_sha256": None,
+        "tools": {"syft": "1.18.1", "osv-scanner": "2.0.2", "git": "2.47.1"},
+        "data_sources": {
+            "osv": {"status": "ok", "origin": "live", "queried_at": AUDIT_AT, "branches_scanned": 3,
+                    "branches_failed": 0},
+            "cisa_kev": {"status": "ok", "entries": 1400, "origin": "live", "fetched_at": "2026-11-07T02:59:00+00:00",
+                         "catalog_version": "2026.11.06", "catalog_date": "2026-11-06T15:00:00.000Z"},
+            "endoflife": {"status": "ok", "answers": 0, "live": 0, "cached": 0, "without_answer": 0,
+                          "oldest_fetch": None, "newest_fetch": None},
+            "registries": {"status": "ok", "answers": 0, "live": 0, "cached": 0, "without_answer": 0,
+                           "oldest_fetch": None, "newest_fetch": None},
+            "openvex": {"status": "ok", "statements": 0}}}
     report.write_json(rep, out)
     report.write_audit_md(rep, out)
     doc = status.build(rep, secrets=None, previous=None, duration_s=12.0, exit_code=1,

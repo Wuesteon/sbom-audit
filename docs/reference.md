@@ -664,6 +664,7 @@ security/
 ├── reports/<date>-audit.md            # dated copy of every run (and assessment proposals)
 ├── reports/<date>-report.html         # dated copy of REPORT.html
 ├── log.md                   # append-only: one line per run, secrets scan and host action
+├── manifest.json            # the last run: tool versions, data source dates, SHA-256 of every file it wrote
 └── .cache/                  # KEV, endoflife.date and registry answers, 24 h; gitignored
 ```
 
@@ -682,6 +683,7 @@ security/
 | `CRA.md`, `cra.json` | `run` (with `[cra.products]`), `cra check` | no; derived from the files it names |
 | `cra/<product>/` | `cra init <product> --yes` (new files only, never overwrites) | yes: these are your documents |
 | `reports/`, `log.md` | every run, secrets scan and host action | no |
+| `manifest.json` | every `run`; entries refreshed by every later writing command | no; checked with `verify` |
 
 **Management report.** `REPORT.html` is a single self-contained page (inline CSS, no script, no
 external request) for people who do not read the Markdown: overall state with the change since the
@@ -700,6 +702,52 @@ its limits). Times in the report are shown in the run's time zone (the offset of
 recorded as a day only (an issue's or a secret's `first_seen`, a decision date) is shown as recorded,
 and `secrets.json` records UTC days. The report states the zone above its timestamp table.
 Sample: [`evals/fixtures/security/REPORT.html`](../evals/fixtures/security/REPORT.html).
+
+### Run manifest and `verify`
+
+Every `run` writes `manifest.json` just before its commit (written atomically, committed with the run). It
+records how the reports were produced and what they were when the run finished:
+
+| Field | Content |
+|---|---|
+| `schema`, `sbom_audit`, `python`, `platform` | manifest format (`sbom-audit-manifest/1`), plugin version, Python version, platform |
+| `run` | `command`, `started_at`, `finished_at` (UTC), `exit_code` |
+| `config` | SHA-256 of the `sbom-audit.toml` the run read (`null` when it read none) |
+| `tools` | version of syft, osv-scanner and git as each tool reports it (`syft version`, `osv-scanner --version`, `git --version`), gh when the run uses it, and the secrets engine actually used (gitleaks or betterleaks); `unknown` when a tool does not answer, `not installed` when it is not on PATH |
+| `data_sources` | per source (`osv`, `cisa_kev`, `endoflife`, `registries`, `openvex`, `secrets`, `hosts`): `status` (ok, partial, failed, skipped, not run) and freshness: OSV is queried live by osv-scanner; CISA KEV gives catalogue version and date, fetch time and whether it came live or from the 24 h cache; endoflife.date and the registries give the number of lookups answered live and from the cache and the oldest and newest fetch time |
+| `audited` | per project and branch or release tag: the audited commit, `release_tag`, `complete` (no error on that branch), and for an imported build SBOM its file, SHA-256, commit and staleness |
+| `files` | `{path: {sha256, bytes}}` for every file the run wrote (reports, JSON, dated copies, `sbom/**/*.cdx.json`, imported SBOMs) and every decision file it read (`vex/*.openvex.json`, `secrets-decisions.toml`, `hosts-decisions.toml`); `append_only: true` on `AUDIT.md` and `log.md` |
+| `refreshed` | one line per later command that rewrote evidence: `at`, `command`, `files`, `removed` |
+
+Never in it: anything under `.cache/` (the fingerprint key lives there), `.git/`, your own documents in
+`cra/`, the configuration file itself (its digest instead), a secret value or a tool path. A file cannot
+contain its own hash: the manifest lists every other file and the run's git commit covers the manifest.
+
+`sbom_audit_cli.py verify [--json]` recomputes every hash and prints one line per file: `ok`, `changed`
+(other bytes or size, or replaced by a symbolic link), `missing`, `appended` or `invalid` (an entry that
+points outside the folder or into `.cache/`, never read). It also names evidence files present in the
+folder but not in the manifest (top-level reports, `sbom/`, `vex/`, `imports/`) and says whether
+`sbom-audit.toml` still matches the digest the run read; both are information, not failures. It writes
+nothing and works with `SBOM_AUDIT_READ_ONLY=1`. Exit 0 every file matches, 1 a file changed, is missing or
+an entry is invalid, 2 no `manifest.json` or one that cannot be read.
+
+**Append-only files.** `AUDIT.md` takes hand-written `## Assessment` sections and `log.md` takes a line per
+later action. For both, `verify` checks the bytes the run wrote: text added after them reads `appended`
+(exit 0); a change inside them reads `changed`.
+
+**Commands after the run.** `issues`, `secrets resolve`, `secrets scan`, `hosts check`, `hosts accept`,
+`vex add`, `incident --vex`, `cra check`, `cra init --yes`, `report`, `import`, `scan` and `audit` rewrite
+evidence after the run. Each of them, on its way out, updates the manifest entries of exactly the files it
+wrote or removed during that command (a stat comparison before and after), marks each one
+`refreshed: {at, command}` and appends a line to `refreshed`. A file the command did not touch keeps the
+run's hash, so an edit by hand still reads `changed`, even when a later command ran. This keeps `verify`
+honest without re-running the audit: the manifest says which file a later command changed and when, and
+the next commit of the folder covers it. When `run` rewrites `status.json` and `STATUS.md` after a failed
+commit or push, it refreshes those two entries the same way (`command`: `run (commit and push outcome)`);
+the next run commits them.
+
+The same facts appear in plain words in a "How this report was produced" section at the end of `AUDIT.md`
+(before carried-over assessments) and as section 6 of `REPORT.html`, both from `audit.json` `provenance`.
 
 **Inventory overview.** The Overview table of `INVENTORY.md` always has the columns Node, Python,
 Deno, Expo/React Native, SvelteKit, NestJS, Astro, Vite, FastAPI and Postgres. Java/JDK (`java`,

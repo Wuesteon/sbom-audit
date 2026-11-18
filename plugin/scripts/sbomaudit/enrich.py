@@ -72,6 +72,7 @@ def load_kev(cache: Cache, fetch=http_get_json) -> tuple[set[str], str | None]:
     except Exception as exc:
         return set(), f"CISA KEV fetch failed: {type(exc).__name__}: {exc}"
     cache.put("kev-catalog", ids)
+    cache.put("kev-catalog-meta", {k: data.get(k) for k in ("catalogVersion", "dateReleased")})
     return set(ids), None
 
 
