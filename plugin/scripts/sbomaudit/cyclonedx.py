@@ -12,7 +12,7 @@ from .syft import ECOSYSTEM_BY_PURL_TYPE, SCOPE_PROPERTY, purl_type
 
 PREFIX = "sbom-audit:"
 TYPE_BY_KIND = {"image": "container", "runtime": "platform", "package": "library"}
-LIST_PROPS = {"unpinned_requirements"}
+LIST_PROPS = {"unpinned_requirements", "gradle_unversioned"}
 BOOL_PROPS = {"floating", "own", "digest", "unresolved", "imported", "not_in_build_sbom"}
 # Set on a repository-scan package that an imported build SBOM of its ecosystem does not name: kept, not dropped
 NOT_IN_BUILD_SBOM = "not_in_build_sbom"
@@ -144,6 +144,28 @@ def mark_not_in_build_sbom(bom: dict, should_mark) -> None:
         props.append(_prop(NOT_IN_BUILD_SBOM, True))
 
 
+def annotate(bom: dict, notes_of) -> None:
+    """Add places and properties another reader found to Syft package entries: `notes_of(entry)` returns None
+    or (locations, {prop: value}); the locations are written as `sbom-audit:location:<i>`, next to Syft's own
+    `syft:location:*` (`components` reads both back)."""
+    for entry in bom.get("components", []) or []:
+        if not entry.get("purl"):
+            continue
+        props = entry.setdefault("properties", [])
+        if any(p.get("name") == PREFIX + "kind" for p in props):
+            continue
+        notes = notes_of(entry)
+        if not notes:
+            continue
+        locations, extra = notes
+        props[:] = [p for p in props if not str(p.get("name", "")).startswith(PREFIX + "location:")
+                    and p.get("name") not in {PREFIX + k for k in extra}]
+        for i, loc in enumerate(locations):
+            props.append(_prop(f"location:{i}", loc))
+        for key in sorted(extra):
+            props.append(_prop(key, extra[key]))
+
+
 def drop_components(bom: dict, should_drop, keep_ref: str | None = None) -> list[dict]:
     """Remove entries where `should_drop(entry)`; their dependency rows move to `keep_ref`."""
     comps = bom.get("components", []) or []
@@ -225,7 +247,7 @@ def set_package_source(bom: dict, src: dict) -> None:
     props.append(_prop("package_source", src.get("kind", "import")))
     for key in ("file", "in", "sha256", "spec_version", "tool", "timestamp", "commit", "commit_from", "stale",
                 "replaced", "direct_from", "packages", "kept_from_scan", "kept_unresolved", "replaced_entries",
-                "graph_edges", "graph_truncated"):
+                "resolved_by_import", "graph_edges", "graph_truncated"):
         value = src.get(key)
         if value is not None and value != "":
             props.append(_prop(f"package_source:{key}", value))
@@ -271,12 +293,15 @@ def _own_component(entry: dict, props: dict[str, str]) -> Component:
 def _syft_component(entry: dict, props: dict[str, str]) -> Component:
     purl = entry["purl"]
     locations = sorted({v.lstrip("/") for k, v in props.items()
-                        if k.startswith("syft:location:") and k.endswith(":path") and v})
+                        if k.startswith("syft:location:") and k.endswith(":path") and v}
+                       | {v for k, v in props.items() if k.startswith(PREFIX + "location:") and v})
     extra = {}
     if props.get("syft:package:foundBy"):
         extra["found_by"] = props["syft:package:foundBy"]
     if props.get(PREFIX + NOT_IN_BUILD_SBOM) == "true":
         extra[NOT_IN_BUILD_SBOM] = True
+    if props.get(PREFIX + "gradle_unversioned"):
+        extra["gradle_unversioned"] = [v for v in props[PREFIX + "gradle_unversioned"].split(",") if v]
     direct_raw = props.get(PREFIX + "direct")
     return Component(
         kind="package", ecosystem=ECOSYSTEM_BY_PURL_TYPE.get(purl_type(purl), purl_type(purl)),

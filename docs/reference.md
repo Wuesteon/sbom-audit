@@ -1025,6 +1025,15 @@ Gradle is never run; the plugin's reader (`gradleread.py`) adds, statically:
   declared versions, which are a lower bound: Gradle's conflict resolution may pick a higher one, and
   transitive packages are not known at all. Legacy `gradle/dependency-locks/<configuration>.lockfile`
   files are read by the plugin (Syft does not).
+- **Next to a `pom.xml` (or a legacy lock file).** A repository that builds with both Maven and Gradle
+  (spring-petclinic) declares most packages twice. A Gradle declaration with the same name and version as
+  a package Syft lists adds no second entry; its build file joins that entry's locations. A Gradle
+  declaration without a resolved version whose `group:artifact` another reader on the branch resolves
+  (Syft from a `pom.xml`, a legacy lock file) adds no unresolved duplicate either: its build file joins
+  every resolved entry of that coordinate and is named in `gradle_unversioned` there, because the Gradle
+  build may still pick another version. In the `sbom/` document these build files are
+  `sbom-audit:location:<i>` properties next to Syft's `syft:location:*`, plus `sbom-audit:gradle_unversioned`.
+  A coordinate only Gradle declares, or that nothing resolves, stays as described above.
 - **Scope.** A configuration is dev-only when one of its camel-case words is `test`
   (`testImplementation`, `androidTestImplementation`, `kspTest`, `testFixturesApi`,
   `integrationTestImplementation`, `debugUnitTestRuntimeClasspath`), when it starts with `debug`
@@ -1085,9 +1094,13 @@ python3 scripts/sbom_audit_cli.py import --project shop-api --branch main --from
 - **Counts per branch.** The branch line in `INVENTORY.md` and the Notes of `AUDIT.md` say how many
   packages came from the import, how many were kept from the repository scan (not in the build SBOM, with
   the number whose version is not resolved, and up to 20 of them by name and version) and how many
-  repository entries the import replaced. `package_source` carries `packages`, `kept_from_scan`,
-  `kept_unresolved`, `kept` (the names) and `replaced_entries`; `replaced` stays the list of ecosystems
-  the SBOM covers.
+  repository entries the import replaced, and how many of those had no version in the repository (a
+  Gradle declaration that leaves it to a platform, a Maven version managed outside the repository) and
+  got one from the import. `package_source` carries `packages`, `kept_from_scan`, `kept_unresolved`,
+  `kept` (the names), `replaced_entries` and `resolved_by_import`; `replaced` stays the list of
+  ecosystems the SBOM covers. A Gradle declaration counts like any other scan entry: the import's entry
+  takes its build file as a location (and `gradle_unversioned` when it left the version open); one the
+  import does not name is kept and marked `not_in_build_sbom`.
 - **Direct and transitive** come from the SBOM's `dependencies` graph: a package is direct when the root
   or one of the project's own modules depends on it. Without a usable graph (Syft on a fat JAR has none)
   the manifests decide as for a scan, and an ecosystem without a manifest reader stays unknown.

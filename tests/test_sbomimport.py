@@ -576,6 +576,137 @@ class ScanImportTests(unittest.TestCase):
         self.assertFalse(lib.props.get("imported"))                   # Maven stays as the repository scan found it
 
 
+GRADLE_POM = ("<project><groupId>org.example</groupId><artifactId>petclinic</artifactId><version>1.0</version>"
+              "<dependencies>"
+              "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId>"
+              "<version>3.5.0</version></dependency>"
+              "<dependency><groupId>org.webjars</groupId><artifactId>bootstrap</artifactId><version>5.3.6</version>"
+              "</dependency></dependencies></project>")
+GRADLE_BUILD = """plugins { id 'java' }
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.webjars:bootstrap:5.3.6'
+    runtimeOnly 'com.h2database:h2'
+    runtimeOnly 'org.only:gradle-only'
+}
+"""
+
+
+class GradleNextToMavenTests(unittest.TestCase):
+    """spring-petclinic's shape: pom.xml and build.gradle declare the same packages; Gradle leaves most versions
+    to the Spring Boot platform."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name).resolve()
+        self.root = self.tmp / "PROJECTS"
+        self.root.mkdir()
+        self.out = self.root / "security"
+        self.repo = make_repo(self.root, "clinic", {"pom.xml": GRADLE_POM, "build.gradle": GRADLE_BUILD})
+        web, boot = "pkg:maven/org.springframework.boot/spring-boot-starter-web@3.5.0", \
+            "pkg:maven/org.webjars/bootstrap@5.3.6"
+        self.syft_bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1, "components": [
+            {"bom-ref": "s1", "type": "library", "name": "spring-boot-starter-web", "version": "3.5.0",
+             "purl": web, "properties": [{"name": "syft:location:0:path", "value": "/pom.xml"}]},
+            {"bom-ref": "s2", "type": "library", "name": "bootstrap", "version": "5.3.6", "purl": boot,
+             "properties": [{"name": "syft:location:0:path", "value": "/pom.xml"}]}]}
+        self.syft_comps = [
+            Component(kind="package", ecosystem="Maven", name="spring-boot-starter-web", version="3.5.0", purl=web,
+                      scope="required", locations=["pom.xml"]),
+            Component(kind="package", ecosystem="Maven", name="bootstrap", version="5.3.6", purl=boot,
+                      scope="required", locations=["pom.xml"])]
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_scan(self):
+        cfg = config.load(self.out)
+        with mock.patch.object(scan.syft, "inventory", return_value=(json.loads(json.dumps(self.syft_bom)),
+                                                                     [Component(**{**c.__dict__, "locations": list(c.locations)})
+                                                                      for c in self.syft_comps])):
+            result = scan.scan(cfg, only=["clinic"], fetch=False)
+        inv = result.inventories[0]
+        self.assertEqual(inv.errors, [])
+        by_name: dict = {}
+        for c in inv.components:
+            if c.kind == "package":
+                by_name.setdefault(c.name, []).append(c)
+        return inv, by_name, cyclonedx.read(self.out / inv.sbom_path)
+
+    @staticmethod
+    def entry(bom, name):
+        return next(e for e in bom["components"] if e["name"] == name)
+
+    def test_gradle_declarations_join_the_resolved_maven_entries(self):
+        inv, pkgs, bom = self.run_scan()
+        # versionless in build.gradle, 3.5.0 through pom.xml: one entry, no unresolved duplicate
+        self.assertEqual(len(pkgs["spring-boot-starter-web"]), 1)
+        web = pkgs["spring-boot-starter-web"][0]
+        self.assertEqual((web.version, sorted(web.locations)), ("3.5.0", ["build.gradle", "pom.xml"]))
+        self.assertEqual(web.props["gradle_unversioned"], ["build.gradle"])
+        # same name and version as Syft's entry: not dropped silently, its build file joins Syft's entry
+        self.assertEqual(len(pkgs["bootstrap"]), 1)
+        self.assertEqual(sorted(pkgs["bootstrap"][0].locations), ["build.gradle", "pom.xml"])
+        self.assertNotIn("gradle_unversioned", pkgs["bootstrap"][0].props)
+        # only Gradle declares these and nothing resolves them: they stay, unresolved
+        for name in ("h2", "gradle-only"):
+            self.assertEqual(len(pkgs[name]), 1)
+            self.assertTrue(pkgs[name][0].props.get("unresolved"))
+        # the written SBOM says the same, and reads back the same
+        props = cyclonedx._props(self.entry(bom, "spring-boot-starter-web"))
+        self.assertEqual(props["sbom-audit:location:0"], "build.gradle")
+        self.assertEqual(props["sbom-audit:gradle_unversioned"], "build.gradle")
+        back = {c.name: c for c in cyclonedx.components(bom)}
+        self.assertEqual(sorted(back["bootstrap"].locations), ["build.gradle", "pom.xml"])
+        self.assertEqual(back["spring-boot-starter-web"].props["gradle_unversioned"], ["build.gradle"])
+        self.assertEqual(sum(1 for e in bom["components"] if e["name"] == "spring-boot-starter-web"), 1)
+
+    def test_import_resolves_gradle_declarations_and_marks_the_rest(self):
+        doc = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+               "metadata": {"component": {"bom-ref": "app", "type": "application", "name": "petclinic",
+                                          "purl": "pkg:maven/org.example/petclinic@1.0"}},
+               "components": [
+                   {"bom-ref": "w", "name": "spring-boot-starter-web", "group": "org.springframework.boot",
+                    "version": "3.5.0", "purl": "pkg:maven/org.springframework.boot/spring-boot-starter-web@3.5.0"},
+                   {"bom-ref": "b", "name": "bootstrap", "version": "5.3.6",
+                    "purl": "pkg:maven/org.webjars/bootstrap@5.3.6"},
+                   {"bom-ref": "h", "name": "h2", "version": "2.3.232", "scope": "required",
+                    "purl": "pkg:maven/com.h2database/h2@2.3.232"}]}
+        path = self.tmp / "bom.json"
+        path.write_bytes(raw(doc))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["--out", str(self.out), "import", "--project", "clinic", "--branch", "main", str(path)])
+        self.assertEqual(code, 0, err.getvalue())
+        inv, pkgs, bom = self.run_scan()
+        h2 = pkgs["h2"]
+        self.assertEqual(len(h2), 1)                      # the import's version, not an unresolved duplicate
+        self.assertEqual((h2[0].version, h2[0].locations), ("2.3.232", ["build.gradle"]))
+        self.assertFalse(h2[0].props.get("unresolved"))
+        self.assertEqual(h2[0].props["gradle_unversioned"], ["build.gradle"])
+        web = pkgs["spring-boot-starter-web"]
+        self.assertEqual(len(web), 1)
+        self.assertEqual(sorted(web[0].locations), ["build.gradle", "pom.xml"])
+        self.assertEqual(web[0].props["gradle_unversioned"], ["build.gradle"])
+        self.assertEqual(sorted(pkgs["bootstrap"][0].locations), ["build.gradle", "pom.xml"])
+        # declared in build.gradle, absent from the build SBOM: kept and marked
+        only = pkgs["gradle-only"]
+        self.assertEqual(len(only), 1)
+        self.assertTrue(only[0].props[cyclonedx.NOT_IN_BUILD_SBOM])
+        props = cyclonedx._props(self.entry(bom, "gradle-only"))
+        self.assertEqual(props["sbom-audit:not_in_build_sbom"], "true")
+        src = inv.package_source
+        self.assertEqual(src["kept"], ["org.only:gradle-only (version not resolved)"])
+        self.assertEqual(src["kept_unresolved"], 1)
+        # the two Syft entries and the h2 declaration; only h2 had no version before the import
+        self.assertEqual(src["replaced_entries"], 3)
+        self.assertEqual(src["resolved_by_import"], 1)
+        self.assertIn("1 of them without a version in the repository, versioned by the import",
+                      sbomimport.describe(src))
+        meta = cyclonedx._props(bom["metadata"])
+        self.assertEqual(meta["sbom-audit:package_source:resolved_by_import"], "1")
+
+
 class ConfigAndReportTests(unittest.TestCase):
     def test_tree_path(self):
         self.assertEqual(config._tree_path("target/bom.json", "k"), "target/bom.json")

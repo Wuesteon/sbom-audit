@@ -573,7 +573,10 @@ def describe(src: dict) -> str:
             text += ": " + ", ".join(kept[:KEPT_LISTED]) + (f" and {more} more" if more > 0 else "")
         bits.append(text)
     if src.get("replaced_entries") is not None:
-        bits.append(_plural(src["replaced_entries"], "repository entry replaced", "repository entries replaced"))
+        text = _plural(src["replaced_entries"], "repository entry replaced", "repository entries replaced")
+        if src.get("resolved_by_import"):
+            text += f" ({src['resolved_by_import']} of them without a version in the repository, versioned by the import)"
+        bits.append(text)
     if src.get("graph_edges") is not None:
         bits.append(f"its dependency graph kept ({_plural(src['graph_edges'], 'edge', 'edges')}"
                     + (f", cut at {MAX_EDGES})" if src.get("graph_truncated") else ")"))

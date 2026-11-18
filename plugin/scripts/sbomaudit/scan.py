@@ -55,6 +55,55 @@ def _dedupe(comps: list[Component]) -> list[Component]:
     return list(merged.values())
 
 
+def _resolved(c: Component) -> bool:
+    return c.kind == "package" and not c.props.get("unresolved") and not matching.version_unresolved(c.version)
+
+
+def _fold_gradle(packages: list[Component], extra: list[Component]) -> tuple[list[Component], dict[int, list[str]]]:
+    """`extra` without the Gradle declarations that would only repeat a package another source already lists,
+    and the build files added to Syft's entries (`id(component)` -> locations, for `cyclonedx.annotate`):
+    - a package Syft lists with the same name and version: the Gradle entry's build files join Syft's entry;
+    - a Gradle declaration without a resolved version whose `group:artifact` another reader on this branch
+      resolves (a pom.xml through Syft, a legacy lock file): no unresolved duplicate; its build files join every
+      resolved entry of that coordinate and are named in `gradle_unversioned` there, since the Gradle build may
+      still pick a different version.
+    A coordinate only Gradle declares, or that nothing resolves, stays as it is. An imported build SBOM is
+    applied afterwards (`_apply_import`) and takes over a coordinate it names in either case."""
+    syft_by_key = {c.key(): c for c in packages}
+    syft_ids = {id(c) for c in packages}
+    resolved: dict[tuple[str, str], list[Component]] = {}
+    for c in packages + extra:
+        if c.ecosystem == "Maven" and _resolved(c) and "gradle_config" not in c.props:
+            resolved.setdefault(_direct_key(c), []).append(c)
+    added: dict[int, list[str]] = {}
+
+    def join(target: Component, locations: list[str]) -> None:
+        for loc in locations:
+            if loc not in target.locations:
+                target.locations.append(loc)
+                if id(target) in syft_ids:
+                    added.setdefault(id(target), []).append(loc)
+
+    out = []
+    for c in extra:
+        if c.kind != "package" or "gradle_config" not in c.props:
+            out.append(c)
+            continue
+        same = syft_by_key.get(c.key())
+        if same is not None:
+            join(same, c.locations)
+            continue
+        hits = resolved.get(_direct_key(c)) if c.purl and not _resolved(c) else None
+        if hits:
+            for r in hits:
+                join(r, c.locations)
+                noted = r.props.setdefault("gradle_unversioned", [])
+                noted.extend(loc for loc in c.locations if loc not in noted)
+            continue
+        out.append(c)
+    return out, added
+
+
 def _syft_excludes(ignore: list[str]) -> list[str]:
     out = []
     for entry in ignore:
@@ -102,14 +151,25 @@ def _apply_import(bom: dict, subject_ref: str, imported, packages: list[Componen
     replaced = sorted({c.ecosystem for c in comps})
     named = {_direct_key(c) for c in comps}
     manifests: dict[tuple, list[str]] = {}
+    unversioned: dict[tuple, list[str]] = {}       # Gradle build files that leave the version to the build
     for c in packages + [e for e in extra if e.kind == "package"]:
+        key = _direct_key(c)
         for loc in c.locations:
-            manifests.setdefault(_direct_key(c), [])
-            if loc not in manifests[_direct_key(c)]:
-                manifests[_direct_key(c)].append(loc)
+            manifests.setdefault(key, [])
+            if loc not in manifests[key]:
+                manifests[key].append(loc)
+        gradle_open = list(c.props.get("gradle_unversioned") or [])
+        if "gradle_config" in c.props and not _resolved(c):
+            gradle_open += c.locations
+        for loc in gradle_open:
+            unversioned.setdefault(key, [])
+            if loc not in unversioned[key]:
+                unversioned[key].append(loc)
     for c in comps:
         key = _direct_key(c)
         c.locations = sorted(manifests.get(key) or direct.get(key) or [src["file"]])
+        if unversioned.get(key):
+            c.props["gradle_unversioned"] = sorted(unversioned[key])
         # Maven <scope>test</scope> everywhere it is declared; a package the build reaches through another
         # dependency is on that one's classpath whatever its own declarations say
         if key in dev_only and c.direct is not False:
@@ -121,10 +181,15 @@ def _apply_import(bom: dict, subject_ref: str, imported, packages: list[Componen
     for c in kept:
         c.props[cyclonedx.NOT_IN_BUILD_SBOM] = True
     labels = sorted({_kept_label(c) for c in kept})
+    # repository entries without a version that the import gives one (a Gradle declaration that leaves the
+    # version to a platform, an unexpanded `${…}`): the import resolved them
+    versioned = {_direct_key(c) for c in comps if _resolved(c)}
+    resolved_now = sum(1 for c in covered if not _resolved(c) and _direct_key(c) in versioned)
     inv.package_source = {**src, "replaced": replaced, "direct_from": via, "packages": len(comps),
                           "kept_from_scan": len(labels),
                           "kept_unresolved": sum(1 for x in labels if x.endswith("(version not resolved)")),
                           "kept": labels, "replaced_entries": len(covered) - len(kept),
+                          "resolved_by_import": resolved_now,
                           "skipped_no_purl": doc.skipped_no_purl, "invalid": doc.invalid}
     packages = [c for c in packages if c.ecosystem not in replaced or _direct_key(c) not in named]
     extra = [c for c in extra if c.kind != "package" or c.ecosystem not in replaced or _direct_key(c) not in named]
@@ -173,6 +238,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
     cyclonedx.drop_components(bom, lambda e: _entry_key(e) in own_names if e.get("purl") else False,
                               keep_ref=subject_ref)
     packages = [c for c in packages if _direct_key(c) not in own_names]
+    extra, gradle_added = _fold_gradle(packages, extra)
     if imported is not None:
         packages, extra = _apply_import(bom, subject_ref, imported, packages, extra, own_names, direct, dev_only, inv)
     for c in packages:
@@ -185,6 +251,10 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
     direct_by_purl = {c.purl: c.direct for c in packages}
     cyclonedx.mark_direct(bom, lambda e: direct_by_purl.get(e.get("purl")))
     cyclonedx.mark_scope(bom, lambda e: "optional" if _entry_key(e) in dev_only else None)
+    notes = {c.purl: (gradle_added.get(id(c), []),
+                      {k: c.props[k] for k in ("gradle_unversioned",) if c.props.get(k)})
+             for c in packages if gradle_added.get(id(c)) or c.props.get("gradle_unversioned")}
+    cyclonedx.annotate(bom, lambda e: notes.get(e.get("purl")))
     known = {c.key() for c in packages}            # a package Syft already catalogued is not added twice
     extra = [c for c in extra if c.kind != "package" or c.key() not in known]
     cyclonedx.merge(bom, extra)
