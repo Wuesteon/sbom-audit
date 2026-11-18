@@ -104,10 +104,12 @@ def _vulnerabilities(rep: dict) -> list[dict]:
             if tags:                         # only with release scanning: the release tags holding it
                 where["releases"] = tags
             issues.append({
+                # the id keeps the short name (ids are stable across versions); every text names the package
+                # in full, Maven `group:artifact`
                 "id": f"vuln:{project}:{manifest}:{v['ecosystem']}:{v['name']}@{version}",
                 "kind": "vulnerability", "priority": priority, "reason": reason,
                 "severity": v.get("max_severity"), "production": in_production,
-                "title": f"{v['name']} {version}: {len(advisories)} advisories, worst {severity_text(v.get('max_severity'))}"
+                "title": f"{v.get('package') or v['name']} {version}: {len(advisories)} advisories, worst {severity_text(v.get('max_severity'))}"
                          + (f", {n} not rated" if (n := len(unrated_advisories(v))) and v.get("max_severity") != "UNKNOWN"
                             else "")
                          + (" (KEV, actively exploited)" if v.get("kev") else ""),

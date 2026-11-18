@@ -180,6 +180,37 @@ class AuditMdTests(unittest.TestCase):
         self.assertIn("URLError: timeout", sec)
         self.assertLess(text.index("## Source status"), text.index("## Summary"))
 
+    def test_maven_packages_are_named_group_and_artifact_everywhere(self):
+        def maven(group, artifact, scope="required"):
+            return Component(kind="package", ecosystem="Maven", name=artifact, version="1.0",
+                             purl=f"pkg:maven/{group}/{artifact}@1.0", scope=scope, locations=["pom.xml"], direct=True)
+        kev = maven("org.kev", "kev-core")
+        high = maven("org.high", "high-core")
+        dev = maven("org.dev", "dev-core", scope="optional")
+        unrated = maven("org.unrated", "unrated-core")
+        hidden = maven("org.hidden", "hidden-core")
+        unrated_vuln = vuln("GHSA-u", None)
+        findings = [Finding("zeta", "main", kev, [vuln("GHSA-k", "HIGH", 7.5, kev=True)]),
+                    Finding("zeta", "main", high, [vuln("GHSA-h", "HIGH", 7.5)]),
+                    Finding("zeta", "main", dev, [vuln("GHSA-d", "HIGH", 7.5)]),
+                    Finding("zeta", "main", unrated, [unrated_vuln])]
+        st = vex.Statement(vuln="GHSA-x", product="pkg:github/example-org/zeta",
+                           subcomponents=["pkg:maven/org.hidden/hidden-core"], status="not_affected",
+                           justification="vulnerable_code_not_present", impact="", timestamp="2026-11-06T00:00:00+00:00",
+                           project="zeta", path="security/vex/zeta.openvex.json")
+        sup = vex.Suppressed(Finding("zeta", "main", hidden, [vuln("GHSA-x", "HIGH", 7.5)]), st)
+        invs = [inv("zeta", "main", [kev, high, dev, unrated, hidden])]
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.write(Path(tmp), findings, suppressed=[sup], invs=invs)
+            cfg = config(Path(tmp))
+            inventory = report.write_inventory_md(cfg, invs, cfg.out).read_text(encoding="utf-8")
+        self.assertIn("**org.kev:kev-core@1.0**", section(text, "🔴 Actively exploited (CISA KEV)"))
+        self.assertIn("| org.high:high-core | 1.0 |", section(text, "Critical and high severity by project"))
+        self.assertIn("| org.dev:dev-core | 1.0 |", section(text, "Dev-only findings"))
+        self.assertIn("| GHSA-x | org.hidden:hidden-core | 1.0 |", section(text, "Suppressed by VEX"))
+        self.assertIn("| org.unrated:unrated-core | 1.0 |", section(text, "Severity not rated"))
+        self.assertIn("| org.high:high-core | Maven |", inventory)
+
     def test_runtime_and_floating_sections(self):
         eol = [{"project": "zeta", "branch": "main", "product": "nodejs", "cycle": "18", "status": "EOL",
                 "eol_date": "2025-04-30", "latest": "18.20.8", "source": "package.json: engines.node >=18"}]

@@ -192,7 +192,7 @@ def _open_counts(findings: list[Finding]) -> dict:
     for f in findings:
         if f.component.scope == "optional":
             continue
-        key = (f.component.ecosystem, f.component.name, f.component.version)
+        key = (f.component.ecosystem, f.component.qualified_name(), f.component.version)
         w = worst.setdefault(key, {"kev": False, "sev": set()})
         for v in f.vulns:
             w["kev"] = w["kev"] or bool(v.get("kev"))
@@ -216,8 +216,8 @@ def _present(findings: list[Finding]) -> dict[tuple[str, str], dict]:
             vid = v.get("id")
             if not vid:
                 continue
-            e = out.setdefault((vid, f"{c.ecosystem}:{c.name}"),
-                               {"package": c.name, "ecosystem": c.ecosystem, "versions": set()})
+            e = out.setdefault((vid, f"{c.ecosystem}:{c.qualified_name()}"),
+                               {"package": c.qualified_name(), "ecosystem": c.ecosystem, "versions": set()})
             e["versions"].add(c.version or "unresolved")
     return out
 
@@ -341,7 +341,7 @@ def build(cfg: Config, inventories: list[BranchInventory], present: list[Finding
 def _versions(inv: BranchInventory, ecosystem: str, name: str) -> list[str]:
     """Versions of one package in a release's inventory (empty: the package is not in its SBOM)."""
     return sorted({c.version or "unresolved" for c in inv.components
-                   if c.kind == "package" and c.ecosystem == ecosystem and c.name == name})
+                   if c.kind == "package" and c.ecosystem == ecosystem and c.qualified_name() == name})
 
 
 CHANGES = ("upgraded", "replaced", "affected_removed", "package_gone", "no_longer_matched")

@@ -268,6 +268,21 @@ class BuildTests(unittest.TestCase):
         self.assertIsNone(rows["v1.0"]["previous"])
         self.assertEqual(doc["projects"]["app"]["support"], {"period_months": 12, "until": None})
 
+    def test_maven_fixed_advisory_names_group_and_artifact(self):
+        def core(group, version):
+            return Component(kind="package", ecosystem="Maven", name="core", version=version,
+                             purl=f"pkg:maven/{group}/core@{version}", scope="required", locations=["pom.xml"])
+        bad = core("org.a", "1.0")
+        a = self.inv("v1.0", 0, "2025-01-01", [bad, core("org.b", "1.0")])
+        b = self.inv("v1.1", 1, "2025-02-01", [core("org.a", "2.0"), core("org.b", "1.0")])
+        present = [self.finding(a, bad)]
+        doc = releases.build(self.cfg(), [a, b], present, present, [], {})
+        [fixed] = doc["projects"]["app"]["releases"][0]["fixed_since_previous"]
+        # another group's `core` 1.0 stays: not the versions of this package
+        self.assertEqual((fixed["package"], fixed["versions_after"], fixed["change"]),
+                         ("org.a:core", ["2.0"], "upgraded"))
+        self.assertIn("| GHSA-1 | org.a:core (Maven) |", releases.render_md(doc))
+
     def test_removed_lockfile_is_not_shown_as_a_downgrade(self):
         """The real case: two lockfiles, 4.17.21 and 4.17.23; the advisory matched 4.17.23 only and that
         lockfile was deleted. Not an upgrade and not a downgrade: the affected copy went, 4.17.21 stayed."""

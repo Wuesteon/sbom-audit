@@ -16,7 +16,7 @@ from . import __version__, coverage, sbomimport
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import fixed_in
-from .model import BranchInventory, Finding
+from .model import BranchInventory, Finding, qualified_name
 from .versions import ver_key
 from .vex import Suppressed
 
@@ -61,6 +61,12 @@ _CONTROLS = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 def md(s) -> str:
     """One table-safe line from untrusted text (advisory summaries, paths, authors, host output)."""
     return _CONTROLS.sub(" ", _LINE_BREAKS.sub(" ", str(s).replace("|", "\\|")))
+
+
+def _pkg(v: dict) -> str:
+    """The package name a reader sees: Maven `group:artifact`, every other ecosystem its own full name.
+    `name` (the bare artifact for Maven) stays in audit.json for the issue ids and status identities."""
+    return v.get("package") or v["name"]
 
 
 def _sev_label(v: dict) -> str:
@@ -419,7 +425,7 @@ def _kev_section(vulns: list[dict]) -> list[str]:
         ids = ", ".join(f"{s['id']} {' '.join(s.get('cves', []))}".strip() for s in v["vulns"] if s.get("kev"))
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in v["locations"]}))
         scope = "dev-only" if v["scope"] == "optional" else "runtime scope"
-        L.append(f"- **{md(v['name'])}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): {ids} — used by {where}")
+        L.append(f"- **{md(_pkg(v))}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): {ids} — used by {where}")
     return L + [""]
 
 
@@ -447,7 +453,7 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
                   "|---|---|---|---|---|---|---|---|"]
             for v, l in rows:
                 sev, fix, worst = _fix_cells(v)
-                L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
                          f"{'yes' if l['direct'] else 'no'} | `{md(l['manifest'])}` | {worst} |")
             L.append("")
     return L
@@ -518,7 +524,7 @@ def _dev_only_section(vulns: list[dict]) -> list[str]:
           "|---|---|---|---|---|---|---|---|---|"]
     for v, l in rows:
         sev, fix, _ = _fix_cells(v)
-        L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+        L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
                  f"{'yes' if l['direct'] else 'no'} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
     return L + [""]
 
@@ -534,7 +540,7 @@ def _suppressed_section(suppressed: list[dict]) -> list[str]:
     for s in suppressed:
         f, st, c = s["finding"], s["statement"], s["finding"]["component"]
         vid = f["vulns"][0]["id"] if f.get("vulns") else st["vuln"]
-        L.append(f"| {vid} | {md(c['name'])} | {c['version'] or 'unresolved'} | {f['project']}@{f['branch']} | "
+        L.append(f"| {vid} | {md(qualified_name(c['ecosystem'], c['name'], c.get('purl') or ''))} | {c['version'] or 'unresolved'} | {f['project']}@{f['branch']} | "
                  f"{st['status']} | {st.get('justification') or '–'} | {md(st.get('impact') or '–')} | "
                  f"`{Path(st.get('path') or '').name or '–'}` |")
     return L + [""]
@@ -787,7 +793,7 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
     for inv in invs:
         for c in inv.components:
             if c.kind == "package" and c.direct:
-                d = direct.setdefault((c.ecosystem, c.name, _manifest(c)), {"versions": {}, "scopes": set()})
+                d = direct.setdefault((c.ecosystem, c.qualified_name(), _manifest(c)), {"versions": {}, "scopes": set()})
                 d["versions"][inv.branch] = c.version or "unresolved"
                 d["scopes"].add(c.scope)
     branches = _branch_order(cfg, {inv.branch for inv in invs})

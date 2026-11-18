@@ -137,6 +137,13 @@ never as clean:
 
 Each `audit.json` vulnerability row also carries `package` (the OSV name: `group:artifact` for Maven,
 otherwise the name) and `purl` (without qualifiers); `issues.json` `details.package` uses the same name.
+Every name a reader sees uses it: the `AUDIT.md` tables (KEV, by project, dev-only, not rated, suppressed
+by VEX), the `INVENTORY.md` direct dependencies, the issue titles in `ISSUES.md`/`issues.json`, the
+management report, `RELEASES.md`/`releases.json` (`fixed_since_previous[].package`) and `lookup`. Two
+Maven artifacts with the same name in different groups are two packages. Only the `name` field of an
+`audit.json` row (the bare artifact, as Syft writes it) and the identifiers built from it keep the short
+name: issue ids (`vuln:<project>:<manifest>:Maven:<artifact>@<version>`) and the `status` identities stay
+as they were, so an id does not change between versions.
 
 **4. VEX.** `/sbom-audit:vex` records why a finding does or does not apply, in OpenVEX
 0.2.0, one document per project under `security/vex/`. `incident --vex` records

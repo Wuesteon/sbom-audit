@@ -192,6 +192,16 @@ class BuildTest(unittest.TestCase):
         # nothing urgent: no split sentence
         self.assertNotIn("transitive ones", issues.render_md(issues.build(make_rep(), None, None)))
 
+    def test_maven_title_names_group_and_artifact_and_the_id_is_unchanged(self):
+        v = vuln("lib", "HIGH", [("prod", "main", "pom.xml", "required")])
+        v.update(ecosystem="Maven", package="org.lib:lib")
+        doc = issues.build(make_rep(vulnerabilities=[v]), None, None)
+        i = doc["issues"][0]
+        self.assertEqual(i["id"], "vuln:prod:pom.xml:Maven:lib@1.0.0")          # stable id: the short name
+        self.assertTrue(i["title"].startswith("org.lib:lib 1.0.0: 2 advisories"), i["title"])
+        self.assertEqual(i["details"]["package"], "org.lib:lib")
+        self.assertIn("org.lib:lib 1.0.0", issues.render_md(doc))
+
     def test_markdown_names_a_few_branches_and_counts_the_rest(self):
         secrets = {"findings": [secret("fp", "A", branches=[f"b{n}" for n in range(9)])]}
         doc = issues.build(make_rep(), secrets, None)

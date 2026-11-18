@@ -110,6 +110,6 @@ def unrated_section(vulns: list[dict], ranked) -> list[str]:
     for v, unrated in rows:
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in v["locations"]}))
         ids = ", ".join(a.get("id", "?") for a in unrated[:5]) + (" …" if len(unrated) > 5 else "")
-        L.append(f"| {md(v['name'])} | {md(v['version'] or 'unresolved')} | {len(unrated)} of {len(v['vulns'])} | "
+        L.append(f"| {md(v.get('package') or v['name'])} | {md(v['version'] or 'unresolved')} | {len(unrated)} of {len(v['vulns'])} | "
                  f"{md(where)} | {md(ids)} |")
     return L + [""]
