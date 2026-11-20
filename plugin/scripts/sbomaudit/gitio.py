@@ -21,7 +21,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 _CREDENTIALS_RE = re.compile(r"//[^/@\s]+@")
-GIT_TIMEOUT = 600
+GIT_TIMEOUT = 600      # seconds, any one git command (a fetch included)
+EXPORT_TIMEOUT = 1800  # seconds, `git archive | tar` of one branch
 
 
 class GitError(RuntimeError):
@@ -90,8 +91,11 @@ def net_env(env: Mapping[str, str] = os.environ) -> dict[str, str]:
 def git(repo: Path, *args: str, env: Mapping[str, str] | None = None, harden: bool = True) -> str:
     """stdout of `git -C repo <args>`; GitError on failure. `harden=False` only for reading the
     repository's own config as it is (the pre-commit guard)."""
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          env=git_env(env) if harden else env)
+    try:
+        proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                              env=git_env(env) if harden else env, timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise GitError(f"git {args[0] if args else ''} timed out after {GIT_TIMEOUT}s") from None
     if proc.returncode != 0:
         raise GitError(proc.stderr.strip() or f"git {' '.join(args)} failed")
     return proc.stdout
@@ -99,7 +103,11 @@ def git(repo: Path, *args: str, env: Mapping[str, str] | None = None, harden: bo
 
 def git_bytes(repo: Path, *args: str) -> bytes:
     """Like `git`, but returns raw stdout bytes (for file content that may not be UTF-8)."""
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=git_env())
+    try:
+        proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=git_env(),
+                              timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise GitError(f"git {args[0] if args else ''} timed out after {GIT_TIMEOUT}s") from None
     if proc.returncode != 0:
         stderr = proc.stderr.decode(errors="replace").strip()
         raise GitError(stderr or f"git {' '.join(args)} failed")
@@ -232,6 +240,10 @@ def list_tags(repo: Path, pattern: str) -> list[dict]:
     return tags
 
 
+def _tar_argv(dest: Path) -> list[str]:
+    return ["tar", "-x", "-C", str(dest)]
+
+
 def export_ref(repo: Path, ref: str, dest: Path) -> None:
     """Write the tree at `ref` into `dest`, leaving out `security/`. Filter drivers from the repository's
     config do not run (`git archive` would otherwise apply smudge and process filters)."""
@@ -240,10 +252,18 @@ def export_ref(repo: Path, ref: str, dest: Path) -> None:
         ["git", "-C", str(repo), "archive", "--format=tar", ref, "--", ".", ":!security"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_env(extra=_filter_overrides(repo)),
     )
-    untar = subprocess.run(["tar", "-x", "-C", str(dest)], stdin=archive.stdout,
-                           capture_output=True)
-    archive.stdout.close()
-    _, archive_err = archive.communicate()
+    try:
+        untar = subprocess.run(_tar_argv(dest), stdin=archive.stdout, capture_output=True,
+                               timeout=EXPORT_TIMEOUT)
+        archive.stdout.close()
+        _, archive_err = archive.communicate(timeout=EXPORT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        archive.kill()
+        archive.communicate()
+        raise GitError(f"git archive {ref} timed out after {EXPORT_TIMEOUT}s") from None
+    finally:
+        if archive.stdout and not archive.stdout.closed:
+            archive.stdout.close()
     if archive.returncode != 0:
         raise GitError(archive_err.decode(errors="replace").strip() or f"git archive {ref} failed")
     if untar.returncode != 0:

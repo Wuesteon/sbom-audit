@@ -1,11 +1,21 @@
 import shutil
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sbomaudit import model, syft
+from sbomaudit.errors import ToolError
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 HAVE_SYFT = shutil.which("syft") is not None
+
+
+def _timeout_run(seen):
+    def run(args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+    return run
 
 
 class ModelTests(unittest.TestCase):
@@ -58,6 +68,16 @@ class ComponentsFromBomTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_SYFT, "syft not installed")
+class SyftTimeoutTests(unittest.TestCase):
+    def test_timeout_is_a_tool_error_never_an_empty_sbom(self):
+        seen = []
+        with mock.patch.object(syft.subprocess, "run", _timeout_run(seen)):
+            with self.assertRaises(ToolError) as ctx:
+                syft.run(Path("."), include_dev=False)
+        self.assertEqual(seen, [syft.SYFT_TIMEOUT])
+        self.assertIn("timed out", str(ctx.exception))
+
+
 class SyftRunTests(unittest.TestCase):
     def test_lock_components_have_purl_and_location(self):
         bom = syft.run(FIXTURES / "npm-lock", include_dev=False)

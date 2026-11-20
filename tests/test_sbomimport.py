@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from sbomaudit import cli, config, cyclonedx, issues, report, sbomimport, scan, status
-from sbomaudit.errors import ConfigError
+from sbomaudit.errors import ConfigError, ToolError
 from sbomaudit.model import Component
 
 from .helpers import make_repo
@@ -725,6 +725,22 @@ class ConfigAndReportTests(unittest.TestCase):
         line = report._imports_line(rows)[0]
         self.assertIn("p@main (commit not recorded)", line)
         self.assertNotIn("p@dev (", line)
+
+
+
+class SyftArtifactTimeoutTests(unittest.TestCase):
+    def test_timeout_is_a_tool_error(self):
+        seen = []
+
+        def run(args, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        with mock.patch.object(sbomimport.subprocess, "run", run):
+            with self.assertRaises(ToolError) as ctx:
+                sbomimport.syft_artifact("registry.example/app:1")
+        self.assertEqual(seen, [sbomimport.SYFT_TIMEOUT])
+        self.assertIn("timed out", str(ctx.exception))
 
 
 if __name__ == "__main__":

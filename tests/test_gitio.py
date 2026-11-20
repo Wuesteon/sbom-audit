@@ -80,6 +80,40 @@ class GitioTests(unittest.TestCase):
         self.assertEqual(ref, "refs/remotes/origin/dev")
         self.assertEqual(sha, _git(origin, "rev-parse", "refs/heads/dev").strip())
 
+    def test_git_timeout_is_a_git_error(self):
+        repo = make_repo(self.tmp, "r", {"a": "1"})
+
+        def run(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        with mock.patch.object(gitio.subprocess, "run", run):
+            with self.assertRaises(gitio.GitError) as ctx:
+                gitio.git(repo, "log")
+            self.assertIn("timed out", str(ctx.exception))
+            with self.assertRaises(gitio.GitError):
+                gitio.git_bytes(repo, "log")
+
+    def test_export_timeout_is_a_git_error(self):
+        repo = make_repo(self.tmp, "r", {"a": "1"})
+        with mock.patch.object(gitio, "EXPORT_TIMEOUT", 0.001), \
+                mock.patch.object(gitio, "_tar_argv", lambda dest: ["sh", "-c", "sleep 5"]):
+            with self.assertRaises(gitio.GitError) as ctx:
+                gitio.export_ref(repo, "main", self.tmp / "export")
+        self.assertIn("timed out", str(ctx.exception))
+
+    def test_every_git_call_has_a_timeout(self):
+        seen = []
+
+        def run(args, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args, 0, "" if kwargs.get("text") else b"", "")
+
+        with mock.patch.object(gitio.subprocess, "run", run):
+            gitio.git(self.tmp, "status")
+            gitio.git_bytes(self.tmp, "status")
+            gitio.fetch_origin(self.tmp)
+        self.assertEqual(seen, [gitio.GIT_TIMEOUT] * 3)
+
     def test_fetch_origin_reports_error_without_remote(self):
         repo = make_repo(self.tmp, "r", {"a": "1"})
         err = gitio.fetch_origin(repo)
