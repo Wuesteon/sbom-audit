@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import (assess, config, enrich, evidence, issues, manifest, matching, preflight, releases, report, sbomimport,
                scan, scheduler, status, vex)
+from . import hint as cli_hint
 from .cache import Cache
 from .config import Config, Project
 from .errors import VexError
@@ -26,7 +27,8 @@ from .model import BranchInventory
 
 ENRICH_CACHE_DIR = Path(".cache") / "enrich"
 EXIT_CLEAN, EXIT_FINDINGS, EXIT_SOURCE_FAILED, EXIT_VEX, EXIT_TOOL_MISSING = 0, 1, 2, 3, 4
-STATUS_HINT = "no status.json yet: run /sbom-audit:setup, then /sbom-audit:run"
+STATUS_HINT = (f"no status.json yet: run /sbom-audit:setup, then /sbom-audit:run "
+               f"(CLI: {cli_hint.command('setup')}, then run)")
 
 
 def secrets_step(cfg: Config, log) -> dict | None:
@@ -614,7 +616,7 @@ def cli_status(args) -> int:
     try:
         text = status.render_md(doc, read_scheduler_state(out), dt.datetime.now().astimezone())
     except (KeyError, TypeError, ValueError, AttributeError):
-        print(f"{out / status.STATUS_JSON} unreadable: run /sbom-audit:run")
+        print(f"{out / status.STATUS_JSON} unreadable: run {cli_hint.slash('run')}")
         return EXIT_SOURCE_FAILED
     print(text, end="")
     return EXIT_CLEAN

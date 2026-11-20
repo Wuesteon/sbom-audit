@@ -1,4 +1,4 @@
-<!-- sbom-audit-template v5 -->
+<!-- sbom-audit-template v6 -->
 # Security evidence
 
 SBOMs, a vulnerability audit, secrets scan results and VEX decisions for the projects in this
@@ -35,7 +35,8 @@ security/
 ```
 
 Only the `## Assessment` sections of `AUDIT.md` are edited by hand. Record decisions with
-`/sbom-audit:vex`, `/sbom-audit:secrets resolve` and `/sbom-audit:hosts accept`; do not edit
+`/sbom-audit:vex`, `/sbom-audit:secrets resolve` and `/sbom-audit:hosts accept` (without Claude Code:
+`python3 <plugin root>/scripts/sbom_audit_cli.py vex add …`, `secrets resolve …`, `hosts accept …`); do not edit
 `status.json`, `issues.json`, `ISSUES.md`, `releases.json`, `RELEASES.md`, `secrets.json`, `SECRETS.md`, `HOSTS.md`, `hosts/` or `sbom/`.
 
 ## What leaves the machine

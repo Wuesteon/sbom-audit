@@ -550,6 +550,8 @@ class RunTests(unittest.TestCase):
                 rc = cli.main(["--out", str(out), "status"])
             self.assertEqual(rc, 2)
             self.assertIn("no status.json yet: run /sbom-audit:setup, then /sbom-audit:run", buf.getvalue())
+            self.assertIn("sbom_audit_cli.py setup, then run)", buf.getvalue())     # the CLI form too
+            self.assertIn("python3 ", buf.getvalue())
             self.assertEqual(list(out.iterdir()), [])
             doc = status.build(status.empty_report(), secrets=None, previous=None, duration_s=1.5, exit_code=0,
                                run_host="box", mode="portfolio")

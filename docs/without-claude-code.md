@@ -130,5 +130,7 @@ vulnerabilities when its purl type is one OSV knows.
 | `settings` (autonomous mode, session hook) | not needed; it edits `~/.claude/settings.json` only |
 | `[schedule] assess = true` | needs `claude` on `PATH`; otherwise the step is reported as skipped |
 
-Some messages still name the slash command, for example `run /sbom-audit:run first`. Use the CLI
-command of the same name.
+Messages that name a slash command add the CLI form, for example
+`run /sbom-audit:run (CLI: python3 /path/to/sbom_audit_cli.py run)`. Terminal messages give the real
+path; text written into the evidence folder (`STATUS.md`, `CRA.md`) names only `sbom_audit_cli.py`, so
+no local path ends up in a shared report. `/sbom-audit:assess` maps to `assess draft`.

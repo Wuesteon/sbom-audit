@@ -21,6 +21,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import __version__
+from . import hint as cli_hint
 from .cache import atomic_write
 from .coverage import severity_text, unrated_advisories
 from .cvss import SEV_ORDER
@@ -569,7 +570,7 @@ def _line(i: dict) -> str:
 def _query(args, out: Path) -> int:
     doc = read(out)
     if doc is None:
-        print(f"no {ISSUES_JSON} yet: run /sbom-audit:run", file=sys.stderr)
+        print(f"no {ISSUES_JSON} yet: run {cli_hint.slash('run')}", file=sys.stderr)
         return 2
     chosen = select(doc, project=args.project, host=args.host, kind=args.kind, max_priority=args.max_priority)
     for flag, value in (("project", args.project), ("host", args.host)):
@@ -596,7 +597,7 @@ def cli(args) -> int:
         return _query(args, Path(args.out).resolve())
     out = Path(args.out).resolve()
     if _read(out / AUDIT_JSON) is None:
-        print(f"no {AUDIT_JSON} yet: run /sbom-audit:run")
+        print(f"no {AUDIT_JSON} yet: run {cli_hint.slash('run')}")
         return 2
     paths = refresh(out)
     doc = read(out) or {}

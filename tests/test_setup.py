@@ -325,6 +325,7 @@ class SetupTests(unittest.TestCase):
             self.assertTrue((out / status.STATUS_FILE).exists())
             line = status.severity_line(doc, None, dt.datetime.now().astimezone())
             self.assertIn("no run yet; run /sbom-audit:run", line)
+            self.assertIn("(CLI: sbom_audit_cli.py run)", line)                 # no local path in STATUS.md
             # a status.json from a real run is never replaced by setup
             doc["exit_code"] = 1
             status.write(out, doc)

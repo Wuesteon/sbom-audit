@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config, ecosystems, report, scan, vex
+from . import hint as cli_hint
 from .config import Config
 from .coverage import UNRESOLVED_TEXT as UNRESOLVED_EVIDENCE
 from .enrich import build_minimum, http_get_json
@@ -224,7 +225,7 @@ def _stale_warning(record: dict, rep: dict, inventory_meta: dict | None = None) 
                        f"({audited.date().isoformat()}), so the verdicts rest on an older inventory")
     if not reasons:
         return ""
-    return "; ".join(reasons) + f": run /sbom-audit:run before trusting {VERDICT_PRESENT} verdicts."
+    return "; ".join(reasons) + f": run {cli_hint.slash('run', full=False)} before trusting {VERDICT_PRESENT} verdicts."
 
 
 def _incomplete(rep: dict, inventories: list[BranchInventory]) -> dict[tuple[str, str], str]:
@@ -313,7 +314,7 @@ def _uncovered(inv: BranchInventory, eco: str, name: str) -> str | None:
         return None
     if not pkgs and inv.manifests is None:
         return ("no package in this branch's inventory, and the scan that wrote it recorded no manifest list: "
-                "re-run /sbom-audit:run")
+                f"re-run {cli_hint.slash('run', full=False)}")
     if not pkgs and inv.manifests:
         files = sorted(f for paths in inv.manifests.values() for f in paths)
         return f"no package inventoried although manifests are present ({', '.join(files[:5])})"
@@ -539,7 +540,8 @@ def cli_incident(args) -> int:
     try:
         inc = incident(out, args.ident, fetch=http_get_json)
     except FileNotFoundError as exc:
-        print(f"no inventory in {out} ({Path(exc.filename or '').name or 'inventory.json'} missing): run /sbom-audit:run first.")
+        missing = Path(exc.filename or "").name or "inventory.json"
+        print(f"no inventory in {out} ({missing} missing): run {cli_hint.slash('run')} first.")
         return 2
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"OSV lookup failed for {args.ident}: {exc}")

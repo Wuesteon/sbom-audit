@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import __version__, sbomimport
 from .cra import MANUFACTURER, OBLIGATIONS
+from . import hint as cli_hint
 from .cache import atomic_write
 
 REPORT_FILE = "REPORT.html"
@@ -1712,7 +1713,7 @@ def cli(args) -> int:
     try:
         paths = write(out, lang=getattr(args, "lang", None))
     except FileNotFoundError:
-        print(f"no audit.json in {out}: run /sbom-audit:run first", file=sys.stderr)
+        print(f"no audit.json in {out}: run {cli_hint.slash('run')} first", file=sys.stderr)
         return 2
     for p in paths:
         print(p.relative_to(out) if p.is_relative_to(out) else p)

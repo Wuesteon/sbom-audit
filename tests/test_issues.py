@@ -331,6 +331,7 @@ class RefreshTest(unittest.TestCase):
         code, text = self.run_cli("issues")
         self.assertEqual(code, 2)
         self.assertIn("no audit.json yet", text)
+        self.assertRegex(text, r"/sbom-audit:run \(CLI: python3 \S*sbom_audit_cli\.py'? run\)")
         self.assertFalse((self.out / "issues.json").exists())
         self.write("audit.json", make_rep(vulnerabilities=[vuln("a", "HIGH", [("prod", "main", "p.json", "required")])]))
         code, text = self.run_cli("issues")

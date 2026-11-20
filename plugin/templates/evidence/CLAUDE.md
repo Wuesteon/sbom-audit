@@ -1,4 +1,4 @@
-<!-- sbom-audit-template v5 -->
+<!-- sbom-audit-template v6 -->
 # Evidence folder (written by sbom-audit)
 
 This folder is the output of the [sbom-audit](https://github.com/Wuesteon/sbom-audit) plugin: the
@@ -67,6 +67,9 @@ meant to be committed and kept as evidence. Read this file before you change any
 - `/sbom-audit:hosts` checks the servers (`check`), records accepted findings (`accept`) and patches or bootstraps one named host after confirmation.
 - `/sbom-audit:cra` shows the CRA readiness per product (`check`) and writes starter documents after confirmation (`init`).
 - `/sbom-audit:setup` configures a new portfolio.
+
+Without Claude Code, run the same steps as `python3 <plugin root>/scripts/sbom_audit_cli.py <subcommand>`
+(`status`, `run`, `lookup <package>`, `incident <id>`, `vex add …`, `secrets resolve …`, `setup`); `--help` lists them.
 
 This file is refreshed by the plugin when its template version changes. Delete the first line to take
 it over and stop the refresh.

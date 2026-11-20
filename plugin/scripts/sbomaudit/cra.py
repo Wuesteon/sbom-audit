@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import sbomquality
+from . import hint as cli_hint
 from .cache import atomic_write
 from .errors import ConfigError
 
@@ -434,10 +435,12 @@ def check_product(cfg, ccfg: CraConfig, product: Product, out: Path, *, audit: d
             note = f"{note}; {gap}" if note else gap
         obs.append(_ob("sbom", "present" if quality["valid"] else "missing", [sbom], note))
     else:
-        obs.append(_ob("sbom", "missing", [], f"no {sbom or f'sbom/{product.key}/'} (run /sbom-audit:run)"))
+        obs.append(_ob("sbom", "missing", [],
+                       f"no {sbom or f'sbom/{product.key}/'} (run {cli_hint.slash('run', full=False)})"))
     generated = _parse_time((audit or {}).get("generated_at"))
     if audit is None or generated is None:
-        obs.append(_ob("vulnerability_handling", "missing", [], "no readable audit.json (run /sbom-audit:run)"))
+        obs.append(_ob("vulnerability_handling", "missing", [],
+                       f"no readable audit.json (run {cli_hint.slash('run', full=False)})"))
     else:
         age = (today - generated.astimezone().date()).days
         st = "stale" if age > ccfg.audit_max_age_days else "present"

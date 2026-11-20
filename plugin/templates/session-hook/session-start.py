@@ -147,6 +147,11 @@ def _oldest_text(scan):
     return "age unknown" if days is None else "%s days" % days
 
 
+# the slash command and, for users without Claude Code, the CLI form (no local path: STATUS.md is shared)
+RUN_HINT = "/sbom-audit:run (CLI: sbom_audit_cli.py run)"
+ASSESS_HINT = "/sbom-audit:assess (CLI: sbom_audit_cli.py assess draft)"
+
+
 def severity_line(status, scheduler, now):
     """Text of the line without the prefix; precedence is the order of `rules`."""
     counts, deltas = status["counts"], status["deltas"]
@@ -158,11 +163,11 @@ def severity_line(status, scheduler, now):
     hosts = counts.get("hosts") or {}
     not_checked = _hosts_not_checked(status, now)
     rules = [
-        (status.get("exit_code") is None, "set up, no run yet; run /sbom-audit:run"),   # setup's placeholder
+        (status.get("exit_code") is None, "set up, no run yet; run " + RUN_HINT),   # setup's placeholder
         ((status.get("exit_code") or 0) >= 2,
          "last run FAILED (exit %s); see STATUS.md" % _clean(status.get("exit_code"), 8)),
         (overdue or missed,
-         missed if missed and not overdue else "last run %d days ago; run /sbom-audit:run" % age.days),
+         missed if missed and not overdue else "last run %d days ago; run %s" % (age.days, RUN_HINT)),
         (secrets["A"] > 0,
          "%d class A, %d B secrets open, oldest %s" % (secrets["A"], secrets["B"], _oldest_text(scan))),
         ((hosts.get("critical") or 0) > 0,
@@ -174,7 +179,7 @@ def severity_line(status, scheduler, now):
          "%d new CRITICAL/HIGH in production since last run" % len(deltas["critical_high_production"]["new"])),
         (not_checked, not_checked),
         (bool(status.get("assessment_proposal")) or _assessment_stale(status),
-         "findings not assessed yet; run /sbom-audit:assess"),
+         "findings not assessed yet; run " + ASSESS_HINT),
     ]
     return next((line for hit, line in rules if hit),
                 "nothing new since " + _clean((status.get("generated_at") or "")[:10]))

@@ -390,6 +390,11 @@ def _assessment_stale(status: dict) -> bool:
             or any(d["new"] for d in status["deltas"].values()))
 
 
+# the slash command and, for users without Claude Code, the CLI form (no local path: STATUS.md is shared)
+RUN_HINT = "/sbom-audit:run (CLI: sbom_audit_cli.py run)"
+ASSESS_HINT = "/sbom-audit:assess (CLI: sbom_audit_cli.py assess draft)"
+
+
 def severity_line(status: dict, scheduler: dict | None, now: dt.datetime) -> str:
     """One line, most urgent condition first (the order of `rules` is the precedence)."""
     counts, deltas = status["counts"], status["deltas"]
@@ -401,11 +406,11 @@ def severity_line(status: dict, scheduler: dict | None, now: dt.datetime) -> str
     hosts = counts.get("hosts") or {}
     not_checked = _hosts_not_checked(status, now)
     rules = [
-        (status.get("exit_code") is None, "set up, no run yet; run /sbom-audit:run"),   # setup's placeholder
+        (status.get("exit_code") is None, "set up, no run yet; run " + RUN_HINT),   # setup's placeholder
         ((status.get("exit_code") or 0) >= 2,
          f"last run FAILED (exit {status.get('exit_code')}); see STATUS.md"),
         (overdue or missed,
-         missed if missed and not overdue else f"last run {age.days} days ago; run /sbom-audit:run"),
+         missed if missed and not overdue else f"last run {age.days} days ago; run {RUN_HINT}"),
         (secrets["A"] > 0,
          f"{secrets['A']} class A, {secrets['B']} B secrets open, oldest {oldest_text(scan)}"),
         ((hosts.get("critical") or 0) > 0,
@@ -417,7 +422,7 @@ def severity_line(status: dict, scheduler: dict | None, now: dt.datetime) -> str
          f"{len(deltas['critical_high_production']['new'])} new CRITICAL/HIGH in production since last run"),
         (not_checked, not_checked),
         (bool(status.get("assessment_proposal")) or _assessment_stale(status),
-         "findings not assessed yet; run /sbom-audit:assess"),
+         "findings not assessed yet; run " + ASSESS_HINT),
     ]
     text = next((line for hit, line in rules if hit),
                 f"nothing new since {(status.get('generated_at') or '')[:10]}")

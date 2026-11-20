@@ -59,6 +59,9 @@ Then, in Claude Code, from the folder that holds your repositories (or from insi
 /sbom-audit:run       # SBOMs, audit, secrets scan, reports, then an assessment
 ```
 
+Without Claude Code: `python3 <plugin>/scripts/sbom_audit_cli.py setup`, then `… run` (see
+[Without Claude Code](#without-claude-code)).
+
 A portfolio of about ten repositories takes a few minutes. Without gitleaks the secrets scan reports
 `skipped`, never "clean"; everything else works. Update with
 `claude plugin update sbom-audit@wuesteon-plugins`.
