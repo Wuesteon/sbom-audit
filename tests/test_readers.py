@@ -376,6 +376,13 @@ class ManifestEcosystemTests(unittest.TestCase):
         self.assertEqual(readers.package_key("Go", "golang.org/x/net", "pkg:golang/golang.org/x/net@v1"),
                          "golang.org/x/net")
 
+    def test_vcpkg_manifest_names_are_self_packages(self):
+        write(self.src, {"vcpkg.json": '{"name": "My-App", "version": "1.2.0", "dependencies": ["zlib"]}',
+                         "libs/x/vcpkg.json": '{"name": "inner-lib"}', "bad/vcpkg.json": "{not json"})
+        own = {k for k in readers.self_packages(self.src) if k[0] == "vcpkg"}
+        self.assertEqual(own, {("vcpkg", "my-app"), ("vcpkg", "inner-lib")})
+        self.assertEqual(readers.package_key("vcpkg", "My-App", "pkg:vcpkg/my-app@1.2.0"), "my-app")
+
     def test_maven_own_modules_are_self_packages(self):
         self.maven_tree()
         own = {k for k in readers.self_packages(self.src) if k[0] == "Maven"}

@@ -327,6 +327,23 @@ class ScanTests(unittest.TestCase):
         quality = sbomquality.check_path(scan.sbom_path(self.out, "java", "main"))
         self.assertEqual(quality["coverage"]["components"], 2)          # two entries in the document, labelled so
 
+    def test_vcpkg_project_is_not_a_dependency_of_itself(self):
+        """Syft's vcpkg-manifest-cataloger reports only the manifest's own name and version (Syft 1.56.0)."""
+        make_repo(self.root, "cpp", {"vcpkg.json": json.dumps({"name": "my-app", "version": "1.2.0",
+                                                               "dependencies": ["zlib"]})})
+        cfg = config.load(self.out)
+        entry = {"bom-ref": "pkg:vcpkg/my-app@1.2.0", "type": "library", "name": "my-app", "version": "1.2.0",
+                 "purl": "pkg:vcpkg/my-app@1.2.0",
+                 "properties": [{"name": "syft:package:foundBy", "value": "vcpkg-manifest-cataloger"},
+                                {"name": "syft:location:0:path", "value": "/vcpkg.json"}]}
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1, "components": [entry]}
+        comps = cyclonedx.components({"components": [dict(entry)]})
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["cpp"], fetch=False)
+        self.assertEqual([c.name for c in result.inventories[0].components if c.kind == "package"], [])
+        names = [c.name for c in cyclonedx.read_components(scan.sbom_path(self.out, "cpp", "main"))]
+        self.assertNotIn("my-app", names)
+
     def test_only_filters_and_reports_unknown_names(self):
         make_repo(self.root, "a", {"README": "a\n"})
         make_repo(self.root, "b", {"README": "b\n"})

@@ -367,8 +367,9 @@ def _pyproject_name(d: dict) -> str | None:
 
 
 def self_packages(src: Path) -> set[tuple[str, str]]:
-    """(ecosystem, key) of every package the tree itself defines: npm and PyPI names, Go module paths and
-    Maven `groupId:artifactId` (the reactor modules); the key is `package_key`'s."""
+    """(ecosystem, key) of every package the tree itself defines: npm and PyPI names, Go module paths,
+    Maven `groupId:artifactId` (the reactor modules) and the `name` of each `vcpkg.json` (Syft's vcpkg
+    cataloger reports only that name and version, the project itself); the key is `package_key`'s."""
     out: set[tuple[str, str]] = set()
     for rel, path in walk(src, []):
         try:
@@ -384,6 +385,10 @@ def self_packages(src: Path) -> set[tuple[str, str]]:
                 module = parse_go_mod(_read(path))["module"]
                 if module:
                     out.add(("Go", module))
+            elif path.name == "vcpkg.json":
+                name = _load_json_lenient(_read(path)).get("name")
+                if isinstance(name, str) and name:
+                    out.add(("vcpkg", package_key("vcpkg", name)))
         except (ValueError, tomllib.TOMLDecodeError):
             continue
     poms = maven_poms(src, [])
@@ -502,6 +507,8 @@ def package_key(ecosystem: str, name: str, purl: str = "") -> str:
         return norm_py(name)
     if ecosystem == "Maven":
         return maven_ga(purl) or name
+    if ecosystem == "vcpkg":            # vcpkg port names are lower case; Syft may capitalise the name
+        return name.lower()
     return name
 
 
