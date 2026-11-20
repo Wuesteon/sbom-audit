@@ -578,7 +578,18 @@ def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, l
         code = finish(cfg, rep, result.inventories, written, code, started, say)["exit_code"]
     except Exception as exc:                    # the exit code is the audit's, whatever happens after it
         say(f"finish failed: {type(exc).__name__}")
+    if result.skipped:                          # not a failed source: the exit code stays, the last line says so
+        say(skipped_warning(result.skipped))
     return code
+
+
+def skipped_warning(skipped: list[dict]) -> str:
+    """The last line of `run`, `scan` and `audit` when projects were skipped. Skipped projects do not change the
+    exit code (2 means a source failed, not a project without the configured branches); this line says so."""
+    names = ", ".join(str(s.get("project")) for s in skipped)
+    n = len(skipped)
+    return (f"WARNING: incomplete run: {n} project{'' if n == 1 else 's'} not scanned ({names}; reasons above); "
+            "the exit code covers only the scanned projects")
 
 
 def cli_run(args) -> int:
@@ -625,4 +636,6 @@ def cli_audit(args) -> int:
         print(f"OpenVEX: {exc}")
         return EXIT_VEX
     print(summary_line(rep, cfg, started))
+    if header.get("skipped"):
+        print(skipped_warning(header["skipped"]))
     return exit_code(rep, inventories)

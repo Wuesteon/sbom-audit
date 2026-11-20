@@ -68,7 +68,9 @@ advisories yourself, and record the result with `vex add`.
 A project is skipped when none of the configured `branches` exist in it (a repository on `master`
 with the default `["main", "dev"]`). `setup` warns about each such project. The run names skipped
 projects in `STATUS.md` (Sources and Counts) and in the Notes of `AUDIT.md`. The run's exit code does
-not change: a skipped project does not make the run fail.
+not change: a skipped project does not make the run fail. The last line of `run`, `scan` and `audit` then
+reads `WARNING: incomplete run: N projects not scanned (…)`, so a script that checks only the exit code
+should also look for that line (or for `projects_not_scanned` in `audit.json`).
 
 ## Scheduler
 

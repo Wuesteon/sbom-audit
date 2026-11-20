@@ -1362,7 +1362,8 @@ machine per mode, is [Limitations](limitations.md); the plain-CLI sequence is
   per branch. CPEs are not used for matching.
 - A project with none of the configured branches is not scanned: `setup` warns, the run lists it in
   `AUDIT.md` Notes, `skipped_projects` and `stats.projects_not_scanned` in `audit.json`, and `STATUS.md`
-  Sources and Counts. The exit code does not change.
+  Sources and Counts. The exit code does not change (2 means a source failed); instead `run`, `scan` and
+  `audit` end with `WARNING: incomplete run: N projects not scanned (…)`.
 - Ecosystems OSV does not cover (CocoaPods, Swift packages, system packages) are listed
   in the inventory but not matched against vulnerabilities.
 - GitHub Actions used in workflows (`pkg:github/<owner>/<repo>@<ref>`) are inventoried but not

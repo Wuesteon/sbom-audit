@@ -395,4 +395,7 @@ def cli(args) -> int:
     for s in result.skipped:
         print(f"skipped {s['project']}: {s['reason']}")
     print(f"{len(result.inventories)} SBOMs under {cfg.out / 'sbom'}; inventory: {cfg.out / INVENTORY_FILE}")
+    if result.skipped:
+        from .pipeline import skipped_warning      # pipeline imports scan
+        print(skipped_warning(result.skipped))
     return 2 if failed else 0

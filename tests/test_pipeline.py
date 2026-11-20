@@ -186,6 +186,21 @@ class RunTests(unittest.TestCase):
             shutil.rmtree(cfg_dir)
         self.assertEqual(snapshot(real), before, "the run touched the real ~/.config/sbom-audit")
 
+    def test_skipped_projects_keep_the_exit_code_and_end_with_a_warning(self):
+        result = scan.ScanResult(inventories=[inventory()], generated_at="2026-11-06T10:00:00Z",
+                                 skipped=[{"project": "legacy", "reason": "none of main, dev exist"},
+                                          {"project": "old", "reason": "none of main, dev exist"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp))
+            said: list[str] = []
+            with tools_present(), mock.patch.object(pipeline.scan, "scan", return_value=result), \
+                 mock.patch.object(pipeline.matching, "run_osv_scanner", return_value={"results": []}), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                rc = pipeline.run(cfg, http=offline, log=said.append)
+        self.assertEqual(rc, pipeline.EXIT_CLEAN)
+        self.assertEqual(said[-1], "WARNING: incomplete run: 2 projects not scanned (legacy, old; reasons above); "
+                                   "the exit code covers only the scanned projects")
+
     def test_run_writes_status_and_commits_written_files(self):
         def prepare(cfg):
             git_init(cfg.out)
