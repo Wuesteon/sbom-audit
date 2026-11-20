@@ -222,6 +222,15 @@ class CheckTests(CraTestCase):
         self.assertIn("1 components: version 100%, purl 100%, licence 0%", s["sbom"]["note"])
         self.assertIn("dependency graph yes", s["sbom"]["note"])
         self.assertNotRegex(s["sbom"]["note"], r"(?i)compl(y|ies|iant)|meets")
+        # a firmware tree the scan could not see into: the row says so instead of reading as complete
+        gap = {"submodules": [{"path": "lib/mbedtls", "url": ""}], "submodule_count": 1, "manifests": [],
+               "manifest_count": 0, "c_sources": 900}
+        (self.out / "inventory.json").write_text(json.dumps({"inventories": [
+            {"project": "shop", "branch": "release/1", "ref": "x", "commit": "y", "components": [],
+             "coverage_gaps": gap}]}))
+        note = statuses(self.check()["products"]["shop"])["sbom"]["note"]
+        self.assertIn("INCOMPLETE, coverage gap: 1 git submodule(s) not scanned (`lib/mbedtls`)", note)
+        self.assertIn("900 C/C++ source files", note)
 
     def test_releases_json_present(self):
         make_repo(self.tmp, "shop", {"README.md": "x\n"})

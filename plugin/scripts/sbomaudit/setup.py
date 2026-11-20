@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import socket
 import subprocess
@@ -194,6 +195,23 @@ def guard_lines(cfg: config.Config, install: bool, tracked_ok: list[str], cfg_di
     return lines
 
 
+def branch_warnings(cfg: config.Config, projects) -> list[str]:
+    """One line per project that has none of the configured branches: `run` would skip it, so say so now."""
+    from .gitio import GitError, _local_branches, _remote_branches, pick_branches
+    lines = []
+    for p in projects:
+        try:
+            if pick_branches(p.path, list(cfg.branches)):
+                continue
+            have = sorted(_local_branches(p.path) | _remote_branches(p.path))
+        except (GitError, OSError):
+            continue
+        lines.append(f"warning: {p.name} has none of the branches {list(cfg.branches)} and will not be scanned; "
+                     f"it has {', '.join(have[:5]) or 'no branch'}{' …' if len(have) > 5 else ''}. "
+                     f"Add one to `branches` in {config.CONFIG_NAME}.")
+    return lines
+
+
 def run(out: Path, root: Path | None, init_git: bool = False, enable_dependabot: str | None = None,
         gh=None, which=None, schedule: str | None = None, install_guard: bool = False,
         uninstall_guard: bool = False, tracked_ok: list[str] | None = None, yes: bool = False) -> int:
@@ -215,6 +233,8 @@ def run(out: Path, root: Path | None, init_git: bool = False, enable_dependabot:
     had_config = (out / config.CONFIG_NAME).exists()
     path = config.write_default(out, cfg, projects)
     print(f"{path}: {'unchanged (already exists)' if had_config else 'written — set production = true for what runs in production'}")
+    for line in branch_warnings(config.load(out, root=root), projects):
+        print(line)
     print(f"{out / '.gitignore'}: {_ensure_gitignore(out)}")
     docs = evidence.write_folder_docs(out)
     if docs:
@@ -283,7 +303,8 @@ def run(out: Path, root: Path | None, init_git: bool = False, enable_dependabot:
             print(line)
     if yes and not enable_dependabot:
         print("--yes is used only with --enable-dependabot; ignored")
-    print("Next: /sbom-audit:run (or: python3 <plugin root>/scripts/sbom_audit_cli.py run)")
+    cli_path = shlex.quote((scheduler.plugin_root() / "scripts" / "sbom_audit_cli.py").as_posix())
+    print(f"Next: /sbom-audit:run (without Claude Code: python3 {cli_path} run)")
     return 0
 
 

@@ -91,6 +91,8 @@ class SetupTests(unittest.TestCase):
             self.assertIn("alpha", text)
             self.assertIn("portfolio", text)
             self.assertIn("/sbom-audit:run", text)
+            self.assertNotIn("<plugin root>", text)                 # a runnable path for use without Claude Code
+            self.assertIn("scripts/sbom_audit_cli.py run", text)
             self.assertFalse((out / ".git").exists())
             before = {p.name: p.read_text() for p in out.iterdir() if p.is_file()}
             (toml).write_text(toml.read_text() + '"alpha" = { production = true }\n')
@@ -471,6 +473,21 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn("Scheduler:", text)
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 cli.build_parser().parse_args(["setup", "--schedule", "daily"])
+
+
+class BranchWarningTests(unittest.TestCase):
+    def test_project_without_a_configured_branch_is_named(self):
+        from tests.helpers import make_repo
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PROJECTS"
+            make_repo(root, "shop", {"README.md": "x\n"})
+            make_repo(root, "fw", {"README.md": "x\n"}, branches=["main", "develop"])
+            subprocess.run(["git", "-C", str(root / "fw"), "branch", "-q", "-m", "main", "master"], check=True)
+            cfg = config.load(root / "security", root=root)
+            lines = setup.branch_warnings(cfg, config.discover(cfg))
+        self.assertEqual(len(lines), 1)
+        self.assertIn("warning: fw has none of the branches ['main', 'dev'] and will not be scanned", lines[0])
+        self.assertIn("it has develop, master.", lines[0])
 
 
 if __name__ == "__main__":

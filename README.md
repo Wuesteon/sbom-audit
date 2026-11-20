@@ -201,13 +201,18 @@ For a written assessment without Claude, point `[assess]` at any OpenAI-compatib
 `python3 $CLI assess draft`. It writes `reports/<date>-assessment-proposal.md` and records nothing: every
 decision in it is an unverified proposal for you to check and then record with `vex add` or
 `secrets resolve`. Setup and providers: [Assessment drafts](docs/reference.md#assessment-drafts-without-claude-code-assess-draft).
-Instructions for coding agents: [AGENTS.md](AGENTS.md).
+Instructions for coding agents: [AGENTS.md](AGENTS.md). The full tested command sequence, and which
+features need a model: [Using sbom-audit without Claude Code](docs/without-claude-code.md).
 
 ## Documentation
 
 - **[Reference](docs/reference.md)**: configuration, the full pipeline, `issues.json`, scheduler,
   secrets, hosts, the `security/` folder, the EU Cyber Resilience Act (what is covered, what is checked, what stays
   with the manufacturer), limitations.
+- **[Limitations](docs/limitations.md)**: what the scan does not see (C/C++ and firmware, submodules,
+  vendored code), what is not tested yet (scheduler on a Linux server, CI other than GitHub Actions)
+  and what data leaves the machine in each mode. Read it before trusting a clean report.
+- **[Without Claude Code](docs/without-claude-code.md)**: the plain-CLI command sequence.
 - **[CHANGELOG](CHANGELOG.md)**: release notes.
 - **[CONTRIBUTING](CONTRIBUTING.md)**: layout, tests, plugin validation, evals and the release steps.
 

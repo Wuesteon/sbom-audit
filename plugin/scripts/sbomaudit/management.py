@@ -216,6 +216,11 @@ STRINGS: dict[str, dict] = {
         "limit_imports_off": "Not built from the scanned commit, or with no commit recorded ({n}): {which}.",
         "limit_actions": "GitHub Actions used in workflows are inventoried but not checked for vulnerabilities "
                          "(OSV does not match versions for this ecosystem): {n} in this run's branches.",
+        "limit_gaps": "Not seen by the repository scan: {what}. That code is not in the SBOMs and not checked for "
+                      "vulnerabilities; for C/C++ and firmware, import a build SBOM (see AUDIT.md Notes).",
+        "limit_gap_projects": "{n} projects not scanned (no configured branch)",
+        "limit_gap_branches": "{n} branches with git submodules, C/C++ code or firmware manifests",
+        "limit_gap_unmatched": "{n} packages of types OSV holds no advisories for (generic, GitHub, Conan, vcpkg)",
         "e_intro": "Where the artefacts of this folder serve the EU Cyber Resilience Act (Regulation (EU) "
                    "2024/2847).",
         "e_caveat": "Evidence tooling, not legal advice: the plugin produces the artefacts an assessment asks for; "
@@ -528,6 +533,13 @@ STRINGS: dict[str, dict] = {
         "limit_actions": "In Workflows verwendete GitHub Actions werden inventarisiert, aber nicht auf "
                          "Schwachstellen geprüft (OSV gleicht für dieses Ökosystem keine Versionen ab): {n} in den "
                          "Branches dieses Laufs.",
+        "limit_gaps": "Vom Repository-Scan nicht erfasst: {what}. Dieser Code steht in keiner SBOM und wird nicht auf "
+                      "Schwachstellen geprüft; für C/C++ und Firmware eine Build-SBOM importieren (siehe Notes in "
+                      "AUDIT.md).",
+        "limit_gap_projects": "{n} Projekte nicht gescannt (kein konfigurierter Branch)",
+        "limit_gap_branches": "{n} Branches mit Git-Submodulen, C/C++-Code oder Firmware-Manifesten",
+        "limit_gap_unmatched": "{n} Pakete von Typen, für die OSV keine Advisories führt (generic, GitHub, Conan, "
+                               "vcpkg)",
         "e_intro": "Wofür die Artefakte dieses Ordners im Sinne des EU Cyber Resilience Act (Verordnung (EU) "
                    "2024/2847) dienen.",
         "e_caveat": "Nachweiswerkzeug, keine Rechtsberatung: Das Plugin erzeugt die Artefakte, nach denen eine "
@@ -1379,6 +1391,12 @@ def _coverage(data: dict, S: dict) -> str:
     actions = (audit.get("stats") or {}).get("github_actions_unchecked")
     if actions:
         limits.insert(2, S["limit_actions"].format(n=actions))
+    st = audit.get("stats") or {}
+    what = [S[key].format(n=st[stat]) for key, stat in (("limit_gap_projects", "projects_not_scanned"),
+                                                         ("limit_gap_branches", "coverage_gaps"),
+                                                         ("limit_gap_unmatched", "packages_unmatched")) if st.get(stat)]
+    if what:
+        limits.insert(0, S["limit_gaps"].format(what="; ".join(what)))
     imports = [r for r in audit.get("imported_sboms") or [] if isinstance(r, dict)]
     if imports:
         text = S["limit_imports"].format(n=len(imports))
