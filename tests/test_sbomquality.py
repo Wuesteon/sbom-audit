@@ -237,7 +237,7 @@ class SummaryTests(unittest.TestCase):
         s = sbomquality.summary(sbomquality.check(good()))
         self.assertEqual((s["valid"], s["errors"], s["components"], s["licence"]), (True, 0, 3, 2))
         text = sbomquality.coverage_text(s)
-        self.assertIn("3 components (+1 files)", text)
+        self.assertIn("3 component entries (+1 files)", text)
         self.assertIn("licence 67%", text)
         self.assertIn("dependency graph yes", text)
         doc = good()

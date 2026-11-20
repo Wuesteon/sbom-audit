@@ -377,6 +377,97 @@ def assert_tables_well_formed(case: unittest.TestCase, text: str) -> None:
             case.assertEqual(line, "|" + "---|" * len(cells), f"delimiter under {header!r}")
 
 
+def maven(version, manifest, purl_version=True):
+    """org.a:core as one manifest declares it; an unresolved Gradle declaration has no version in the purl."""
+    purl = "pkg:maven/org.a/core" + (f"@{version}" if version and purl_version else "")
+    return Component(kind="package", ecosystem="Maven", name="core", version=version, purl=purl,
+                     scope="required", locations=[manifest], direct=True)
+
+
+class SameCoordinateTwoManifestsTests(unittest.TestCase):
+    """One package declared in a pom.xml and a build.gradle: two inventory rows (evidence), one package in
+    every count of distinct packages, one INVENTORY.md line naming both manifests."""
+    POM = maven("${core.version}", "pom.xml")
+    GRADLE = maven("", "build.gradle")
+
+    def build(self, invs, findings=()):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp), production=("jvm",))
+            rep = report.build(cfg, invs, list(findings), [], [], [], SOURCES_OK)
+            cfg.out.mkdir(parents=True)
+            inventory = report.write_inventory_md(cfg, invs, cfg.out).read_text(encoding="utf-8")
+            audit = report.write_audit_md(rep, cfg.out).read_text(encoding="utf-8")
+        return rep, inventory, audit
+
+    def test_inventory_md_shows_one_line_naming_both_manifests(self):
+        invs = [inv("jvm", "main", [self.POM, self.GRADLE])]
+        self.assertEqual(len(invs[0].components), 2)                       # both rows stay
+        _, text, _ = self.build(invs)
+        lines = [l for l in text.splitlines() if l.startswith("| org.a:core")]
+        self.assertEqual(lines, ["| org.a:core | Maven | same coordinate, 2 manifests: `pom.xml`, `build.gradle` "
+                                 "| unresolved | required |"])
+        self.assertIn("**Direct dependencies** (1;", text)
+        assert_tables_well_formed(self, text)
+
+    def test_different_resolved_versions_stay_separate_lines(self):
+        _, text, _ = self.build([inv("jvm", "main", [maven("1.0", "pom.xml"), maven("2.0", "build.gradle")])])
+        lines = [l for l in text.splitlines() if l.startswith("| org.a:core")]
+        self.assertEqual(lines, ["| org.a:core | Maven | `build.gradle` | 2.0 | required |",
+                                 "| org.a:core | Maven | `pom.xml` | 1.0 | required |"])
+        self.assertIn("2 distinct packages (Maven 2; 2 direct, 0 dev-only)", text)
+
+    def test_branch_package_total_counts_the_coordinate_once(self):
+        _, text, _ = self.build([inv("jvm", "main", [self.POM, self.GRADLE, pkg("lodash", "4.17.21")])])
+        self.assertIn("2 distinct packages in 3 manifest rows (Maven 1, npm 1; 2 direct, 0 dev-only)", text)
+
+    def test_release_package_total_counts_the_coordinate_once(self):
+        rel = BranchInventory(project="jvm", branch="tags/v1", ref="refs/tags/v1", commit="abc1234def",
+                              components=[self.POM, self.GRADLE], release={"tag": "v1", "date": "2026-01-01",
+                                                                           "index": 0})
+        _, text, _ = self.build([inv("jvm", "main", [self.POM]), rel])
+        self.assertIn("| Distinct packages |", text)
+        self.assertIn("| jvm | `v1` | abc1234 | 2026-01-01 | 1 | 0 | 0 | – |", text)
+
+    def test_audit_json_stats_distinct_versus_declarations(self):
+        rep, _, audit = self.build([inv("jvm", "main", [self.POM, self.GRADLE]),
+                                    inv("jvm", "dev", [self.POM, self.GRADLE])])
+        st = rep["stats"]
+        self.assertEqual(st["unique_package_versions"], 1)       # distinct over the portfolio
+        self.assertEqual(st["occurrences"], 4)                   # inventory rows, deliberately
+        self.assertEqual(st["direct_dependencies"], 2)           # distinct per project and branch
+        self.assertEqual(st["unresolved_versions"], 2)           # one per branch
+        self.assertEqual([r["count"] for r in rep["unresolved_versions"]], [1, 1])
+        self.assertEqual(rep["unresolved_versions"][0]["packages"][0]["manifests"], ["pom.xml", "build.gradle"])
+        self.assertIn("| Distinct package versions (ecosystem, name, version) | 1 |", audit)
+
+    def test_status_counts_are_not_inflated(self):
+        from sbomaudit import status
+        resolved_pom, resolved_gradle = maven("1.0", "pom.xml"), maven("1.0", "build.gradle")
+        advisory = [vuln("GHSA-core", "HIGH", 7.5, ["1.1"])]
+        rep, _, audit = self.build(
+            [inv("jvm", "main", [self.POM, self.GRADLE]), inv("jvm", "dev", [resolved_pom, resolved_gradle])],
+            [Finding("jvm", "dev", resolved_pom, advisory), Finding("jvm", "dev", resolved_gradle, advisory)])
+        self.assertEqual(len(rep["vulnerabilities"]), 1)
+        self.assertEqual(sorted(l["manifest"] for l in rep["vulnerabilities"][0]["locations"]),
+                         ["build.gradle", "pom.xml"])
+        counts = status.build(rep, secrets=None, previous=None, duration_s=1.0, exit_code=1, run_host="h",
+                              mode="full")["counts"]
+        self.assertEqual((counts["vulnerable"], counts["critical_high_production"], counts["unresolved_versions"]),
+                         (1, 1, 1))
+        self.assertIn("| Vulnerable package versions | 1 |", audit)
+
+    def test_sbom_check_counts_component_entries_and_says_so(self):
+        from sbomaudit import sbomquality
+        entries = [{"bom-ref": "a", "type": "library", "name": "core", "version": "${core.version}",
+                    "purl": "pkg:maven/org.a/core@${core.version}"},
+                   {"bom-ref": "b", "type": "library", "name": "core", "purl": "pkg:maven/org.a/core"}]
+        result = sbomquality.check({"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+                                    "components": entries})
+        self.assertEqual((result["coverage"]["components"], result["coverage"]["version"]), (2, 1))
+        self.assertIn("  data fields of 2 component entries:", sbomquality.render("x.cdx.json", result))
+        text = sbomquality.cra_note(sbomquality.summary(result))         # CRA.md's SBOM evidence note
+        self.assertIn("2 component entries: version 50%", text)
+
 
 class MdEscapeTests(unittest.TestCase):
     def test_md_keeps_untrusted_text_on_one_inert_line(self):

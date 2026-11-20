@@ -779,6 +779,16 @@ Deno, Expo/React Native, SvelteKit, NestJS, Astro, Vite, FastAPI and Postgres. J
 when some branch has a value there, and any other runtime pinned in a manifest gets a column
 named by its endoflife.date product; runtimes read from a base image are in the Images column.
 
+**One package in two manifests.** When a pom.xml and a build.gradle (or any two manifests) declare the
+same coordinate (ecosystem, name, and the same version or none resolved in either), `inventory.json`
+keeps one row per manifest as evidence. Counts of packages count the coordinate once: the branch line
+of `INVENTORY.md` reads "N distinct packages", adding "in M manifest rows" when the two differ; the
+Direct dependencies table shows one line, "same coordinate, 2 manifests: `pom.xml`, `build.gradle`";
+the releases table counts distinct packages; `audit.json` `stats.unique_package_versions` and
+`stats.direct_dependencies` (per project and branch) count coordinates, and `stats.occurrences` counts
+the rows (declarations) on purpose. Different resolved versions stay separate lines. Manifests are
+named by path; the inventory does not keep line numbers.
+
 Portfolio mode: the parent of `security/` is a plain folder whose direct subfolders with a
 `.git` are the projects; `security/` is outside every audited repository. Single-repo
 mode: the parent is itself a git repository; `security/` lives inside it and is excluded
@@ -1188,7 +1198,9 @@ validation, and it says nothing about whether the components are the right ones.
 | error | `not-object`, `bom-format`, `spec-version` (1.4 to 1.7), `serial-number-format` (`urn:uuid:`), `version-invalid`; `metadata-type`, `timestamp-format` (ISO 8601 date-time with zone), `tools-type`, `subject-type`, `subject-type-invalid`, `subject-name-missing`; `component-not-object`, `component-type-missing`, `component-type-invalid`, `component-name-missing`, `component-components`, `purl-syntax`, `version-type`; `bom-ref-type`, `bom-ref-too-long`, `bom-ref-duplicate`; `dependencies-type`, `dependency-not-object`, `dependency-ref-type`, `dependency-ref-dangling`, `depends-on-type`, `depends-on-dangling`; `too-many-components`, `too-many-dependencies`. Unreadable: `missing`, `too-large`, `unreadable`, `not-json` |
 | warning | `serial-number-missing`, `version-missing`, `metadata-missing`, `timestamp-missing`, `tools-missing`, `subject-missing` (all optional in CycloneDX), `dependency-ref-repeated`, `nesting-too-deep` |
 
-**Coverage.** For each field, how many components carry it, and the share. Components of type `file`
+**Coverage.** For each field, how many component entries carry it, and the share. The count is of entries
+in the document, not of distinct packages: a package declared in two manifests (a `pom.xml` and a
+`build.gradle`) with versions spelled differently is two entries. Components of type `file`
 (Syft lists the manifests it read) are counted apart and left out of the shares. A value counts only
 when it is there and non-empty; nothing is inferred and nothing is filled in. The plugin never adds a
 supplier, licence or hash a source does not state, so a low share is the honest result for most

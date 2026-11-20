@@ -290,6 +290,28 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(sbom["junit"].scope, "optional")
         self.assertTrue(sbom["dynamic"].props.get("unresolved"))
 
+    def test_pom_and_gradle_declaring_one_unresolved_coordinate_keep_two_rows(self):
+        """Each manifest's row is evidence and stays; reports group them (coverage.coordinate)."""
+        from sbomaudit import coverage, sbomquality
+        pom = ("<project><dependencies><dependency><groupId>org.a</groupId><artifactId>core</artifactId>"
+               "<version>${core.version}</version></dependency></dependencies></project>\n")
+        make_repo(self.root, "java", {"pom.xml": pom, "build.gradle": "dependencies {\n implementation 'org.a:core'\n}\n"})
+        cfg = config.load(self.out)
+        purl = "pkg:maven/org.a/core@${core.version}"
+        entry = {"bom-ref": purl, "type": "library", "name": "core", "version": "${core.version}", "purl": purl,
+                 "properties": [{"name": "sbom-audit:scope", "value": "required"},
+                                {"name": "syft:location:0:path", "value": "/pom.xml"}]}
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1, "components": [entry]}
+        comps = cyclonedx.components({"components": [dict(entry)]})
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["java"], fetch=False)
+        rows = [c for c in result.inventories[0].components if c.kind == "package"]
+        self.assertEqual(sorted((c.version, tuple(c.locations)) for c in rows),
+                         [("", ("build.gradle",)), ("${core.version}", ("pom.xml",))])
+        self.assertEqual(len(coverage.distinct_packages(rows)), 1)
+        quality = sbomquality.check_path(scan.sbom_path(self.out, "java", "main"))
+        self.assertEqual(quality["coverage"]["components"], 2)          # two entries in the document, labelled so
+
     def test_only_filters_and_reports_unknown_names(self):
         make_repo(self.root, "a", {"README": "a\n"})
         make_repo(self.root, "b", {"README": "b\n"})
