@@ -1,8 +1,8 @@
 # sbom-audit status 2026-11-07
 
-Run host `eval-fixture`, sbom-audit 1.3.0, mode portfolio, duration 12.0 s, exit 1.
+Run host `eval-fixture`, sbom-audit 1.3.1, mode portfolio, duration 12.0 s, exit 1.
 
-🛡️ sbom-audit 1.3.0: findings not assessed yet; run /sbom-audit:assess (CLI: sbom_audit_cli.py assess draft)
+🛡️ sbom-audit 1.3.1: findings not assessed yet; run /sbom-audit:assess (CLI: sbom_audit_cli.py assess draft)
 
 ## Since last run
 
