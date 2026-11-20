@@ -15,7 +15,7 @@ from pathlib import Path
 from . import __version__, coverage, sbomimport, sbomquality
 from .config import Config
 from .cvss import SEV_ORDER, base_label
-from .enrich import fixed_in
+from .enrich import DECLARED_FLOORS, fixed_in
 from .model import BranchInventory, Finding, qualified_name
 from .versions import ver_key
 from .vex import Suppressed
@@ -30,7 +30,9 @@ OUTDATED_CAP = 60
 SEVERITY_ROWS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 ACTIONABLE = ("CRITICAL", "HIGH")
 EOL_ICON = {"EOL": "🔴 EOL", "EOL soon": "🟠 EOL soon", "supported": "🟢 supported", "unknown": "⚪ unknown"}
-EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3, "minimum": 4}   # minimum: enrich.build_minimum
+EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3, "minimum": 4}   # minimum: enrich.minimum_basis
+PRODUCT_NAME = {"nodejs": "Node.js", "python": "Python", "go": "Go"}
+VERSION_FILE = {"nodejs": "`.nvmrc`", "python": "`.python-version`"}
 # INVENTORY.md overview columns: (header, component kind, names)
 OVERVIEW_COLUMNS = [("Node", "runtime", ("nodejs",)), ("Python", "runtime", ("python",)),
                     ("Deno", "runtime", ("deno",)), ("Expo/React Native", "package", ("expo", "react-native")),
@@ -193,8 +195,8 @@ def _runtimes(eol_rows: list[dict], releases: dict | None = None) -> list[dict]:
     for r in eol_rows:
         if out_of_support(releases, r["project"], r["branch"]):
             continue
-        # a go.mod build minimum (status `minimum`, enrich.build_minimum) is its own row, never merged into
-        # the runtime row of the same cycle
+        # a minimum (status `minimum`, enrich.minimum_basis) is its own row, never merged into the runtime
+        # row of the same cycle
         key = (r["product"], r.get("cycle", ""), r.get("basis"))
         g = groups.setdefault(key, {"product": r["product"], "cycle": r.get("cycle", ""),
                                     "status": r.get("status", "unknown"), "eol_date": r.get("eol_date"),
@@ -202,6 +204,8 @@ def _runtimes(eol_rows: list[dict], releases: dict | None = None) -> list[dict]:
         if r.get("basis"):
             g.update(basis=r["basis"], cycle_status=r.get("cycle_status", "unknown"))
         loc = {"project": r["project"], "branch": r["branch"], "source": r.get("source", "")}
+        if r.get("basis") in DECLARED_FLOORS:               # what the manifest allows, and what pins the runtime
+            loc.update(declared=list(r.get("declared") or []), pinned=list(r.get("pinned") or []))
         if (r["project"], r["branch"]) in (releases or {}):
             loc["release"] = releases[(r["project"], r["branch"])]["tag"]
         g["locations"].append(loc)
@@ -210,6 +214,41 @@ def _runtimes(eol_rows: list[dict], releases: dict | None = None) -> list[dict]:
         g["locations"].sort(key=lambda l: (l["project"], l["branch"]))
     rows.sort(key=lambda g: (EOL_ORDER.get(g["status"], 2), g["product"], ver_key(g["cycle"] or "0")))
     return rows
+
+
+def allowed_unsupported(r: dict) -> bool:
+    """A runtime row (`audit.json` `runtimes`) that is a declared minimum (`engines.node`, `requires-python`)
+    whose lowest allowed cycle is end of life: allowed but unsupported. It is not an end-of-life runtime and is
+    counted apart (`stats.allowed_unsupported`). A go.mod minimum is not counted."""
+    return (r.get("status") == "minimum" and r.get("basis") in DECLARED_FLOORS
+            and r.get("cycle_status") == "EOL")
+
+
+def _cycle_phrase(status: str, date: str | None) -> str:
+    if status == "EOL":
+        return f"which reached end of life on {date}" if date else "which has reached end of life"
+    if status == "EOL soon":
+        return f"which reaches end of life on {date}" if date else "which reaches end of life soon"
+    if status == "supported":
+        return f"which is supported until {date}" if date else "which is supported"
+    return "whose end of life is unknown"
+
+
+def minimum_text(r: dict, loc: dict) -> str:
+    """The sentence for a declared minimum at one location: what it allows, and the pinned runtime or how to
+    state one. It says "allows", never "runs": the manifest does not say what runs."""
+    name = PRODUCT_NAME.get(r["product"], r["product"])
+    declared = " / ".join(f"`{d}`" for d in (loc.get("declared") or [])) or f"`{r.get('basis')}`"
+    text = (f"build minimum: {declared} allows {name} {r.get('cycle') or '?'}, "
+            f"{_cycle_phrase(r.get('cycle_status') or 'unknown', r.get('eol_date'))}.")
+    pinned = loc.get("pinned") or []
+    if pinned:
+        pins = sorted({f"{name} {p.get('cycle') or '?'} ({str(p.get('source') or '').split(':', 1)[0] or '?'})"
+                       for p in pinned})
+        return text + f" Pinned runtime: {', '.join(pins)}; its own row gives the end-of-life status."
+    hint = VERSION_FILE.get(r["product"], "a version file")
+    return text + (" The runtime actually used is not stated in this repository. "
+                   f"Add {hint}, a Dockerfile image or a build SBOM to confirm it.")
 
 
 def _unpinned_images(inventories: list[BranchInventory]) -> list[dict]:
@@ -299,11 +338,13 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
     }
     unresolved = coverage.unresolved_versions(inventories, releases)
     stats["unresolved_versions"] = sum(r["count"] for r in unresolved)
+    runtimes = _runtimes(eol, releases)
+    stats["allowed_unsupported"] = sum(1 for r in runtimes if allowed_unsupported(r))
     rep = {
         "generated_at": _now(),
         "sources": _sources(sources),
         "vulnerabilities": _vulnerabilities(findings, releases),
-        "runtimes": _runtimes(eol, releases),
+        "runtimes": runtimes,
         "outdated": [dict(o) for o in outdated],
         "unpinned_images": _unpinned_images(inventories),
         "suppressed": [s.to_dict() if isinstance(s, Suppressed) else dict(s) for s in suppressed],
@@ -388,6 +429,8 @@ def _summary(rep: dict) -> list[str]:
         ("Vulnerable direct dependencies", sum(1 for v in vulns if v["direct_anywhere"])),
         ("Runtimes / images past end-of-life", sum(1 for r in rep["runtimes"] if r["status"] == "EOL")),
         ("Runtimes / images reaching EOL within 90 days", sum(1 for r in rep["runtimes"] if r["status"] == "EOL soon")),
+        ("Allowed but unsupported: declared minimum allows an end-of-life version (not counted as EOL)",
+         sum(1 for r in rep["runtimes"] if allowed_unsupported(r))),
         ("Floating container images (unique)", len({u["image"] for u in rep["unpinned_images"]})),
         ("Direct deps ≥1 major behind latest",
          len({(o["project"], o["ecosystem"], o["name"]) for o in rep["outdated"]})),
@@ -481,10 +524,23 @@ def _runtime_section(runtimes: list[dict]) -> list[str]:
                   else EOL_ICON.get(r["status"], r["status"]))
         L.append(f"| {status} | {r['product']} | {r['cycle'] or '?'} | "
                  f"{r.get('eol_date') or '–'} | {r.get('latest') or '–'} | {md(where)} | {md(via)} |")
-    L += ["", "_`engines` / `requires-python` give the lowest version the manifest allows (what runs depends on the "
-          "host); Dockerfile and compose images are what actually runs in containers; Supabase edge runtime and "
-          "Postgres are managed but still age out._", ""]
-    if any(r["status"] == "minimum" for r in runtimes):
+    L += ["", "_`.nvmrc`, `.node-version` and `.python-version` pin the runtime; Dockerfile and compose images are "
+          "what actually runs in containers; Supabase edge runtime and Postgres are managed but still age out._", ""]
+    floors = [r for r in runtimes if r["status"] == "minimum" and r.get("basis") in DECLARED_FLOORS]
+    if floors:
+        L += ["_`build minimum` from `engines.node` or `requires-python`: the lowest version the manifest allows, "
+              "not the one that runs. It is not counted as end of life; when the lowest allowed cycle is end of "
+              "life it is counted as allowed but unsupported. The pinned runtime, when the repository states one, "
+              "has its own row._", ""]
+        notes: dict[tuple[str, str, str], list[str]] = {}
+        for r in floors:
+            for loc in r["locations"]:
+                path = (loc.get("source") or "").split(":", 1)[0] or "?"
+                notes.setdefault((loc["project"], path, minimum_text(r, loc)), []).append(loc["branch"])
+        for (project, path, text), branches in sorted(notes.items()):
+            L.append(f"- {md(project)}@{md(', '.join(sorted(set(branches))))} ({md(path)}): {md(text)}")
+        L.append("")
+    if any(r["status"] == "minimum" and r.get("basis") == "go.mod" for r in runtimes):
         L += ["_`build minimum`: the Go version in a go.mod (`go` or `toolchain` line) is the lowest Go that may "
               "build the module, not the Go that runs it: the binary carries the runtime of whichever toolchain "
               "builds it. It is listed for information and not counted as end of life; the cycle's own status is "

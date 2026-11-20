@@ -8,7 +8,9 @@ Suppressed (VEX), decided (secrets), accepted (hosts) and informational findings
 Priorities follow the assessment's triage order:
 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production project (not dev-only),
 an advisory with no severity ("not rated", reason `unrated_production`) in the same scope, and class B secrets ·
-4 end-of-life runtimes and images · 5 floating image tags · 6 everything else.
+4 end-of-life runtimes and images · 5 floating image tags · 6 everything else, among them a declared minimum
+(`engines.node`, `requires-python`) that allows an end-of-life version (reason `eol_minimum`): what runs may be
+newer, so raising the floor is housekeeping, not an end-of-life runtime.
 """
 from __future__ import annotations
 
@@ -23,7 +25,8 @@ from .cache import atomic_write
 from .coverage import severity_text, unrated_advisories
 from .cvss import SEV_ORDER
 from .model import direct_text, merge_direct
-from .report import ACTIONABLE, JSON_FILE as AUDIT_JSON, counts_as_production, md, worst_advisory
+from .report import (ACTIONABLE, JSON_FILE as AUDIT_JSON, PRODUCT_NAME, allowed_unsupported, counts_as_production,
+                     md, minimum_text, worst_advisory)
 from .secrets.classify import context_text, ranked_lower
 from .versions import ver_key
 
@@ -34,7 +37,7 @@ MD_BRANCHES = 3                                  # ISSUES.md names this many bra
 KINDS = ("secret", "vulnerability", "eol", "floating_tag", "host")
 PRIORITY_REASONS = {1: ("secret_a",), 2: ("kev", "host_critical"),
                     3: ("critical_high_production", "unrated_production", "secret_b"),
-                    4: ("eol", "secret_context"), 5: ("floating_tag",), 6: ("other",)}
+                    4: ("eol", "secret_context"), 5: ("floating_tag",), 6: ("other", "eol_minimum")}
 # host finding groups a fixer can act on; logins, Lynis suggestions and `info` are not work items
 HOST_GROUPS = ("change", "patch", "permissive", "lynis_warning", "lynis_index", "third_party")
 ROTATE_HINT = ("rotate the credential at the provider, redeploy what uses it, verify the old value is dead, "
@@ -205,6 +208,45 @@ def _eol(rep: dict) -> list[dict]:
     return issues
 
 
+def _eol_minimum(rep: dict) -> list[dict]:
+    """A declared minimum that allows an end-of-life cycle (`report.allowed_unsupported`): one issue per project
+    and manifest, priority 6. The fix is to raise the floor; the runtime that runs is a row of its own."""
+    production = set(rep.get("production_projects") or [])
+    issues = []
+    for r in rep.get("runtimes") or []:
+        if not allowed_unsupported(r):
+            continue
+        places: dict[tuple[str, str], dict] = {}
+        for loc in r.get("locations") or []:
+            g = places.setdefault((loc["project"], loc.get("source") or ""),
+                                  {"branches": set(), "releases": set(), "loc": loc})
+            g["branches"].add(loc["branch"])
+            if loc.get("release"):
+                g["releases"].add(loc["release"])
+        name = PRODUCT_NAME.get(r["product"], r["product"])
+        for (project, source), g in sorted(places.items()):
+            where = {"project": project, "branches": sorted(g["branches"]),
+                     "path": source.split(":", 1)[0] or None, "line": None}
+            if g["releases"]:
+                where["releases"] = sorted(g["releases"])
+            declared = " / ".join(g["loc"].get("declared") or []) or r.get("basis")
+            issues.append({
+                "id": f"eol-minimum:{project}:{r['product']}@{r['cycle']}:{source}",
+                "kind": "eol", "priority": 6, "reason": "eol_minimum", "severity": None,
+                "production": project in production,
+                "title": (f"{declared} allows {name} {r['cycle']}, past end of life "
+                          f"({r.get('eol_date') or 'date unknown'})"),
+                "where": where,
+                "details": {"product": r["product"], "cycle": r["cycle"], "eol_date": r.get("eol_date"),
+                            "basis": r.get("basis"), "declared": g["loc"].get("declared") or [],
+                            "pinned": g["loc"].get("pinned") or [], "source": source,
+                            "text": minimum_text(r, g["loc"])},
+                "fix": {"action": "raise_minimum", "target": None,
+                        "hint": f"raise {r.get('basis')} to a supported {name} cycle; it allows, it does not run"},
+            })
+    return issues
+
+
 def _floating(rep: dict) -> list[dict]:
     production = set(rep.get("production_projects") or [])
     places: dict[tuple[str, str, str], dict] = {}
@@ -338,7 +380,7 @@ def build(rep: dict | None, secrets: dict | None, hosts: dict | None, *, previou
     now = now or _now()
     rep = rep or {}
     production = set(rep.get("production_projects") or [])
-    issues = (_vulnerabilities(rep) + _secrets(secrets, production) + _eol(rep) + _floating(rep)
+    issues = (_vulnerabilities(rep) + _secrets(secrets, production) + _eol(rep) + _eol_minimum(rep) + _floating(rep)
               + _hosts(hosts, hosts_accepted))
     seen = {i.get("id"): i.get("first_seen") for i in (previous or {}).get("issues") or [] if isinstance(i, dict)}
     for i in issues:
@@ -406,7 +448,7 @@ def render_md(doc: dict) -> str:
          f"{counts['total']} open: " + (", ".join(f"{n} {k}" for k, n in counts["by_kind"].items()) or "nothing") + ".",
          "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production or a supported "
          "release or not rated there, class B secret · 4 end of life, a secret ranked lower by its context "
-         "(test, docs, ...) · 5 floating tag · 6 other.", ""]
+         "(test, docs, ...) · 5 floating tag · 6 other, a declared minimum that allows an end-of-life version.", ""]
     split = dependency_split(doc["issues"])
     if split["total"]:
         L += [f"Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "

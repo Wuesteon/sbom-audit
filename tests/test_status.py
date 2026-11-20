@@ -348,6 +348,29 @@ class AssessmentDateTest(unittest.TestCase):
             self.assertIsNone(status.last_assessment_date(out))
 
 
+class AllowedUnsupportedTest(unittest.TestCase):
+    FLOOR = {"product": "python", "cycle": "3.8", "status": "minimum", "basis": "requires-python",
+             "cycle_status": "EOL", "eol_date": "2024-10-07", "locations": []}
+
+    def test_counted_apart_from_eol(self):
+        s = build(make_rep(runtimes=[self.FLOOR, {"product": "nodejs", "cycle": "18", "status": "EOL",
+                                                  "locations": []}]))
+        self.assertEqual((s["counts"]["eol"], s["counts"]["allowed_unsupported"]), (1, 1))
+        self.assertEqual(s["open"]["eol"], ["nodejs 18"])
+        with tempfile.TemporaryDirectory() as tmp:
+            text = status.write_md(Path(tmp), s, None).read_text(encoding="utf-8")
+        self.assertIn("1 EOL, 1 allowed but unsupported (declared minimum, not counted as EOL), ", text)
+
+    def test_go_minimum_and_old_status_files_say_nothing(self):
+        go = {**self.FLOOR, "product": "go", "basis": "go.mod"}
+        s = build(make_rep(runtimes=[go]))
+        self.assertEqual(s["counts"]["allowed_unsupported"], 0)
+        del s["counts"]["allowed_unsupported"]                  # a status.json written before the count existed
+        with tempfile.TemporaryDirectory() as tmp:
+            text = status.write_md(Path(tmp), s, None).read_text(encoding="utf-8")
+        self.assertNotIn("allowed but unsupported", text)
+
+
 class MarkdownTest(unittest.TestCase):
     def test_md_sections_order(self):
         s = build(make_rep(sources={"osv": {"queried": 3, "failed": []}}), secrets=secrets_doc(a=1, oldest=3),

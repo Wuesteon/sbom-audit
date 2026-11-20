@@ -75,6 +75,8 @@ STRINGS: dict[str, dict] = {
         "m_short_secrets": "leaked-credential findings",
         "m_short_hosts": "host findings",
         "eol_soon": "{n} more reach end of life soon",
+        "eol_allowed": ("{n} allowed but unsupported: a declared minimum (engines.node, requires-python) allows an "
+                        "end-of-life version; not counted here, what runs is not stated or has its own row"),
         "incomplete": "incomplete: {what}",
         "inc_osv": "{n} branch(es) could not be matched against OSV",
         "inc_eol": "{n} endoflife.date lookup(s) failed",
@@ -111,12 +113,13 @@ STRINGS: dict[str, dict] = {
         "reason": {"secret_a": "Leaked credential, class A", "kev": "Actively exploited (KEV)",
                    "host_critical": "Critical host finding", "critical_high_production": "CRITICAL/HIGH in production",
                    "secret_b": "Leaked credential, class B", "eol": "End of life", "floating_tag": "Floating image tag",
-                   "secret_context": "Possible credential in test, docs or vendored files", "other": "Other"},
+                   "secret_context": "Possible credential in test, docs or vendored files", "other": "Other",
+                   "eol_minimum": "Declared minimum allows an end-of-life version"},
         "fix": {"upgrade": "Upgrade to {target}", "no_fix_released": "No fix released yet; mitigate or decide",
                 "rotate": "Rotate the credential at the provider", "upgrade_runtime": "Move to a supported version",
                 "pin": "Pin the image to a version or digest", "apt_upgrade": "Install the update {target}",
                 "reboot": "Reboot (the fixed kernel is installed)", "no_fix_installable": "No installable fix yet",
-                "review": "Review and decide"},
+                "review": "Review and decide", "raise_minimum": "Raise the declared minimum to a supported version"},
         "fix_unfixed": "{n} advisory(ies) without a fix",
         "dep_direct": "direct dependency",
         "dep_transitive": "transitive dependency",
@@ -377,6 +380,9 @@ STRINGS: dict[str, dict] = {
         "m_short_secrets": "Befunde zu offengelegten Zugangsdaten",
         "m_short_hosts": "Server-Befunde",
         "eol_soon": "{n} weitere erreichen bald das Support-Ende",
+        "eol_allowed": ("{n} erlaubt, aber ohne Support: eine erklärte Mindestversion (engines.node, requires-python) "
+                        "erlaubt eine Version ohne Support; hier nicht mitgezählt, die tatsächlich laufende Version "
+                        "ist nicht angegeben oder hat eine eigene Zeile"),
         "incomplete": "unvollständig: {what}",
         "inc_osv": "{n} Branch(es) konnten nicht mit OSV abgeglichen werden",
         "inc_eol": "{n} Abfrage(n) bei endoflife.date fehlgeschlagen",
@@ -415,13 +421,15 @@ STRINGS: dict[str, dict] = {
                    "host_critical": "Kritischer Server-Befund", "critical_high_production": "CRITICAL/HIGH in Produktion",
                    "secret_b": "Offengelegte Zugangsdaten, Klasse B", "eol": "Support-Ende (End of Life)",
                    "floating_tag": "Nicht fixiertes Image-Tag",
-                   "secret_context": "Mögliche Zugangsdaten in Test-, Doku- oder Fremdcode", "other": "Sonstiges"},
+                   "secret_context": "Mögliche Zugangsdaten in Test-, Doku- oder Fremdcode", "other": "Sonstiges",
+                   "eol_minimum": "Erklärte Mindestversion erlaubt eine Version ohne Support"},
         "fix": {"upgrade": "Aktualisieren auf {target}",
                 "no_fix_released": "Noch kein Fix veröffentlicht; abmildern oder entscheiden",
                 "rotate": "Zugangsdaten beim Anbieter austauschen", "upgrade_runtime": "Auf eine unterstützte Version wechseln",
                 "pin": "Image auf Version oder Digest festlegen", "apt_upgrade": "Update {target} installieren",
                 "reboot": "Neustart (der korrigierte Kernel ist installiert)",
-                "no_fix_installable": "Noch kein installierbarer Fix", "review": "Prüfen und entscheiden"},
+                "no_fix_installable": "Noch kein installierbarer Fix", "review": "Prüfen und entscheiden",
+                "raise_minimum": "Erklärte Mindestversion auf eine unterstützte Version anheben"},
         "fix_unfixed": "{n} Advisory(s) ohne Fix",
         "dep_direct": "direkte Abhängigkeit",
         "dep_transitive": "transitive Abhängigkeit",
@@ -830,7 +838,7 @@ def _failed_count(info) -> int:
 
 def _metrics(data: dict, S: dict) -> list[dict]:
     """One row per measure: value (int) or None with a reason, an incomplete note, the delta key."""
-    from .report import _actionable
+    from .report import _actionable, allowed_unsupported
     from .status import _in_production
     audit, status = data["audit"], data["status"] or {}
     sources = (audit or {}).get("sources") or {}
@@ -873,9 +881,12 @@ def _metrics(data: dict, S: dict) -> list[dict]:
         runtimes = [r for r in audit.get("runtimes") or [] if isinstance(r, dict)]
         eol = {(r.get("product"), r.get("cycle")) for r in runtimes if r.get("status") == "EOL"}
         soon = {(r.get("product"), r.get("cycle")) for r in runtimes if r.get("status") == "EOL soon"}
+        allowed = {(r.get("product"), r.get("cycle")) for r in runtimes if allowed_unsupported(r)}
+        extra = "; ".join(x for x in (S["eol_soon"].format(n=len(soon)) if soon else "",
+                                      S["eol_allowed"].format(n=len(allowed)) if allowed else "") if x)
         row("eol", S["m_eol"], len(eol), delta="eol",
             incomplete=S["inc_eol"].format(n=_failed_count(eol_src)) if _failed_count(eol_src) else None,
-            extra=S["eol_soon"].format(n=len(soon)) if soon else None)
+            extra=extra or None)
     # leaked credentials, per class
     sec = _secrets_state(data)
     for cls in "ABC":

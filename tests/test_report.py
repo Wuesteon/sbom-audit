@@ -251,11 +251,62 @@ class AuditMdTests(unittest.TestCase):
         self.assertEqual(sorted((r["status"], r.get("basis")) for r in rep["runtimes"]),
                          [("EOL", None), ("minimum", "go.mod")])
         self.assertIn("| Runtimes / images past end-of-life | 1 |", section(text, "Summary"))
+        self.assertEqual(rep["stats"]["allowed_unsupported"], 0)     # Go is unchanged: not counted
         sec = section(text, "Runtimes and base images")
         self.assertIn("| build minimum (cycle EOL) | go | 1.20 | 2024-02-06 |", sec)
+        self.assertNotIn("Pinned runtime", sec)
         self.assertIn("zeta@main", sec)
         self.assertIn("not the Go that runs", sec)
         self.assertLess(sec.index("🔴 EOL"), sec.index("build minimum"))
+
+    def test_declared_floor_is_a_minimum_counted_as_allowed_but_unsupported(self):
+        """`requires-python` / `engines.node`: status `minimum`, not counted as EOL; an end-of-life lowest cycle is
+        counted as allowed but unsupported, and the row says "allows", never "runs"."""
+        eol = [{"project": "zeta", "branch": "main", "product": "python", "cycle": "3.8", "status": "minimum",
+                "basis": "requires-python", "cycle_status": "EOL", "eol_date": "2024-10-07", "latest": "3.8.20",
+                "source": "pyproject.toml: requires-python >=3.8", "declared": ["requires-python >=3.8"],
+                "pinned": []},
+               {"project": "alpha", "branch": "main", "product": "nodejs", "cycle": "18", "status": "minimum",
+                "basis": "engines.node", "cycle_status": "EOL", "eol_date": "2025-04-30", "latest": "18.20.8",
+                "source": "package.json: engines.node >=18", "declared": ["engines.node >=18"],
+                "pinned": [{"cycle": "22", "source": "Dockerfile: image node:22-alpine"}]},
+               {"project": "alpha", "branch": "main", "product": "nodejs", "cycle": "22", "status": "supported",
+                "eol_date": "2027-04-30", "latest": "22.21.1", "source": "Dockerfile: image node:22-alpine"},
+               {"project": "alpha", "branch": "main", "product": "python", "cycle": "3.12", "status": "minimum",
+                "basis": "requires-python", "cycle_status": "supported", "eol_date": "2028-10-31", "latest": "",
+                "source": "api/pyproject.toml: requires-python >=3.12", "declared": ["requires-python >=3.12"],
+                "pinned": []}]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            rep = report.build(cfg, [inv("zeta", "main", [LODASH]), inv("alpha", "main", [LODASH])], [], [], eol,
+                               [], SOURCES_OK)
+            text = self.write(Path(tmp), [], eol=eol)
+        self.assertEqual(rep["stats"]["allowed_unsupported"], 2)
+        self.assertEqual(sum(1 for r in rep["runtimes"] if r["status"] == "EOL"), 0)
+        floor = next(r for r in rep["runtimes"] if r["product"] == "nodejs" and r["cycle"] == "18")
+        self.assertEqual(floor["locations"][0]["pinned"], [{"cycle": "22", "source": "Dockerfile: image node:22-alpine"}])
+        summary = section(text, "Summary")
+        self.assertIn("| Runtimes / images past end-of-life | 0 |", summary)
+        self.assertIn("| Allowed but unsupported: declared minimum allows an end-of-life version (not counted as EOL) "
+                      "| 2 |", summary)
+        sec = section(text, "Runtimes and base images")
+        self.assertIn("| build minimum (cycle EOL) | python | 3.8 | 2024-10-07 |", sec)
+        self.assertIn("- zeta@main (pyproject.toml): build minimum: `requires-python >=3.8` allows Python 3.8, which "
+                      "reached end of life on 2024-10-07. The runtime actually used is not stated in this repository. "
+                      "Add `.python-version`, a Dockerfile image or a build SBOM to confirm it.", sec)
+        self.assertIn("- alpha@main (package.json): build minimum: `engines.node >=18` allows Node.js 18, which "
+                      "reached end of life on 2025-04-30. Pinned runtime: Node.js 22 (Dockerfile); its own row "
+                      "gives the end-of-life status.", sec)
+        self.assertIn("allows Python 3.12, which is supported until 2028-10-31. The runtime actually used", sec)
+        self.assertNotIn(" runs Python", sec)
+        self.assertNotIn("not the Go that runs", sec)            # the Go note only with a go.mod row
+
+    def test_allowed_unsupported_counts_no_go_minimum(self):
+        go = {"status": "minimum", "basis": "go.mod", "cycle_status": "EOL"}
+        self.assertFalse(report.allowed_unsupported(go))
+        self.assertTrue(report.allowed_unsupported({**go, "basis": "engines.node"}))
+        self.assertFalse(report.allowed_unsupported({**go, "basis": "engines.node", "cycle_status": "EOL soon"}))
+        self.assertFalse(report.allowed_unsupported({"status": "EOL", "basis": None}))
 
     def test_runtime_and_floating_sections(self):
         eol = [{"project": "zeta", "branch": "main", "product": "nodejs", "cycle": "18", "status": "EOL",

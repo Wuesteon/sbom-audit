@@ -143,6 +143,9 @@ def _source(c) -> str:
 
 
 MINIMUM = "minimum"
+# A declared floor: the lowest version a manifest allows (`engines.node` in package.json, `requires-python` in
+# pyproject.toml), read by readers.read_tree with this detail prefix. It says what may run, not what runs.
+DECLARED_FLOORS = {"engines.node": "nodejs", "requires-python": "python"}
 
 
 def build_minimum(c) -> bool:
@@ -154,27 +157,56 @@ def build_minimum(c) -> bool:
             and (source == "go.mod" or source.endswith("/go.mod")))
 
 
+def declared_floor(c) -> str | None:
+    """`engines.node` or `requires-python` when the runtime component is a manifest's declared minimum
+    (detail `engines.node >=18`, `requires-python >=3.8`), else None. Version files (.nvmrc, .node-version,
+    .python-version) and images are what runs and are not floors."""
+    detail = str(c.props.get("detail", ""))
+    for basis, product in DECLARED_FLOORS.items():
+        if (c.ecosystem or c.name) == product and detail.startswith(basis + " "):
+            return basis
+    return None
+
+
+def minimum_basis(c) -> str | None:
+    """The basis of a minimum (`go.mod`, `engines.node`, `requires-python`), or None for a runtime that runs."""
+    return "go.mod" if build_minimum(c) else declared_floor(c)
+
+
 def eol(inventories: list[BranchInventory], cache: Cache, fetch=http_get_json,
         today: dt.date | None = None) -> tuple[list[dict], list[dict]]:
     """One row per (project, branch, product, cycle) for every runtime component, plus the lookups
     that failed (`{"what": "<product>/<cycle>", "error": …}`), each product/cycle fetched once per run.
 
-    A row whose every source is a go.mod line (`build_minimum`) gets status `minimum`, `basis` "go.mod" and
-    the cycle's own endoflife.date status in `cycle_status`: a build minimum is not an end-of-life runtime,
-    so it never counts as EOL. Any other source of the same cycle on that branch (an image) keeps the row a
-    runtime row."""
+    A row whose every source is a minimum (`minimum_basis`: a go.mod line, `engines.node` or
+    `requires-python`) gets status `minimum`, its `basis` and the cycle's own endoflife.date status in
+    `cycle_status` (with `eol_date` the cycle's end of life): a minimum says what is allowed, not what runs,
+    so it never counts as EOL. Any other source of the same cycle on that branch (a version file, an image)
+    keeps the row a runtime row. A declared floor (`engines.node`, `requires-python`) also carries
+    `declared` (the manifest lines) and `pinned`: the runtime rows of the same product on that branch
+    (`{"cycle", "source"}`), whose own status decides end of life."""
     groups: dict[tuple, list[str]] = {}
-    minimum: dict[tuple, bool] = {}
+    basis: dict[tuple, set] = {}
+    declared: dict[tuple, list[str]] = {}
+    running: dict[tuple, list[str]] = {}            # sources of components that run (no minimum basis)
     for inv in inventories:
         for c in inv.components:
             if c.kind != "runtime":
                 continue
             key = (inv.project, inv.branch, c.ecosystem or c.name, c.version or "")
             groups.setdefault(key, [])
-            minimum[key] = minimum.get(key, True) and build_minimum(c)
+            b = minimum_basis(c)
+            basis.setdefault(key, set()).add(b)
+            if b in DECLARED_FLOORS:
+                detail = str(c.props.get("detail", ""))
+                if detail not in declared.setdefault(key, []):
+                    declared[key].append(detail)
             src = _source(c)
             if src and src not in groups[key]:
                 groups[key].append(src)
+            if b is None and src and src not in running.setdefault(key, []):
+                running[key].append(src)
+    minimum = {key: next(iter(b)) if len(b) == 1 and None not in b else None for key, b in basis.items()}
     rows: list[dict] = []
     failed: list[dict] = []
     memo: dict[tuple[str, str], dict] = {}
@@ -193,7 +225,11 @@ def eol(inventories: list[BranchInventory], cache: Cache, fetch=http_get_json,
         row = {"project": project, "branch": branch, "product": product, "cycle": cycle,
                "status": status, "eol_date": eol_date, "latest": latest, "source": "; ".join(sources)}
         if minimum[key]:
-            row.update(status=MINIMUM, basis="go.mod", cycle_status=status)
+            row.update(status=MINIMUM, basis=minimum[key], cycle_status=status)
+        if minimum[key] in DECLARED_FLOORS:
+            row["declared"] = declared.get(key, [])
+            row["pinned"] = [{"cycle": k[3], "source": src} for k, srcs in sorted(running.items())
+                             if k[:3] == key[:3] for src in srcs]
         rows.append(row)
     return rows, failed
 
