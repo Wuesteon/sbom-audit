@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import json
 import tempfile
 import unittest
@@ -293,6 +294,26 @@ class PomResolveTests(unittest.TestCase):
             self.assertEqual([e["version"] for e in entries], ["42.7.14", "5.0.0-SNAPSHOT", "UNKNOWN"])
             self.assertIn({"name": pomresolve.SOURCE_PROPERTY, "value": "pom.xml (in-repo pom)"},
                           entries[0]["properties"])
+
+    def test_poms_outside_the_tree_and_fifos_are_never_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "pom.xml").write_text(POM_PARENT)
+            src = Path(tmp) / "src"
+            (src / "inside").mkdir(parents=True)
+            (src / "inside" / "pom.xml").write_text(POM_BOM)
+            (src / "a").mkdir()
+            (src / "a" / "pom.xml").symlink_to(outside / "pom.xml")      # a file link out of the tree
+            (src / "linked").symlink_to(outside, target_is_directory=True)  # a directory link out of it
+            (src / "b").mkdir()
+            os.mkfifo(src / "b" / "pom.xml")                               # would block a reader forever
+            (src / "c").mkdir()
+            (src / "c" / "pom.xml").symlink_to(src / "inside" / "pom.xml")  # a link inside the tree is fine
+            poms = pomresolve.index(src)
+            self.assertEqual(sorted(poms), ["c/pom.xml", "inside/pom.xml"])
+            self.assertIsNone(pomresolve.parse(src / "a" / "pom.xml", "a/pom.xml", root=src))
+            self.assertIsNone(pomresolve.parse(src / "b" / "pom.xml", "b/pom.xml", root=src))
 
     def test_malformed_pom_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:

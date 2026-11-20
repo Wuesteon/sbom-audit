@@ -11,6 +11,7 @@ compared: a module that names an older snapshot of its own parent still inherits
 """
 from __future__ import annotations
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from .matching import version_unresolved
 from .model import Component, purl_namespace
+from .readers import _inside_file
 
 SOURCE_PROPERTY = "sbom-audit:version_source"
 SKIP_DIRS = {"node_modules", ".git", "target", "build", ".mvn"}
@@ -61,7 +63,13 @@ def _dependencies(container) -> list:
     return [d for d in deps if _local(d.tag) == "dependency"] if deps is not None else []
 
 
-def parse(path: Path, rel: str) -> Pom | None:
+def parse(path: Path, rel: str, root: Path | None = None) -> Pom | None:
+    """The pom at `path`, or None. With `root`, only a regular file inside `root` (symlinks resolved) is
+    read: the audited repository chooses its symlinks, and a FIFO would block the scan."""
+    if root is not None:
+        path = _inside_file(Path(root).resolve(), path)
+        if path is None:
+            return None
     try:
         root = ET.parse(path).getroot()
     except (ET.ParseError, OSError, ValueError):
@@ -94,11 +102,14 @@ def index(src: Path) -> dict[str, Pom]:
     """Repo-relative path -> Pom for every `pom.xml` in the exported tree (build output and vendored trees
     are skipped)."""
     poms: dict[str, Pom] = {}
-    for path in sorted(src.rglob("pom.xml")):
+    found = []
+    for dirpath, dirnames, filenames in os.walk(src):       # never descends into a symlinked directory
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        if "pom.xml" in filenames:
+            found.append(Path(dirpath) / "pom.xml")
+    for path in sorted(found):
         rel = path.relative_to(src).as_posix()
-        if SKIP_DIRS & set(rel.split("/")[:-1]):
-            continue
-        pom = parse(path, rel)
+        pom = parse(path, rel, root=src)
         if pom is not None:
             poms[rel] = pom
         if len(poms) >= MAX_POMS:
