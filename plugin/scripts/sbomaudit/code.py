@@ -2,8 +2,18 @@
 
 A verifier checks a claim against the code on the audited branch, never the working tree. These subcommands
 give it that without a general shell: only projects from the config, only branches that exist, only git
-plumbing that reads objects (`grep` on a tree, `cat-file`, `ls-tree`). Nothing is checked out, nothing runs
-from the repository (no textconv, no filters, no hooks), and nothing is written. Output is capped.
+plumbing that reads objects (`grep` on a tree, `cat-file`, `ls-tree`), with user paths taken literally (no
+pathspec magic). Nothing is checked out and nothing is written. What is guaranteed against the repository's
+own config: no textconv driver, no external diff, no fsmonitor and no hooks run (command-line config and
+`--no-textconv`, as every git call of the plugin gets). Not guaranteed: the git binary itself parses the
+repository; a bug in it is outside what this module can rule out. See "Hostile repositories" in
+docs/reference.md. Every git call has a timeout (`gitio.GIT_TIMEOUT`); a timeout is "unreadable", never "no
+match". Output is capped.
+
+Secret-bearing paths (`sensitive.py`, the same list the headless assessment denies to its own tools) are never
+searched, shown or listed, nor is `security/.cache`; a line where `secrets.json` records a finding is masked
+in `show` and not searched by `grep`. The output says how many files or lines were withheld, never which
+content.
 
 Three outcomes a caller must not confuse, each with its own exit code: a match (0) or no match (1); a request
 refused, or a repository or ref that could not be read (2); and git itself could not run (4: not found, not
@@ -12,12 +22,13 @@ first says anything about the code.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
-from . import config
-from .gitio import GitError, branch_ref, git, git_bytes, git_env, pick_branches
+from . import config, sensitive
+from .gitio import GIT_TIMEOUT, GitError, branch_ref, git, git_bytes, git_env, pick_branches
 
 MAX_LINES = 400
 MAX_LINE_CHARS = 400
@@ -31,6 +42,9 @@ EXIT_UNREADABLE = 2
 EXIT_GIT_UNUSABLE = 4
 GIT_HINT = "git not usable (macOS xcrun shim or sandbox?)"
 PROBE_TIMEOUT = 30
+CACHE = "security/.cache"
+CACHE_PARTS = ("security", ".cache")
+SECRETS_JSON = "secrets.json"
 
 
 class CodeError(ValueError):
@@ -91,12 +105,17 @@ def _ref(project, branch: str) -> str:
 
 def _path(path: str) -> str:
     """A repository-relative path without `..`, pathspec magic or the evidence cache."""
-    p = PurePosixPath(path.strip())
-    if not path.strip() or p.is_absolute() or ".." in p.parts or path.startswith(":"):
+    text = path.strip()
+    p = PurePosixPath(text)
+    if not text or p.is_absolute() or ".." in p.parts or text.startswith(":"):
         raise CodeError(f"not a repository-relative path: {path!r}")
-    if p.parts[:2] == ("security", ".cache"):
+    if _in_cache(p.as_posix()):
         raise CodeError("security/.cache is never read")
     return p.as_posix()
+
+
+def _in_cache(name: str) -> bool:
+    return PurePosixPath(name).parts[:2] == CACHE_PARTS
 
 
 def _cap(lines: list[str], what: str) -> list[str]:
@@ -106,27 +125,130 @@ def _cap(lines: list[str], what: str) -> list[str]:
     return out
 
 
-def grep(project, ref: str, pattern: str, paths: list[str], ignore_case: bool = False) -> list[str]:
-    args = [*SAFE, "grep", "-n", "-I", "--no-textconv", "--no-color", "--full-name"]
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+class Withheld:
+    """What `code` keeps back in one project on one ref: secret-bearing paths (sensitive.py), security/.cache,
+    and lines where the secrets scan recorded a finding (from `secrets.json`, which holds no secret value: a
+    finding is a file, a line and the commit it was found in). A finding's line is masked where the file at
+    `ref` is the blob the finding was recorded in; where the file changed since and the value is still live
+    in a branch tip, the line may have moved, so the whole file is withheld."""
+
+    def __init__(self, project, ref: str, out: Path | None):
+        self.lines: dict[str, set[int]] = {}
+        self.files: set[str] = set()
+        for f in _findings(out, project.name):
+            path, line, commit = f["file"], f["line"], f["commit"]
+            here = _blob(project.path, ref, path)
+            if here is None:
+                continue
+            if here == _blob(project.path, commit, path) or not f.get("live_in_tree", True):
+                self.lines.setdefault(path, set()).add(line)
+            else:
+                self.files.add(path)
+
+    def path(self, name: str) -> bool:
+        return sensitive.is_sensitive(name) or _in_cache(name) or name in self.files
+
+    def line(self, name: str, number: int) -> bool:
+        return number in self.lines.get(name, ())
+
+
+def _findings(out: Path | None, project: str) -> list[dict]:
+    """The project's findings from `secrets.json` as (file, line, commit); [] when there is none."""
+    try:
+        doc = json.loads((Path(out) / SECRETS_JSON).read_text())
+    except (OSError, ValueError, TypeError):
+        return []
+    found = []
+    for f in (doc.get("findings") if isinstance(doc, dict) else None) or []:
+        if (isinstance(f, dict) and f.get("repo") == project and isinstance(f.get("file"), str)
+                and isinstance(f.get("line"), int) and isinstance(f.get("commit"), str)):
+            found.append(f)
+    return found
+
+
+def _blob(repo: Path, rev: str, path: str) -> str | None:
+    try:
+        return git(repo, *SAFE, "rev-parse", "--verify", "-q", f"{rev}:{path}").strip() or None
+    except (GitError, OSError):
+        return None
+
+
+def _note(files_n: int, lines_n: int, verb: str) -> list[str]:
+    parts = [_count(files_n, "file")] if files_n else []
+    parts += [_count(lines_n, "line")] if lines_n else []
+    if not parts:
+        return []
+    return [f"… withheld{verb}: {', '.join(parts)} ({sensitive.DESCRIPTION}, lines with a recorded "
+            "secrets finding); content not shown"]
+
+
+def _tree(project, ref: str, paths: list[str]) -> list[str]:
+    args = ["--literal-pathspecs", *SAFE, "ls-tree", "-r", "-z", "--name-only", "--full-tree", ref]
+    if paths:
+        args += ["--", *paths]
+    return [name for name in git(project.path, *args).split("\0") if name]
+
+
+def grep(project, ref: str, pattern: str, paths: list[str], ignore_case: bool = False,
+         out: Path | None = None) -> list[str]:
+    """Matches as `path:line:text`. Withheld files and lines are not searched (excluded or dropped before
+    anything is printed), so neither the output nor the exit code says whether they match; a last line says
+    how many were withheld."""
+    held = Withheld(project, ref, out)
+    paths = [_path(p) for p in paths]
+    in_scope = [name for name in _tree(project, ref, paths) if held.path(name) and not _in_cache(name)]
+    lines_held = sum(1 for name, numbers in held.lines.items() for _ in numbers
+                     if not held.path(name) and _under(name, paths))
+    args = [*SAFE, "grep", "-n", "-z", "-I", "--no-textconv", "--no-color", "--full-name"]
     if ignore_case:
         args.append("-i")
-    args += ["-E", "-e", pattern, ref, "--", *([_path(p) for p in paths] or ["."]), ":!security/.cache"]
+    args += ["-E", "-e", pattern, ref, "--", *[f":(literal){p}" for p in paths], *_excludes(in_scope)]
     try:
         proc = subprocess.run(["git", "-C", str(project.path), *args], capture_output=True, text=True,
-                              errors="replace", env=git_env())
+                              errors="replace", env=git_env(), timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise GitError(f"git grep timed out after {GIT_TIMEOUT}s") from None
     except OSError as exc:
         raise _classify(exc) from exc
+    note = _note(len(in_scope), lines_held, ", not searched")
     if proc.returncode == 1 and not proc.stderr.strip():      # no match
-        return []
+        return [], note
     if proc.returncode != 0:
         raise _classify(GitError(proc.stderr.strip() or "git grep failed"))
-    out = proc.stdout
     prefix = ref + ":"
-    return _cap([line[len(prefix):] if line.startswith(prefix) else line for line in out.splitlines()], "matches")
+    matches = []
+    for row in proc.stdout.splitlines():
+        name, _, rest = row.partition("\0")
+        number, _, text = rest.partition("\0")
+        name = name[len(prefix):] if name.startswith(prefix) else name
+        if held.path(name) or (number.isdigit() and held.line(name, int(number))):
+            continue
+        matches.append(f"{name}:{number}:{text}")
+    return _cap(matches, "matches"), note
 
 
-def show(project, ref: str, path: str, start: int = 1, end: int | None = None) -> list[str]:
-    spec = f"{ref}:{_path(path)}"
+def _under(name: str, paths: list[str]) -> bool:
+    return not paths or any(name == p or name.startswith(p.rstrip("/") + "/") or p == "." for p in paths)
+
+
+def _excludes(names: list[str]) -> list[str]:
+    """Exclude pathspecs: the cache, the secret-bearing patterns, and each withheld file by name. The patterns
+    cover what a later commit may add; the names cover what `held.files` adds beyond the patterns."""
+    return [f":(exclude,literal){CACHE}", *sensitive.git_excludes(),
+            *[f":(exclude,literal){name}" for name in names if not sensitive.is_sensitive(name)
+              and not _in_cache(name)]]
+
+
+def show(project, ref: str, path: str, start: int = 1, end: int | None = None,
+         out: Path | None = None) -> list[str]:
+    path = _path(path)
+    if sensitive.is_sensitive(path):
+        raise CodeError(f"{path!r} is withheld: {sensitive.DESCRIPTION} are never shown")
+    spec = f"{ref}:{path}"
     try:
         kind = git(project.path, *SAFE, "cat-file", "-t", spec).strip()
     except (GitError, OSError) as exc:
@@ -135,6 +257,10 @@ def show(project, ref: str, path: str, start: int = 1, end: int | None = None) -
         raise CodeError(f"{project.name}: no file {path!r} on {ref}") from None
     if kind != "blob":
         raise CodeError(f"{path!r} is a {kind}, not a file; use `code files`")
+    held = Withheld(project, ref, out)
+    if held.path(path):
+        raise CodeError(f"{path!r} is withheld: the secrets scan recorded a finding in it that is still live, "
+                        "and the file changed since, so the line cannot be masked; see SECRETS.md")
     data = git_bytes(project.path, *SAFE, "cat-file", "blob", spec)
     if b"\0" in data[:8192]:
         raise CodeError(f"{path!r} is binary")
@@ -142,15 +268,23 @@ def show(project, ref: str, path: str, start: int = 1, end: int | None = None) -
         data = data[:MAX_SHOW_BYTES]
     lines = data.decode("utf-8", errors="replace").splitlines()
     end = len(lines) if end is None else min(end, len(lines))
-    numbered = [f"{n}: {lines[n - 1]}" for n in range(max(start, 1), end + 1)]
-    return _cap(numbered, "lines")
+    numbered, masked = [], 0
+    for n in range(max(start, 1), end + 1):
+        if held.line(path, n):
+            numbered.append(f"{n}: [withheld: a secrets finding is recorded on this line]")
+            masked += 1
+        else:
+            numbered.append(f"{n}: {lines[n - 1]}")
+    return _cap(numbered, "lines") + (_note(0, masked, "") if masked else [])
 
 
 def files(project, ref: str, path: str | None) -> list[str]:
-    args = [*SAFE, "ls-tree", "-r", "--name-only", "--full-tree", ref]
-    if path:
-        args += ["--", _path(path)]
-    return _cap(git(project.path, *args).splitlines(), "files")
+    names = _tree(project, ref, [_path(path)] if path else [])
+    names = [name for name in names if not _in_cache(name)]          # never read, never counted
+    shown = [name for name in names if not sensitive.is_sensitive(name)]
+    held = len(names) - len(shown)
+    note = [f"… withheld: {_count(held, 'name')} ({sensitive.DESCRIPTION})"] if held else []
+    return _cap(shown, "files") + note
 
 
 def _parse_lines(text: str | None) -> tuple[int, int | None]:
@@ -172,12 +306,13 @@ def cli(args) -> int:
         where = f"{project.name}@{args.branch}"
         ref = _ref(project, args.branch)
         if args.code_command == "grep":
-            lines = grep(project, ref, args.pattern, args.path, args.ignore_case)
+            lines, note = grep(project, ref, args.pattern, args.path, args.ignore_case, cfg.out)
             if not lines:
-                print(f"no match in {where}")
+                print("\n".join([f"no match in {where}", *note]))
                 return EXIT_NO_MATCH
+            lines += note
         elif args.code_command == "show":
-            lines = show(project, ref, args.path, *_parse_lines(args.lines))
+            lines = show(project, ref, args.path, *_parse_lines(args.lines), out=cfg.out)
         else:
             lines = files(project, ref, args.path)
     except GitUnusable as exc:

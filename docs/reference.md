@@ -704,11 +704,25 @@ python3 plugin/scripts/sbom_audit_cli.py code files shop main src
 ```
 
 Only configured projects and existing branches (local or `origin/`, chosen like the scan does); paths
-must be repository-relative, `security/.cache/` is never read, and output is capped at 400 lines. It
-uses only git plumbing that reads objects (`grep` on a tree, `cat-file`, `ls-tree`, no textconv), with
-fsmonitor, hooks and the external diff command switched off by command-line config (see
-[Hostile repositories](#hostile-repositories)). It writes nothing, so the headless assessment may call
-it too. Three outcomes, never confused:
+must be repository-relative and are taken literally (no globs, no `:(…)` pathspec magic),
+`security/.cache/` is never read or listed, and output is capped at 400 lines. It uses only git plumbing
+that reads objects (`grep` on a tree, `cat-file`, `ls-tree`, no textconv), with fsmonitor, hooks and the
+external diff command switched off by command-line config (see
+[Hostile repositories](#hostile-repositories)); every git call has the 10-minute git timeout, and a
+timeout is exit 2, never "no match". It writes nothing, so the headless assessment may call it too.
+
+Secrets stay out of the output. Files that typically hold one (`.env*`, `*.pem`, `*.key`, `id_*`,
+`*.p12`, `*.pfx`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `credentials*`, anything under
+`.ssh/` or `.aws/`, `.docker/config.json`, case-insensitive; the same list the headless assessment denies
+to its own Read, Grep and Glob) are refused by `show`, never searched by `grep` and left out of `files`.
+Where `secrets.json` records a finding, `show` prints `N: [withheld: a secrets finding is recorded on this
+line]` instead of the line and `grep` does not search the line, so neither its output nor its exit code
+says whether the line matches. A finding's line number is the one of the commit it was found in: when
+the file on the branch changed since and the value is still live, the line may have moved, so `show`
+refuses the whole file and `grep` skips it. A last line such as `… withheld, not searched: 2 files,
+1 line (…); content not shown` says how much was held back, never which content. Only what the secrets
+scan found is masked: a secret it does not recognise in an ordinary source file is printed like any
+other line. Three outcomes, never confused:
 
 | Exit | Meaning | Message |
 |---|---|---|

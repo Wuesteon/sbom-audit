@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from sbomaudit import assess, cli, code
+from sbomaudit import assess, cli, code, gitio, sensitive
 from tests.helpers import _git, make_repo
 
 
@@ -84,6 +86,163 @@ class CodeTests(unittest.TestCase):
         call(self.out, "grep", "app", "main", "yaml")
         call(self.out, "show", "app", "main", "src/server.js")
         self.assertFalse(marker.exists())
+
+
+FAKE = "FAKE-not-a-real-token-0000"          # obviously fake; must never be printed
+
+
+class WithheldTests(unittest.TestCase):
+    """Secret-bearing paths (one list with the headless deny rules) and recorded secrets findings stay out."""
+
+    FILES = {
+        "src/app.js": "const a = 1;\nconst token = 'FAKE-not-a-real-token-0000';\nconst b = 2;\n",
+        "src/moved.js": "const token = 'FAKE-not-a-real-token-0000';\n",
+        ".env": f"TOKEN={FAKE}\n",
+        "deploy/.ENV.production": f"TOKEN={FAKE}\n",
+        "certs/server.pem": f"{FAKE}\n",
+        "home/.ssh/config": f"Host {FAKE}\n",
+        "ops/.docker/config.json": f"{{\"auth\": \"{FAKE}\"}}\n",
+        "credentials.json": f"{FAKE}\n",
+        "README.md": "hello\n",
+        "security/.cache/key": "fingerprint-key\n",
+    }
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = make_repo(self.root, "app", self.FILES)
+        self.out = self.root / "security"
+        self.out.mkdir()
+        first = _git(self.repo, "rev-parse", "HEAD").strip()
+        # moved.js: the secret moves one line down in a later commit; the finding points at the old commit.
+        (self.repo / "src" / "moved.js").write_text("// header\n" + self.FILES["src/moved.js"])
+        _git(self.repo, "commit", "-q", "-am", "move")
+        findings = [{"repo": "app", "file": "src/app.js", "line": 2, "commit": first, "live_in_tree": True},
+                    {"repo": "app", "file": "src/moved.js", "line": 1, "commit": first, "live_in_tree": True},
+                    {"repo": "other", "file": "README.md", "line": 1, "commit": first, "live_in_tree": True}]
+        (self.out / "secrets.json").write_text(json.dumps({"findings": findings}))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_shared_list_with_the_headless_deny_rules(self):
+        for rule in sensitive.deny_rules():
+            self.assertIn(rule, assess.DENY_RULES)
+        for path in (".env", "a/.env.local", "x/server.PEM", "k.key", "id_ed25519", "c.p12", "c.pfx", ".npmrc",
+                     ".pypirc", ".netrc", ".git-credentials", "credentials.json", "h/.ssh/known_hosts",
+                     ".aws/config", "ops/.docker/config.json"):
+            self.assertTrue(sensitive.is_sensitive(path), path)
+        for path in ("src/env.js", "README.md", "docker/config.json", "ssh/config", "keys.js"):
+            self.assertFalse(sensitive.is_sensitive(path), path)
+
+    def test_show_refuses_secret_bearing_paths(self):
+        for path in (".env", "deploy/.ENV.production", "certs/server.pem", "home/.ssh/config",
+                     "ops/.docker/config.json", "credentials.json"):
+            rc, out, err = call(self.out, "show", "app", "main", path)
+            self.assertEqual((rc, out), (code.EXIT_UNREADABLE, ""), path)
+            self.assertIn("withheld", err)
+            self.assertNotIn(FAKE, out + err)
+
+    def test_grep_never_searches_them_and_says_so(self):
+        rc, out, err = call(self.out, "grep", "app", "main", "FAKE-not")
+        self.assertNotIn(FAKE, out + err)
+        for path in (".env", ".ENV", "server.pem", ".ssh", ".docker", "credentials"):
+            self.assertNotIn(path, out + err)
+        self.assertIn("withheld, not searched: 7 files", out)
+        # the masked lines are not searched either, so the exit code does not reveal a match on them
+        self.assertEqual(rc, code.EXIT_NO_MATCH, out)
+        self.assertIn("no match", out)
+
+    def test_grep_withholds_a_recorded_finding_line_without_revealing_a_match(self):
+        rc, out, _ = call(self.out, "grep", "app", "main", "const")
+        self.assertEqual(rc, 0)
+        lines = out.splitlines()
+        self.assertIn("src/app.js:1:const a = 1;", lines)
+        self.assertIn("src/app.js:3:const b = 2;", lines)
+        self.assertFalse(any(line.startswith("src/app.js:2:") for line in lines), out)
+        self.assertNotIn("src/moved.js", "\n".join(l for l in lines if not l.startswith("…")))
+        self.assertIn("withheld, not searched: 7 files, 1 line", out)
+
+    def test_show_masks_a_recorded_finding_line(self):
+        rc, out, _ = call(self.out, "show", "app", "main", "src/app.js")
+        self.assertEqual(rc, 0)
+        self.assertNotIn(FAKE, out)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "1: const a = 1;")
+        self.assertTrue(lines[1].startswith("2: [withheld"), out)
+        self.assertEqual(lines[2], "3: const b = 2;")
+        self.assertIn("withheld: 1 line", lines[-1])
+
+    def test_show_withholds_a_changed_file_that_still_holds_a_live_finding(self):
+        rc, out, err = call(self.out, "show", "app", "main", "src/moved.js")
+        self.assertEqual((rc, out), (code.EXIT_UNREADABLE, ""))
+        self.assertIn("withheld", err)
+        self.assertNotIn(FAKE, err)
+
+    def test_files_omits_secret_bearing_paths_and_the_cache(self):
+        rc, out, _ = call(self.out, "files", "app", "main")
+        self.assertEqual(rc, 0)
+        names = out.splitlines()
+        self.assertIn("README.md", names)
+        self.assertIn("src/app.js", names)
+        for name in names:
+            self.assertFalse(sensitive.is_sensitive(name), name)
+            self.assertFalse(name.startswith("security/.cache"), name)
+        self.assertIn("withheld: 6 names", out)
+
+    def test_findings_of_another_project_change_nothing(self):
+        rc, out, _ = call(self.out, "show", "app", "main", "README.md")
+        self.assertEqual((rc, out), (0, "1: hello\n"))
+
+
+class PathspecTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = make_repo(self.root, "app", {"src/a.js": "needle\n", "lib/b.js": "needle\n",
+                                                 "security/.cache/raw": "needle\n"})
+        self.out = self.root / "security"
+        self.out.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_leading_whitespace_does_not_hide_pathspec_magic(self):
+        for path in (" :!src", "\t:(top)", " :/"):
+            rc, out, err = call(self.out, "grep", "app", "main", "needle", "--path", path)
+            self.assertEqual((rc, out), (code.EXIT_UNREADABLE, ""), path)
+            self.assertIn("not a repository-relative path", err)
+
+    def test_paths_are_literal_not_globs(self):
+        rc, out, _ = call(self.out, "grep", "app", "main", "needle", "--path", "*.js")
+        self.assertEqual(rc, code.EXIT_NO_MATCH, out)
+        rc, out, _ = call(self.out, "grep", "app", "main", "needle", "--path", "src")
+        self.assertEqual((rc, out.strip()), (0, "src/a.js:1:needle"))
+        rc, out, _ = call(self.out, "files", "app", "main", "*.js")
+        self.assertEqual(out.strip(), "")
+
+    def test_files_never_lists_the_cache(self):
+        rc, out, _ = call(self.out, "files", "app", "main")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("security/.cache", out)
+        rc, out, err = call(self.out, "files", "app", "main", "security")
+        self.assertNotIn("raw", out + err)
+
+    def test_grep_timeout_is_unreadable_not_no_match(self):
+        real = subprocess.run
+
+        def slow(cmd, *a, **kw):
+            if "grep" in cmd:
+                self.assertEqual(kw.get("timeout"), gitio.GIT_TIMEOUT)
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+            return real(cmd, *a, **kw)
+
+        with mock.patch.object(code.subprocess, "run", side_effect=slow):
+            rc, out, err = call(self.out, "grep", "app", "main", "needle")
+        self.assertEqual((rc, out), (code.EXIT_UNREADABLE, ""))
+        self.assertIn("repository or ref unreadable", err)
+        self.assertIn("timed out", err)
+        self.assertNotIn("no match", out + err)
 
 
 XCRUN_STDERR = ("xcode-select: Failed to locate 'git', requesting installation of command line developer tools.\n"

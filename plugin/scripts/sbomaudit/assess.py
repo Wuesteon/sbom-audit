@@ -17,7 +17,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import scheduler
+from . import scheduler, sensitive
 from .config import Config
 from .secrets.findings import KEY_FILE
 
@@ -29,10 +29,8 @@ SKILL_PROMPT = "/sbom-audit:assess --headless"
 CACHE_DENY_RULE = "Read(./.cache/**)"
 # Denied everywhere, whatever an allow rule says (deny wins in Claude Code): caches, dotenv files, private keys
 # and credential stores. `Read(//**/...)` is an absolute pattern; Read rules also govern Grep and Glob.
-DENY_RULES = (CACHE_DENY_RULE, "Read(//**/.cache/**)", "Read(//**/.env*)", "Read(//**/*.pem)", "Read(//**/*.key)",
-              "Read(//**/id_*)", "Read(//**/*.p12)", "Read(//**/*.pfx)", "Read(//**/.npmrc)", "Read(//**/.pypirc)",
-              "Read(//**/.netrc)", "Read(//**/.git-credentials)", "Read(//**/credentials*)", "Read(//**/.ssh/**)",
-              "Read(//**/.aws/**)", "Read(//**/.docker/config.json)")
+# The secret-bearing paths are one list with `code` (sensitive.py), which never searches or prints them.
+DENY_RULES = (CACHE_DENY_RULE, "Read(//**/.cache/**)", *sensitive.deny_rules())
 CACHE_SENTENCE = "Never read, search or list anything under .cache/."
 CACHE_MATERIAL_REASON = "proposal contained cache material"
 _MIN_MATERIAL_CHARS = 16
