@@ -2,6 +2,14 @@
 
 Nothing here checks anything out. The only write to an audited repo is
 `git fetch --prune origin`, which touches remote-tracking refs only.
+
+An audited repository is hostile input, its committed files and its local `.git/config` alike. Every git
+process this package starts (directly or through gitleaks) gets `git_env`: command-line-scope config that
+turns off fsmonitor, hooks, the external diff command and signature checks in `git log`, and forbids the
+`ext::` transport. `export_ref` also neutralises every filter driver (smudge, clean, process) that the
+repository's config defines, and readers of history pass `--no-textconv --no-ext-diff`. What still comes
+from the repository's config: the transport settings of `git fetch` (`core.sshCommand`, credential
+helpers, `core.askPass`, proxies), which a fetch needs to work.
 """
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 _CREDENTIALS_RE = re.compile(r"//[^/@\s]+@")
+GIT_TIMEOUT = 600
 
 
 class GitError(RuntimeError):
@@ -22,6 +31,47 @@ class GitError(RuntimeError):
 def scrub_credentials(text: str) -> str:
     """Drop `user:pass@` from every URL quoted in a git message."""
     return _CREDENTIALS_RE.sub("//***@", text)
+
+
+# Command-line-scope config for every git process: repository config cannot make a read run a program.
+HARDENING = (
+    ("core.fsmonitor", "false"),
+    ("core.hooksPath", "/dev/null"),
+    ("diff.external", ""),
+    ("log.showSignature", "false"),
+    ("protocol.ext.allow", "never"),
+)
+_FILTER_KEYS = ("smudge", "clean", "process")
+
+
+def git_env(env: Mapping[str, str] | None = None,
+            extra: tuple[tuple[str, str], ...] = ()) -> dict[str, str]:
+    """`env` (default `os.environ`) plus `HARDENING` and `extra` as `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`,
+    appended after any config the caller already passes that way. Inherited by every git child process,
+    including the `git log` gitleaks starts."""
+    result = dict(os.environ if env is None else env)
+    try:
+        start = max(int(result.get("GIT_CONFIG_COUNT") or 0), 0)
+    except ValueError:
+        start = 0
+    pairs = (*HARDENING, *extra)
+    for i, (key, value) in enumerate(pairs, start):
+        result[f"GIT_CONFIG_KEY_{i}"] = key
+        result[f"GIT_CONFIG_VALUE_{i}"] = value
+    result["GIT_CONFIG_COUNT"] = str(start + len(pairs))
+    return result
+
+
+def _filter_overrides(repo: Path) -> tuple[tuple[str, str], ...]:
+    """Empty every filter driver any config scope defines (an empty command passes content through)."""
+    proc = subprocess.run(["git", "-C", str(repo), "config", "--name-only", "--get-regexp",
+                           r"^filter\..+\.(smudge|clean|process|required)$"],
+                          capture_output=True, text=True, errors="replace", env=git_env(), timeout=GIT_TIMEOUT)
+    drivers = {line.rsplit(".", 1)[0] for line in proc.stdout.splitlines() if line.startswith("filter.")}
+    pairs: list[tuple[str, str]] = []
+    for driver in sorted(drivers):
+        pairs += [(f"{driver}.{key}", "") for key in _FILTER_KEYS] + [(f"{driver}.required", "false")]
+    return tuple(pairs)
 
 
 def net_env(env: Mapping[str, str] = os.environ) -> dict[str, str]:
@@ -37,8 +87,11 @@ def net_env(env: Mapping[str, str] = os.environ) -> dict[str, str]:
     return result
 
 
-def git(repo: Path, *args: str, env: Mapping[str, str] | None = None) -> str:
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env)
+def git(repo: Path, *args: str, env: Mapping[str, str] | None = None, harden: bool = True) -> str:
+    """stdout of `git -C repo <args>`; GitError on failure. `harden=False` only for reading the
+    repository's own config as it is (the pre-commit guard)."""
+    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                          env=git_env(env) if harden else env)
     if proc.returncode != 0:
         raise GitError(proc.stderr.strip() or f"git {' '.join(args)} failed")
     return proc.stdout
@@ -46,7 +99,7 @@ def git(repo: Path, *args: str, env: Mapping[str, str] | None = None) -> str:
 
 def git_bytes(repo: Path, *args: str) -> bytes:
     """Like `git`, but returns raw stdout bytes (for file content that may not be UTF-8)."""
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=git_env())
     if proc.returncode != 0:
         stderr = proc.stderr.decode(errors="replace").strip()
         raise GitError(stderr or f"git {' '.join(args)} failed")
@@ -154,11 +207,12 @@ def list_tags(repo: Path, pattern: str) -> list[dict]:
 
 
 def export_ref(repo: Path, ref: str, dest: Path) -> None:
-    """Write the tree at `ref` into `dest`, leaving out `security/`."""
+    """Write the tree at `ref` into `dest`, leaving out `security/`. Filter drivers from the repository's
+    config do not run (`git archive` would otherwise apply smudge and process filters)."""
     dest.mkdir(parents=True, exist_ok=True)
     archive = subprocess.Popen(
         ["git", "-C", str(repo), "archive", "--format=tar", ref, "--", ".", ":!security"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_env(extra=_filter_overrides(repo)),
     )
     untar = subprocess.run(["tar", "-x", "-C", str(dest)], stdin=archive.stdout,
                            capture_output=True)

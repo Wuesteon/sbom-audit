@@ -130,7 +130,7 @@ class ScanRepoTests(unittest.TestCase):
 
     def _assert_argv(self, argv, kwargs, ignore_file=None):
         for part in ("git", "--no-banner", "--no-color", "-c", str(eng.RULES_PATH), "-f", "json", "-r",
-                     "--exit-code", "1", "--log-opts", "--all", str(self.repo)):
+                     "--exit-code", "1", "--log-opts", str(self.repo)):
             self.assertIn(part, argv)
         self.assertEqual(argv[0], "/x/gitleaks")
         self.assertEqual(argv[argv.index("-f") + 1], "json")
@@ -142,6 +142,9 @@ class ScanRepoTests(unittest.TestCase):
             self.assertNotIn("-i", argv)
         else:
             self.assertEqual(argv[argv.index("-i") + 1], str(ignore_file))
+        # no textconv or external diff driver from the repository runs inside gitleaks' `git log -p`
+        self.assertEqual(argv[argv.index("--log-opts") + 1], "--no-textconv --no-ext-diff --all")
+        self.assertEqual(kwargs["env"].get("GIT_CONFIG_KEY_1"), "core.hooksPath")
         self.assertEqual(Path(kwargs["cwd"]), self.raw_dir)
         self.assertTrue(kwargs.get("capture_output"))
         self.assertEqual(kwargs.get("umask"), 0o077)
@@ -355,6 +358,19 @@ class RealGitleaksTests(unittest.TestCase):
         self.assertIn(fx.BRANCH_ONLY, fx.REPOS["beta-api"])
         self.assertIn("supabase-jwt-secret-example-name", fx.REPOS["beta-api"])  # ...but a key name does not hide
         self.assertEqual(modes, [0o600] * len(fx.REPOS))
+
+    def test_real_gitleaks_runs_no_diff_driver_from_repository_config(self):
+        repo = self.root / "alpha-app"
+        baseline = self._scan(repo, eng.log_opts_full())
+        self.assertTrue(baseline)
+        marker = Path(self._tmp.name) / "DRIVER_RAN"
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "attributes").write_text("* diff=evil\n")
+        _git(repo, "config", "diff.evil.textconv", f"sh -c 'touch {marker}; true' --")
+        _git(repo, "config", "diff.external", f"sh -c 'touch {marker}; true' --")
+        rows = self._scan(repo, eng.log_opts_full())
+        self.assertFalse(marker.exists(), "a repository diff driver ran")
+        self.assertEqual(len(rows), len(baseline))
 
     def test_real_gitleaks_vanished_tip_is_failure_not_clean(self):
         with self.assertRaises(EngineError) as ctx:

@@ -126,6 +126,56 @@ class GitioTests(unittest.TestCase):
         self.assertEqual(_git(repo, "rev-parse", "HEAD"), head_before)
         self.assertEqual(_git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip(), "main")
 
+    def test_git_env_carries_hardening_config(self):
+        env = gitio.git_env({"PATH": "/bin"})
+        count = int(env["GIT_CONFIG_COUNT"])
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)}
+        self.assertEqual(pairs["core.fsmonitor"], "false")
+        self.assertEqual(pairs["core.hooksPath"], "/dev/null")
+        self.assertEqual(pairs["diff.external"], "")
+        self.assertEqual(pairs["log.showSignature"], "false")
+        self.assertEqual(env["PATH"], "/bin")
+        # an existing GIT_CONFIG_COUNT from the caller is kept and appended to
+        env = gitio.git_env({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
+                             "GIT_CONFIG_VALUE_0": "x"})
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "user.name")
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "core.fsmonitor")
+        # net_env composes with it
+        self.assertIn("GIT_CONFIG_COUNT", gitio.git_env(gitio.net_env({})))
+
+    def test_every_git_call_gets_the_hardening_env(self):
+        repo = make_repo(self.tmp, "r", {"a": "1"})
+        seen = []
+
+        def run(args, **kwargs):
+            seen.append(kwargs)
+            return subprocess.CompletedProcess(args, 0, stdout="" if kwargs.get("text") else b"", stderr="")
+
+        with mock.patch.object(gitio.subprocess, "run", run):
+            gitio.git(repo, "status")
+            gitio.git_bytes(repo, "status")
+            gitio.fetch_origin(repo)
+        self.assertEqual(len(seen), 3)
+        for kwargs in seen:
+            self.assertEqual(kwargs["env"].get("GIT_CONFIG_KEY_1"), "core.hooksPath")
+
+    def test_export_runs_no_filter_driver_from_repository_config(self):
+        repo = make_repo(self.tmp, "r", {".gitattributes": "a.txt filter=evil\n", "a.txt": "plain\n"})
+        marker = self.tmp / "SMUDGED"
+        for key in ("smudge", "clean"):
+            _git(repo, "config", f"filter.evil.{key}", f"sh -c 'touch {marker}; echo replaced'")
+        _git(repo, "config", "filter.evil.required", "true")
+        dest = self.tmp / "export"
+        gitio.export_ref(repo, "main", dest)
+        self.assertFalse(marker.exists())
+        self.assertEqual((dest / "a.txt").read_text(), "plain\n")
+        _git(repo, "config", "--unset-all", "filter.evil.smudge")
+        _git(repo, "config", "filter.evil.process", f"sh -c 'touch {marker}; exit 1'")
+        dest2 = self.tmp / "export2"
+        gitio.export_ref(repo, "main", dest2)
+        self.assertFalse(marker.exists())
+        self.assertEqual((dest2 / "a.txt").read_text(), "plain\n")
+
     def test_git_raises_on_failure(self):
         repo = make_repo(self.tmp, "r", {"a": "1"})
         with self.assertRaises(gitio.GitError):

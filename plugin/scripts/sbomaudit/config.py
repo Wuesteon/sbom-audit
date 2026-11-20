@@ -532,8 +532,12 @@ def commit_refusal(out: Path, digest: str | None) -> str | None:
 
 
 def remote_url(repo: Path) -> str | None:
-    proc = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
-                          text=True, capture_output=True)
+    from .gitio import GIT_TIMEOUT, git_env
+    try:
+        proc = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
+                              text=True, capture_output=True, env=git_env(), timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None
     url = proc.stdout.strip()
     return url if proc.returncode == 0 and url else None
 

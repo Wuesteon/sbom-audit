@@ -14,7 +14,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sbomaudit import preflight
+from sbomaudit import gitio, preflight
 from sbomaudit.errors import EngineError
 
 RULES_PATH = Path(__file__).resolve().parents[3] / "secrets" / "gitleaks.toml"   # parents[3] = plugin root
@@ -22,6 +22,8 @@ BETTERLEAKS_ENV = {"BETTERLEAKS_VALIDATE": "false", "BETTERLEAKS_ANALYZE": "fals
 CANDIDATES = (("gitleaks", "8."), ("betterleaks", "1."), ("betterleaks-v1", "1."))
 VERSION_TIMEOUT = 30
 SCAN_TIMEOUT = 600
+# always in front of the caller's log options: no textconv or external diff driver from the repository
+SAFE_LOG_OPTS = "--no-textconv --no-ext-diff"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # zerolog console timestamps: "10:08PM " or RFC 3339 "2026-11-07T10:08:00Z "
 TIMESTAMP = re.compile(r"^(?:\d{1,2}:\d{2}(?::\d{2})?\s?[AP]M|\d{4}-\d{2}-\d{2}T\S+)\s+")
@@ -115,11 +117,12 @@ def scan_repo(engine: Engine, repo: Path, *, log_opts: str, ignore_file: Path | 
     try:
         os.chmod(raw, 0o600)
         argv = [engine.binary, "git", "--no-banner", "--no-color", "-c", str(RULES_PATH),
-                "-f", "json", "-r", str(raw), "--exit-code", "1", "--log-opts", log_opts]
+                "-f", "json", "-r", str(raw), "--exit-code", "1", "--log-opts", f"{SAFE_LOG_OPTS} {log_opts}"]
         if ignore_file is not None:
             argv += ["-i", str(ignore_file)]
         argv.append(str(repo))
-        env = {**os.environ, **engine.env} if engine.env else None
+        # gitleaks' own `git log` inherits the hardening config (no fsmonitor, hooks, external diff)
+        env = gitio.git_env({**os.environ, **engine.env})
         try:
             # cwd=raw_dir: gitleaks' `-i` default "." must never resolve to an audited repo's ignore file.
             # umask 077: gitleaks replaces the report file, which would otherwise come out 0644.

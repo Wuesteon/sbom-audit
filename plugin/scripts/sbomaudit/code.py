@@ -12,7 +12,7 @@ import sys
 from pathlib import PurePosixPath
 
 from . import config
-from .gitio import GitError, branch_ref, git, git_bytes, pick_branches
+from .gitio import GitError, branch_ref, git, git_bytes, git_env, pick_branches
 
 MAX_LINES = 400
 MAX_LINE_CHARS = 400
@@ -62,7 +62,7 @@ def grep(project, ref: str, pattern: str, paths: list[str], ignore_case: bool = 
         args.append("-i")
     args += ["-E", "-e", pattern, ref, "--", *([_path(p) for p in paths] or ["."]), ":!security/.cache"]
     proc = subprocess.run(["git", "-C", str(project.path), *args], capture_output=True, text=True,
-                          errors="replace")
+                          errors="replace", env=git_env())
     if proc.returncode == 1 and not proc.stderr.strip():      # no match
         return []
     if proc.returncode != 0:
