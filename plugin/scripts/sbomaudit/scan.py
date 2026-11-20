@@ -225,6 +225,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
         dev_only = readers.dev_only_deps(src, project.ignore)
         gradle_unknown = readers.gradle_unknown_direct(src, project.ignore)
         extra = readers.read_tree(src, project.ignore, remote=project.remote)
+        inv.manifests = readers.manifest_files(src, project.ignore)
         imported = _read_import(cfg, project, branch, src, inv)
         inv.coverage_gaps = gaps.detect(src)       # submodules, unread C/C++/firmware manifests, C sources
     for image in [c for c in extra if c.kind == "image"]:

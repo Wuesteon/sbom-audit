@@ -102,6 +102,41 @@ advisory is always a `hit` (evidence suffixed "(from audit.json)" when the inven
 differently), never `absent`. Verdicts are per version,
 so a branch holding two versions of one package shows both. Given a bare package name instead of an id, it prints where that package is used, like
 `lookup`, without a verdict.
+
+*Unknown instead of absent.* Advisory ecosystems are compared in OSV spelling: the inventory's purl
+types map to `SwiftURL` (purl `swift`, matched on the repository path such as
+`github.com/apple/swift-nio`), `GitHub Actions` (`github`), `crates.io` (`cargo`), `RubyGems` (`gem`),
+`Packagist` (`composer`), `ConanCenter` (`conan`), `Go` (`golang`); `cocoapods`, `deno` and `jsr` have no
+OSV ecosystem. For each affected package that is not in a branch's inventory, the verdict for that
+branch is `unknown` (with the reason as evidence), never `absent`, when one of these holds:
+
+1. the branch's last audit was incomplete (above);
+2. the advisory is against the Go runtime (`Go` package `stdlib` or `toolchain`) and the branch has a Go
+   runtime row (a Dockerfile `golang` image, a `.go-version`, a go.mod `go`/`toolchain` line, which is
+   only a build minimum), a Go package or a `go.mod`: osv-scanner does not check the Go toolchain, so
+   compare the version shown with the advisory's fixed versions by hand;
+3. the advisory's ecosystem is one the scan does not inventory, i.e. anything other than `npm`, `PyPI`,
+   `Go`, `RubyGems`, `crates.io`, `Maven`, `NuGet`, `Hex`, `Pub`, `Packagist`, `SwiftURL`,
+   `GitHub Actions`, `ConanCenter` and `Hackage` (for example `CRAN`, `Linux`, `Android`); an
+   operating-system ecosystem (`Debian`, `Ubuntu`, `Alpine`, `Red Hat`, `Wolfi`, …) is `unknown` only
+   on a branch that uses a container image, whose contents the scan does not list, and `absent` on one
+   without;
+4. the branch's inventory holds no package at all although manifests or lockfiles are present, or the
+   inventory was written before manifests were recorded (`manifests` missing in `inventory.json`) and
+   holds no package;
+5. the branch has a manifest or lockfile of the advisory's ecosystem (`manifests` in `inventory.json`,
+   e.g. `poetry.lock` for PyPI) but not one package of that ecosystem was inventoried.
+
+Otherwise the branch is `absent`, once per branch and only when it has no other verdict. Each branch
+inventory records `manifests` (OSV ecosystem → manifest and lockfile paths, at most 20 per ecosystem,
+walked like the readers, without `node_modules`, vendored and ignored folders).
+
+`incident --vex` writes `not_affected` / `component_not_present` only for a project whose every verdict
+is `absent`, only for affected packages of an inventoried ecosystem (never for `Go` `stdlib`/`toolchain`),
+and one statement per examined branch: the product is `<project purl>@<branch>` (a `/` in the branch or
+release label written `%2F`) and the impact statement names the branch and the commit, so the statement
+does not cover branches or commits the scan did not examine. Everything it leaves out it prints as
+`not recorded: <reason>`.
 `/sbom-audit:lookup <name>` answers the plain "who uses X" without an advisory; names
 may be globs (`expo-*`), images (`nginx:alpine`) or runtimes (`nodejs`). A Maven package answers to
 its OSV name `group:artifact` (`org.postgresql:postgresql`, as listed) and to the bare artifact
@@ -401,7 +436,25 @@ fork.
   `[schedule] assess = true`. Then the run also starts a headless, read-only assessment
   (`claude -p` with `SBOM_AUDIT_READ_ONLY=1`, a fixed tool list and
   `--max-budget-usd assess_budget_usd`, default 5.0) that can only write
-  `reports/<date>-assessment-proposal.md`. The proposal is never applied automatically:
+  `reports/<date>-assessment-proposal.md`. Its permissions (`assess.command`):
+  - tools `Read`, `Grep`, `Glob`, `WebFetch`, `Bash` (`--tools`), `--permission-mode dontAsk`,
+    `--strict-mcp-config`; no Write, Edit, Agent or MCP, and no WebSearch;
+  - Read (which also governs Grep and Glob) only inside `security/`; project code only through the
+    read-only `code` subcommand, besides `status`, `lookup` and `incident` (`Bash(python3 <cli>
+    <subcommand>:*)`);
+  - WebFetch only to `osv.dev`, `api.osv.dev`, `api.github.com`, `nvd.nist.gov`, `services.nvd.nist.gov`,
+    `www.cisa.gov`, `endoflife.date`, `security-tracker.debian.org` and `ubuntu.com`; not `github.com`
+    (repository pages anyone can write to) and no package registries;
+  - denied everywhere (`--disallowedTools`): `Read(./.cache/**)`, `Read(//**/.cache/**)`,
+    `Read(//**/.env*)`, `Read(//**/*.pem)`, `Read(//**/*.key)`, `Read(//**/id_*)`, `Read(//**/*.p12)`,
+    `Read(//**/*.pfx)`, `Read(//**/.npmrc)`, `Read(//**/.pypirc)`, `Read(//**/.netrc)`,
+    `Read(//**/.git-credentials)`, `Read(//**/credentials*)`, `Read(//**/.ssh/**)`, `Read(//**/.aws/**)`,
+    `Read(//**/.docker/config.json)`.
+
+  WebSearch is left out because nobody watches the headless run: a search result can lead to any page
+  and the query itself can carry text out, while the advisory databases above answer every id the
+  steps need. The 30-day web sweep for new advisories (assess step 2) therefore happens only in an
+  interactive `/sbom-audit:assess`; the headless proposal lists it as still to do. The proposal is never applied automatically:
   `STATUS.md` lists it as `proposal waiting: reports/<date>-assessment-proposal.md`, and you
   review and apply it with `/sbom-audit:assess`. `log.md` records it as
   `<time> | assess-proposal | cost <usd> | reports/<date>-assessment-proposal.md`.
@@ -948,8 +1001,9 @@ outbound hosts, all public databases except your own git remotes, servers, Anthr
 `HOSTS.md` and `hosts.json` contain IP addresses, open ports and user names of your servers, so the private evidence repository rule applies to them in particular.
 
 gitleaks runs locally and makes no network calls: no verification of found credentials, no
-telemetry. During the assessment Claude performs web searches for incidents of the last 30
-days; the queries name the runtimes and frameworks in your inventory, not your projects.
+telemetry. During an interactive assessment Claude performs web searches for incidents of the last 30
+days; the queries name the runtimes and frameworks in your inventory, not your projects. The headless
+assessment makes no web search and fetches only from the hosts listed under [Scheduler](#scheduler).
 When Claude runs `assess`, `incident` or `lookup` it may also use its own WebSearch/WebFetch
 for advisory pages; those requests go through Claude Code, not the plugin, and carry only
 advisory ids and package names.

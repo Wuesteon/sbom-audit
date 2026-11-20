@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import subprocess
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -194,11 +195,17 @@ def versionless(purl: str) -> str:
 
 
 def split_product(product: str) -> tuple[str, str | None]:
-    """'pkg:github/o/r@dev' -> ('pkg:github/o/r', 'dev'); no suffix -> (purl, None)."""
+    """'pkg:github/o/r@dev' -> ('pkg:github/o/r', 'dev'); no suffix -> (purl, None). The branch is
+    percent-decoded: `@tags%2Fv1` is the release label `tags/v1` (`product_for_branch`)."""
     head, sep, tail = product.rpartition("@")
     if sep and "/" not in tail:
-        return head, tail
+        return head, urllib.parse.unquote(tail)
     return product, None
+
+
+def product_for_branch(project_purl: str, branch: str) -> str:
+    """The product id of one branch: `<project purl>@<branch>`, the branch percent-encoded ("/" -> %2F)."""
+    return f"{project_purl}@{urllib.parse.quote(branch, safe='')}"
 
 
 def _matches(st: Statement, f: Finding, vuln: dict, purl_of: dict[str, str] | None) -> bool:

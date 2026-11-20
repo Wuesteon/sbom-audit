@@ -203,7 +203,8 @@ class MavenLookupTests(unittest.TestCase):
 
     def test_incident_hits_maven_and_never_answers_absent(self):
         invs = [BranchInventory(project="dt", branch="main", ref="main", commit="x", components=[PG_OLD]),
-                BranchInventory(project="other", branch="main", ref="main", commit="x", components=[])]
+                BranchInventory(project="other", branch="main", ref="main", commit="x", components=[],
+                                manifests={})]       # scanned, no manifest: absent, not unknown
         findings = [Finding("dt", "main", PG_OLD, [_sv("GHSA-24rp-q3w6-vc56", "CRITICAL", 10.0)])]
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._cfg(tmp, invs, findings)

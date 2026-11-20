@@ -120,6 +120,19 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual([f.branch for f in kept], ["main"])
         self.assertEqual([s.finding.branch for s in suppressed], ["dev"])
 
+    def test_apply_branch_suffix_with_slash_is_percent_encoded(self):
+        """A branch or release label with "/" (`tags/v1`, `feature/x`) is written percent-encoded after `@`."""
+        self.assertEqual(vex.split_product(f"{PURL}@tags%2Fv1.0"), (PURL, "tags/v1.0"))
+        self.assertEqual(vex.product_for_branch(PURL, "feature/x"), f"{PURL}@feature%2Fx")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            vex.add(out, "app", vex.product_for_branch(PURL, "tags/v1"), "CVE-2021-23337", "fixed")
+            statements = vex.load_all(out)
+        kept, suppressed = vex.apply([finding("CVE-2021-23337", branch="main"),
+                                      finding("CVE-2021-23337", branch="tags/v1")], statements)
+        self.assertEqual([f.branch for f in kept], ["main"])
+        self.assertEqual([s.finding.branch for s in suppressed], ["tags/v1"])
+
     def test_apply_subcomponent_matches_with_or_without_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
