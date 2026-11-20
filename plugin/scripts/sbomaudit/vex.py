@@ -135,7 +135,12 @@ def load_all(out: Path) -> list[Statement]:
 
 # --------------------------------------------------------------------------- write
 
-def default_author() -> str:
+NO_AUTHOR = ("no author: pass --author <email or name> (git user.email and user.name are not set); "
+             "a VEX decision names the person who made it")
+
+
+def default_author() -> str | None:
+    """git `user.email`, else `user.name`; None when neither is set (never a made-up author)."""
     for key in ("user.email", "user.name"):
         try:
             value = subprocess.run(["git", "config", "--get", key], capture_output=True, text=True).stdout.strip()
@@ -143,7 +148,15 @@ def default_author() -> str:
             value = ""
         if value:
             return value
-    return "sbom-audit"
+    return None
+
+
+def resolve_author(author: str | None) -> str:
+    """`author`, else the git identity; ValueError (NO_AUTHOR) when there is neither."""
+    value = (author or "").strip() or default_author()
+    if not value:
+        raise ValueError(NO_AUTHOR)
+    return value
 
 
 def add(out: Path, project: str, project_purl: str, vuln: str, status: str,
@@ -156,6 +169,7 @@ def add(out: Path, project: str, project_purl: str, vuln: str, status: str,
         raise ValueError(f"justification must be one of {', '.join(JUSTIFICATIONS)}; got {justification!r}")
     if status == "not_affected" and not justification:
         raise ValueError("not_affected requires --justification (one of: " + ", ".join(JUSTIFICATIONS) + ")")
+    author = resolve_author(author)          # before anything is written
     file = path(out, project)
     now = _now()
     if file.exists():
@@ -164,7 +178,7 @@ def add(out: Path, project: str, project_purl: str, vuln: str, status: str,
         doc["last_updated"] = now
     else:
         doc = {"@context": CONTEXT, "@id": f"{ID_PREFIX}/{project}/{uuid.uuid4()}",
-               "author": author or default_author(), "timestamp": now, "last_updated": now,
+               "author": author, "timestamp": now, "last_updated": now,
                "version": 1, "tooling": f"sbom-audit/{__version__}", "statements": []}
     product: dict = {"@id": project_purl}
     if subcomponent:

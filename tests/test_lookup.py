@@ -232,6 +232,25 @@ class IncidentTests(unittest.TestCase):
             self.assertEqual([(s.project, s.vuln, s.status, s.justification, s.subcomponents) for s in sts],
                              [("beta", "CVE-2026-1", "not_affected", "component_not_present", ["pkg:npm/lodash"])])
 
+    def test_incident_vex_without_any_author_refuses_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = write_state(Path(tmp))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 unittest.mock.patch.object(vex, "default_author", return_value=None), \
+                 unittest.mock.patch.object(lookup, "http_get_json", stub_fetch({OSV_URL: OSV_RECORD})):
+                rc = cli.main(["--out", str(cfg.out), "incident", "CVE-2026-1", "--vex"])
+            self.assertEqual(rc, 2)
+            self.assertIn("--author", buf.getvalue())
+            self.assertFalse((cfg.out / "vex").exists())
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 unittest.mock.patch.object(vex, "default_author", return_value=None), \
+                 unittest.mock.patch.object(lookup, "http_get_json", stub_fetch({OSV_URL: OSV_RECORD})):
+                rc = cli.main(["--out", str(cfg.out), "incident", "CVE-2026-1", "--vex", "--author", "t@example.invalid"])
+            self.assertEqual(rc, 1)                                   # alpha is hit; beta's no-hit is recorded
+            self.assertEqual(json.loads((cfg.out / "vex" / "beta.openvex.json").read_text())["author"],
+                             "t@example.invalid")
+
     def test_incident_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = write_state(Path(tmp))

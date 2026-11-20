@@ -76,8 +76,8 @@ python3 $CLI vex add shop-web GHSA-35jh-r3h4-6jhm not_affected \
 python3 $CLI audit        # re-apply VEX to the existing SBOMs, no rescan
 ```
 
-`not_affected` needs a `--justification`. Without `--author` the author is your `git config user.email`,
-or `sbom-audit` when that is not set.
+`not_affected` needs a `--justification`. Without `--author` the author is your `git config user.email`
+(or `user.name`); when neither is set, `vex add` and `incident --vex` refuse and ask for `--author`.
 
 ## 6. Secrets
 

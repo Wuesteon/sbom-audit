@@ -581,7 +581,12 @@ def cli_incident(args) -> int:
     if getattr(args, "vex", False):
         for reason in vex_refusals(inc):
             print(f"not recorded: {reason}")
-        files = record_absent(config.load(out), inc, author=getattr(args, "author", None)) if absent else []
+        try:
+            author = vex.resolve_author(getattr(args, "author", None)) if absent else None
+        except ValueError as exc:
+            print(f"not recorded: {exc}")
+            return 2
+        files = record_absent(config.load(out), inc, author=author) if absent else []
         for f in files:
             print(f"wrote {f}")
     elif absent:

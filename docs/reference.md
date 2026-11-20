@@ -203,6 +203,10 @@ python3 plugin/scripts/sbom_audit_cli.py vex add billing-api GHSA-xxxx-yyyy-zzzz
   --impact "The parser is only used on trusted config files."
 ```
 
+The author of a VEX document is `--author`, else `git config user.email` (or `user.name`). With
+neither, `vex add` and `incident --vex` refuse (exit 2, nothing written) and ask for `--author`:
+a decision never carries a made-up author.
+
 Exit codes of `run`: 0 clean, 1 findings present, 2 a source failed (its section is empty,
 not clean; the report says so), 3 a VEX file is malformed (the run aborts naming the
 file), 4 a required tool is missing (checked before anything is written; `scan` needs
