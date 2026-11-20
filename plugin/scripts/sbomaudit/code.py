@@ -4,6 +4,11 @@ A verifier checks a claim against the code on the audited branch, never the work
 give it that without a general shell: only projects from the config, only branches that exist, only git
 plumbing that reads objects (`grep` on a tree, `cat-file`, `ls-tree`). Nothing is checked out, nothing runs
 from the repository (no textconv, no filters, no hooks), and nothing is written. Output is capped.
+
+Three outcomes a caller must not confuse, each with its own exit code: a match (0) or no match (1); a request
+refused, or a repository or ref that could not be read (2); and git itself could not run (4: not found, not
+executable, or failing before it reads any repository, as the macOS `xcrun` shim does in a sandbox). Only the
+first says anything about the code.
 """
 from __future__ import annotations
 
@@ -21,8 +26,53 @@ MAX_SHOW_BYTES = 512 * 1024
 SAFE = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=")
 
 
+EXIT_NO_MATCH = 1
+EXIT_UNREADABLE = 2
+EXIT_GIT_UNUSABLE = 4
+GIT_HINT = "git not usable (macOS xcrun shim or sandbox?)"
+PROBE_TIMEOUT = 30
+
+
 class CodeError(ValueError):
     pass
+
+
+class GitUnusable(RuntimeError):
+    """git could not run at all, so nothing about the code is known: neither a match nor no match."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"git could not run: {reason}; hint: {GIT_HINT}. Nothing was read; this is not "
+                         "\"no match\"")
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+
+
+def git_unusable_reason() -> str | None:
+    """None when `git --version` runs and answers like git; else why not (the first line of its stderr, or the
+    OS error). The probe reads no repository, so its failure is git itself, never the code or the ref."""
+    try:
+        proc = subprocess.run(["git", "--version"], capture_output=True, text=True, errors="replace",
+                              timeout=PROBE_TIMEOUT)
+    except FileNotFoundError:
+        return "git not found on PATH"
+    except PermissionError:
+        return "git is not executable"
+    except OSError as exc:
+        return f"git could not start ({exc.strerror or type(exc).__name__})"
+    except subprocess.TimeoutExpired:
+        return f"`git --version` did not answer within {PROBE_TIMEOUT}s"
+    if proc.returncode != 0 or not proc.stdout.startswith("git version"):
+        return _first_line(proc.stderr) or f"`git --version` exited {proc.returncode}"
+    return None
+
+
+def _classify(exc: BaseException) -> BaseException:
+    """A failed git call: GitUnusable when git itself does not run, else the error unchanged."""
+    reason = git_unusable_reason()
+    return GitUnusable(reason) if reason else exc
 
 
 def _project(cfg, name: str):
@@ -61,12 +111,15 @@ def grep(project, ref: str, pattern: str, paths: list[str], ignore_case: bool = 
     if ignore_case:
         args.append("-i")
     args += ["-E", "-e", pattern, ref, "--", *([_path(p) for p in paths] or ["."]), ":!security/.cache"]
-    proc = subprocess.run(["git", "-C", str(project.path), *args], capture_output=True, text=True,
-                          errors="replace")
+    try:
+        proc = subprocess.run(["git", "-C", str(project.path), *args], capture_output=True, text=True,
+                              errors="replace")
+    except OSError as exc:
+        raise _classify(exc) from exc
     if proc.returncode == 1 and not proc.stderr.strip():      # no match
         return []
     if proc.returncode != 0:
-        raise GitError(proc.stderr.strip() or "git grep failed")
+        raise _classify(GitError(proc.stderr.strip() or "git grep failed"))
     out = proc.stdout
     prefix = ref + ":"
     return _cap([line[len(prefix):] if line.startswith(prefix) else line for line in out.splitlines()], "matches")
@@ -76,7 +129,9 @@ def show(project, ref: str, path: str, start: int = 1, end: int | None = None) -
     spec = f"{ref}:{_path(path)}"
     try:
         kind = git(project.path, *SAFE, "cat-file", "-t", spec).strip()
-    except GitError:
+    except (GitError, OSError) as exc:
+        if isinstance(failure := _classify(exc), GitUnusable):
+            raise failure from None
         raise CodeError(f"{project.name}: no file {path!r} on {ref}") from None
     if kind != "blob":
         raise CodeError(f"{path!r} is a {kind}, not a file; use `code files`")
@@ -109,21 +164,35 @@ def _parse_lines(text: str | None) -> tuple[int, int | None]:
 
 
 def cli(args) -> int:
+    """0 output (for `grep`: a match), 1 no match, 2 refused or repository/ref unreadable, 4 git could not run."""
+    where = args.project
     try:
         cfg = config.load(args.out)
         project = _project(cfg, args.project)
+        where = f"{project.name}@{args.branch}"
         ref = _ref(project, args.branch)
         if args.code_command == "grep":
             lines = grep(project, ref, args.pattern, args.path, args.ignore_case)
             if not lines:
-                print(f"no match in {project.name}@{args.branch}")
-                return 1
+                print(f"no match in {where}")
+                return EXIT_NO_MATCH
         elif args.code_command == "show":
             lines = show(project, ref, args.path, *_parse_lines(args.lines))
         else:
             lines = files(project, ref, args.path)
-    except (CodeError, GitError) as exc:
+    except GitUnusable as exc:
         print(f"code: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_GIT_UNUSABLE
+    except (GitError, OSError) as exc:
+        failure = _classify(exc)
+        if isinstance(failure, GitUnusable):
+            print(f"code: {failure}", file=sys.stderr)
+            return EXIT_GIT_UNUSABLE
+        reason = _first_line(str(exc)) or type(exc).__name__
+        print(f"code: repository or ref unreadable: {where}: {reason}", file=sys.stderr)
+        return EXIT_UNREADABLE
+    except CodeError as exc:
+        print(f"code: {exc}", file=sys.stderr)
+        return EXIT_UNREADABLE
     print("\n".join(lines))
     return 0

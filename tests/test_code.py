@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from sbomaudit import assess, cli
+from sbomaudit import assess, cli, code
 from tests.helpers import _git, make_repo
 
 
@@ -82,6 +84,72 @@ class CodeTests(unittest.TestCase):
         call(self.out, "grep", "app", "main", "yaml")
         call(self.out, "show", "app", "main", "src/server.js")
         self.assertFalse(marker.exists())
+
+
+XCRUN_STDERR = ("xcode-select: Failed to locate 'git', requesting installation of command line developer tools.\n"
+                "couldn't create cache file '/var/folders/x/xcrun_db': Operation not permitted\n")
+
+
+class GitNotUsableTests(unittest.TestCase):
+    """`code` says when git itself could not run, apart from "no match" and from an unreadable repository."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = make_repo(self.root, "app", {"src/server.js": "yaml.load(input);\n"}, branches=["main"])
+        self.out = self.root / "security"
+        self.out.mkdir()
+        self.bin = self.root / "fakebin"
+        self.bin.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stub(self, body: str) -> None:
+        stub = self.bin / "git"
+        stub.write_text("#!/bin/sh\n" + body)
+        stub.chmod(0o755)
+
+    def _call_with_path(self, path: str, *argv: str):
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            return call(self.out, *argv)
+
+    def test_failing_git_stub_is_git_not_usable_not_no_match(self):
+        self._stub(f"printf '%s' \"{XCRUN_STDERR}\" >&2\nexit 1\n")
+        for argv in (("grep", "app", "main", "yaml"), ("show", "app", "main", "src/server.js"),
+                     ("files", "app", "main")):
+            rc, out, err = self._call_with_path(str(self.bin), *argv)
+            self.assertEqual(rc, code.EXIT_GIT_UNUSABLE, argv)
+            self.assertEqual(out, "", argv)
+            self.assertNotIn("no match in", out + err)
+            self.assertIn("git could not run: xcode-select: Failed to locate 'git'", err)
+            self.assertNotIn("Operation not permitted", err)          # only the first line of git's stderr
+            self.assertIn(code.GIT_HINT, err)
+
+    def test_empty_path_is_git_not_found(self):
+        rc, out, err = self._call_with_path("", "grep", "app", "main", "yaml")
+        self.assertEqual((rc, out), (code.EXIT_GIT_UNUSABLE, ""))
+        self.assertIn("git could not run: git not found on PATH", err)
+        self.assertIn(code.GIT_HINT, err)
+
+    def test_not_executable_git_is_git_not_usable(self):
+        (self.bin / "git").write_text("#!/bin/sh\nexit 0\n")      # no execute bit
+        rc, _, err = self._call_with_path(str(self.bin), "grep", "app", "main", "yaml")
+        self.assertEqual(rc, code.EXIT_GIT_UNUSABLE)
+        self.assertIn(code.GIT_HINT, err)
+
+    def test_unreadable_ref_is_exit_2_without_the_git_hint(self):
+        (self.repo / ".git" / "objects").rename(self.repo / ".git" / "objects-gone")
+        rc, out, err = call(self.out, "grep", "app", "main", "yaml")
+        self.assertEqual((rc, out), (code.EXIT_UNREADABLE, ""))
+        self.assertIn("code: ", err)
+        self.assertNotIn(code.GIT_HINT, err)
+        self.assertNotIn("no match in", out + err)
+
+    def test_working_git_still_separates_match_and_no_match(self):
+        self.assertIsNone(code.git_unusable_reason())
+        self.assertEqual(call(self.out, "grep", "app", "main", "yaml")[0], 0)
+        self.assertEqual(call(self.out, "grep", "app", "main", "absent-pattern")[0], code.EXIT_NO_MATCH)
 
 
 if __name__ == "__main__":

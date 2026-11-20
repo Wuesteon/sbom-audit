@@ -219,7 +219,7 @@ class CheckTests(CraTestCase):
         (self.out / "sbom" / "shop" / "release__1.cdx.json").write_text(json.dumps(doc))
         s = statuses(self.check()["products"]["shop"])
         self.assertEqual((s["sbom"]["status"], s["sbom"]["evidence"]), ("present", ["sbom/shop/release__1.cdx.json"]))
-        self.assertIn("1 components: version 100%, purl 100%, licence 0%", s["sbom"]["note"])
+        self.assertIn("1 component entries: version 100%, purl 100%, licence 0%", s["sbom"]["note"])
         self.assertIn("dependency graph yes", s["sbom"]["note"])
         self.assertNotRegex(s["sbom"]["note"], r"(?i)compl(y|ies|iant)|meets")
 

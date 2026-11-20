@@ -42,6 +42,23 @@ def _local_action(c) -> bool:
     return c.ecosystem.lower() == "github" and c.name.startswith(("$/", "./", "."))
 
 
+def coordinate(c) -> tuple[str, str, str]:
+    """A package row's coordinate: ecosystem, qualified name and version, every unresolved spelling (empty,
+    `UNKNOWN`, `${property}`) read as "". Two rows with one coordinate are one package declared in two manifests
+    (a `pom.xml` and a `build.gradle`): inventory.json keeps both rows as evidence, counts of distinct packages
+    count the coordinate once."""
+    return (c.ecosystem, c.qualified_name(), "" if version_unresolved(c.version) else c.version)
+
+
+def distinct_packages(components) -> dict[tuple[str, str, str], list]:
+    """The package rows of `components` grouped by `coordinate`, in first-seen order."""
+    groups: dict[tuple[str, str, str], list] = {}
+    for c in components:
+        if c.kind == "package":
+            groups.setdefault(coordinate(c), []).append(c)
+    return groups
+
+
 def unresolved_versions(inventories: list[BranchInventory], releases: dict | None = None) -> list[dict]:
     """Per project and branch (or supported release), the packages that were not checked for vulnerabilities
     because their version is not resolved. Out-of-support releases are left out, like their findings."""

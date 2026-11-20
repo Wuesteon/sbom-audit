@@ -108,6 +108,15 @@ def _manifest(c) -> str:
     return "; ".join(c.locations) or "?"
 
 
+def _manifests_cell(rows) -> str:
+    """INVENTORY.md manifest cell for the rows of one coordinate: one row as before; several rows (one package
+    declared in two manifests) as 'same coordinate, 2 manifests: `pom.xml`, `build.gradle`'."""
+    locs = list(dict.fromkeys(loc for c in rows for loc in c.locations))
+    if len(rows) == 1 or len(locs) < 2:
+        return f"`{md('; '.join(locs) or '?')}`"
+    return f"same coordinate, {len(locs)} manifests: " + ", ".join(f"`{md(loc)}`" for loc in locs)
+
+
 # --------------------------------------------------------------------------- build
 
 def failed_label(f: dict) -> str:
@@ -290,9 +299,11 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
     stats = {
         "projects": len({i.project for i in inventories}),
         "branches": sum(1 for i in inventories if not i.release),
-        "unique_package_versions": len({(c.ecosystem, c.name, c.version) for c in packages}),
-        "occurrences": len(packages),
-        "direct_dependencies": sum(1 for c in packages if c.direct),
+        # distinct coordinates (coverage.coordinate): one package declared in two manifests counts once
+        "unique_package_versions": len({coverage.coordinate(c) for c in packages}),
+        "occurrences": len(packages),        # inventory rows (declarations) over all branches, deliberately
+        "direct_dependencies": len({(inv.project, inv.branch, *coverage.coordinate(c)) for inv in inventories
+                                    for c in inv.components if c.kind == "package" and c.direct}),
         "images": sum(1 for inv in inventories for c in inv.components if c.kind == "image"),
         "runtimes": sum(1 for inv in inventories for c in inv.components if c.kind == "runtime"),
         "github_actions_unchecked": unchecked_actions(inventories),
@@ -373,7 +384,7 @@ def _summary(rep: dict) -> list[str]:
         scanned += f" (+ {st['releases']} release{'' if st['releases'] == 1 else 's'})"
     rows: list[tuple[str, object]] = [
         ("Projects / branches scanned", scanned),
-        ("Unique package versions checked", st["unique_package_versions"]),
+        ("Distinct package versions (ecosystem, name, version)", st["unique_package_versions"]),
         ("Vulnerable package versions", len(vulns)),
         ("… in CISA KEV (actively exploited)", sum(1 for v in vulns if v["kev"])),
     ]
@@ -770,15 +781,18 @@ def _branch_order(cfg: Config, branches: set[str]) -> list[str]:
 def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -> list[str]:
     L = [f"## {project}", ""]
     for inv in invs:
-        pkgs = [c for c in inv.components if c.kind == "package"]
-        by_eco = Counter(c.ecosystem or "?" for c in pkgs)
+        groups = coverage.distinct_packages(inv.components)     # one package in two manifests counts once
+        n_rows = sum(len(rows) for rows in groups.values())
+        by_eco = Counter(eco or "?" for eco, _, _ in groups)
         n_images = sum(1 for c in inv.components if c.kind == "image")
         n_runtimes = sum(1 for c in inv.components if c.kind == "runtime")
         sync = f"{inv.behind} behind origin" if inv.behind else "in sync with origin"
         ref = f", read `{inv.ref}`" if inv.ref != inv.branch else ""
         eco = ", ".join(f"{e} {n}" for e, n in sorted(by_eco.items())) or "none"
-        L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {len(pkgs)} packages ({eco}; "
-                 f"{sum(1 for c in pkgs if c.direct)} direct, {sum(1 for c in pkgs if c.scope == 'optional')} dev-only), "
+        rows_note = f" in {n_rows} manifest rows" if n_rows != len(groups) else ""
+        L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {len(groups)} distinct packages{rows_note} "
+                 f"({eco}; {sum(1 for rows in groups.values() if any(c.direct for c in rows))} direct, "
+                 f"{sum(1 for rows in groups.values() if all(c.scope == 'optional' for c in rows))} dev-only), "
                  f"{n_images} images, {n_runtimes} runtime pins")
         if inv.package_source:
             L.append(f"  - packages: {md(sbomimport.describe(inv.package_source))}")
@@ -811,11 +825,12 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
     # direct dependencies
     direct: dict[tuple, dict] = {}
     for inv in invs:
-        for c in inv.components:
-            if c.kind == "package" and c.direct:
-                d = direct.setdefault((c.ecosystem, c.qualified_name(), _manifest(c)), {"versions": {}, "scopes": set()})
-                d["versions"][inv.branch] = c.version or "unresolved"
-                d["scopes"].add(c.scope)
+        # rows of one coordinate (one package declared in two manifests) are one line naming every manifest
+        for (eco, name, _), rows in coverage.distinct_packages(c for c in inv.components if c.direct).items():
+            d = direct.setdefault((eco, name, _manifests_cell(rows)), {"versions": {}, "scopes": set()})
+            versions = {c.version or "unresolved" for c in rows}
+            d["versions"][inv.branch] = versions.pop() if len(versions) == 1 else "unresolved"
+            d["scopes"].update(c.scope for c in rows)
     branches = _branch_order(cfg, {inv.branch for inv in invs})
     if direct:
         L += [f"**Direct dependencies** ({len(direct)}; `⚠︎` = version differs between branches)", "",
@@ -825,7 +840,7 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
             present = {d["versions"][b] for b in branches if b in d["versions"]}
             drift = " ⚠︎" if len(present) > 1 else ""
             cells = [d["versions"].get(b, "–") for b in branches]
-            L.append(f"| {md(name)}{drift} | {eco} | `{md(manifest)}` | " + " | ".join(cells) + f" | {_scope_of(d['scopes'])} |")
+            L.append(f"| {md(name)}{drift} | {eco} | {manifest} | " + " | ".join(cells) + f" | {_scope_of(d['scopes'])} |")
         L.append("")
     return L
 
@@ -837,9 +852,9 @@ def _inventory_releases(releases: list[BranchInventory]) -> list[str]:
     L = ["## Releases", "",
          "Release tags under audit, one SBOM each (`sbom/<project>/tags__<tag>.cdx.json`). Support status and fixed "
          "advisories: `RELEASES.md`.", "",
-         "| Project | Tag | Commit | Tag date | Packages | Images | Runtime pins | SBOM |", "|---|---|---|---|---|---|---|---|"]
+         "| Project | Tag | Commit | Tag date | Distinct packages | Images | Runtime pins | SBOM |", "|---|---|---|---|---|---|---|---|"]
     for inv in sorted(releases, key=lambda i: (i.project.lower(), -int(i.release.get("index", 0)))):
-        pkgs = sum(1 for c in inv.components if c.kind == "package")
+        pkgs = len(coverage.distinct_packages(inv.components))   # one package in two manifests counts once
         imgs = sum(1 for c in inv.components if c.kind == "image")
         rts = sum(1 for c in inv.components if c.kind == "runtime")
         sbom = f"`{inv.sbom_path}`" if inv.sbom_path else "–"

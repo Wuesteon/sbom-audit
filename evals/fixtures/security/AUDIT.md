@@ -15,7 +15,7 @@ A failed source means its section below is empty, not clean.
 | Metric | Count |
 |---|---|
 | Projects / branches scanned | 3 / 3 |
-| Unique package versions checked | 3 |
+| Distinct package versions (ecosystem, name, version) | 3 |
 | Vulnerable package versions | 1 |
 | … in CISA KEV (actively exploited) | 0 |
 | … max severity HIGH | 1 |
