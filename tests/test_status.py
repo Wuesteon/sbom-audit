@@ -115,6 +115,75 @@ class DeltaTest(unittest.TestCase):
         self.assertEqual(now["deltas"]["kev"], {"new": ["CVE-2 npm:a@1"], "resolved": ["CVE-1 npm:a@1"]})
         self.assertFalse(now["first_run"])
 
+    def test_open_rules_are_recorded(self):
+        self.assertEqual(build()["open_rules"], status.OPEN_RULES)
+        self.assertEqual(set(status.OPEN_RULES), set(status.OPEN_KEYS))
+
+    def test_a_1_1_x_file_is_not_comparable_for_critical_high(self):
+        """1.1.1 put every advisory of an actionable package into the set: its MEDIUM ones, still open now,
+        must never read as resolved, and the change of rules must not read as progress."""
+        mixed = row("p", "6.1.2", "HIGH", vuln_ids=("GHSA-high", "GHSA-medium"))
+        mixed["vulns"][1]["severity"] = "MEDIUM"
+        rep = make_rep(vulns=[mixed, row("k", "1", "LOW", kev_ids=("CVE-1",))])
+        prev = {"schema": 1, "plugin_version": "1.1.1", "first_run": False,
+                "open": {"kev": ["CVE-1 npm:k@1"],
+                         "critical_high_production": ["CVE-1 npm:k@1", "GHSA-high npm:p@6.1.2",
+                                                      "GHSA-medium npm:p@6.1.2", "GHSA-gone npm:q@1"]}}
+        s = build(rep, previous=prev)
+        crit = s["deltas"]["critical_high_production"]
+        self.assertEqual((crit["new"], crit["resolved"]), ([], []))
+        self.assertIn("sbom-audit 1.1.1", crit["not_comparable"])
+        self.assertEqual(s["deltas"]["kev"], {"new": [], "resolved": []})      # same rule: compared
+        text = status.render_md(s, None)
+        self.assertIn("- critical_high_production: not comparable with the previous run", text)
+        self.assertIn("2 open now", text)
+        self.assertNotIn("GHSA-medium", text.split("## Secrets")[0])
+        self.assertNotIn("new CRITICAL/HIGH", status.severity_line(s, None, NOW))
+        nxt = build(rep, previous=s)                                         # the next run compares again
+        self.assertEqual(nxt["deltas"]["critical_high_production"], {"new": [], "resolved": []})
+
+    def test_a_1_2_x_file_without_open_rules_compares(self):
+        rep = make_rep(vulns=[row("a", "1", "HIGH")])
+        prev = build(make_rep(vulns=[row("b", "1", "HIGH")]))
+        del prev["open_rules"]
+        for version, comparable in (("1.2.0", True), ("1.2.1", True), ("1.1.1", False), ("0.9", False), (None, False)):
+            prev["plugin_version"] = version
+            crit = build(rep, previous=prev)["deltas"]["critical_high_production"]
+            self.assertEqual("not_comparable" not in crit, comparable, version)
+            if comparable:
+                self.assertEqual(crit, {"new": ["GHSA-a npm:a@1"], "resolved": ["GHSA-b npm:b@1"]})
+
+    def test_another_rule_number_is_not_comparable(self):
+        prev = build(make_rep(vulns=[row("b", "1", "HIGH", kev_ids=("CVE-1",))]))
+        prev["open_rules"] = {**status.OPEN_RULES, "kev": 99}
+        s = build(make_rep(), previous=prev)
+        self.assertIn("not_comparable", s["deltas"]["kev"])
+        self.assertEqual(s["deltas"]["critical_high_production"]["resolved"], ["CVE-1 npm:b@1"])
+
+    def test_a_still_reported_advisory_is_never_resolved(self):
+        prev = build(make_rep(vulns=[row("a", "1", "HIGH"), row("b", "1", "HIGH")]))
+        downgraded = row("a", "1", "MEDIUM")                         # re-rated: still in AUDIT.md
+        s = build(make_rep(vulns=[downgraded]), previous=prev)
+        crit = s["deltas"]["critical_high_production"]
+        self.assertEqual(crit["resolved"], ["GHSA-b npm:b@1"])      # gone from the audit: resolved
+        self.assertEqual(crit["not_counted"], ["GHSA-a npm:a@1"])
+        text = status.render_md(s, None)
+        self.assertIn("- critical_high_production: 0 new, 1 resolved, 1 no longer counted but still in AUDIT.md", text)
+        self.assertIn("  - no longer counted: GHSA-a npm:a@1", text)
+
+    def test_failed_run_keeps_the_rules_of_the_sets_it_carries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            old = {"schema": 1, "plugin_version": "1.1.1", "generated_at": "2026-11-01T10:00:00+01:00",
+                   "open": {"critical_high_production": ["GHSA-medium npm:p@1"]}, "counts": {}}
+            status.write(out, old)
+            cfg = config.Config(out=out, root=out.parent, mode="portfolio")
+            pipeline._write_failed_status(cfg, RuntimeError("boom"), 0.0, lambda m: None)
+            carried = status.read(out)
+        self.assertEqual(carried["open_rules"]["critical_high_production"], 1)
+        s = build(make_rep(vulns=[row("p", "1", "HIGH")]), previous=carried)
+        self.assertIn("not_comparable", s["deltas"]["critical_high_production"])
+
     def test_first_status_has_empty_deltas(self):
         rep = make_rep(vulns=[row("a", "1", "LOW", kev_ids=("CVE-1",))])
         for previous in (None, {"schema": 0, "open": {"kev": ["CVE-9 npm:z@1"]}}):

@@ -27,7 +27,7 @@ concurrency:
 
 env:
   # The sbom-audit release tag this workflow runs; bump it when you update the plugin.
-  SBOM_AUDIT_REF: "sbom-audit--v1.2.1"
+  SBOM_AUDIT_REF: "sbom-audit--v1.3.0"
   # Pinned 2026-11-09; check for newer: gh api repos/<owner>/<repo>/releases/latest --jq .tag_name
   # Each download is checked against the checksum file of its release before it is installed.
   SYFT_VERSION: "1.56.0"
@@ -104,7 +104,7 @@ jobs:
           SBOM_AUDIT_SECRETS_KEY: ${{ secrets.SBOM_AUDIT_SECRETS_KEY }}
           GH_TOKEN: ${{ secrets.SBOM_AUDIT_REPOS_TOKEN || github.token }}
           SBOM_AUDIT_GIT_PROTOCOL: https
-        run: python3 "$RUNNER_TEMP/sbom-audit/scripts/sbom_audit_cli.py" run --out "$GITHUB_WORKSPACE"
+        run: python3 "$RUNNER_TEMP/sbom-audit/plugin/scripts/sbom_audit_cli.py" run --out "$GITHUB_WORKSPACE"
         continue-on-error: true
 
       - name: Commit and push the evidence

@@ -291,3 +291,180 @@ class DenoLockTests(unittest.TestCase):
     def test_deno_lock_without_remote_section_adds_nothing(self):
         write(self.src, {"deno.lock": json.dumps({"version": "4", "npm": {"a@1.0.0": {"integrity": "x"}}})})
         self.assertEqual(self.by(readers.read_tree(self.src, []), "package"), [])
+
+
+ROOT_POM = """<?xml version="1.0"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <groupId>org.example</groupId><artifactId>parent</artifactId><version>1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <properties><maven.compiler.release>17</maven.compiler.release><jackson.group>com.fasterxml.jackson.core</jackson.group></properties>
+  <dependencyManagement><dependencies>
+    <dependency><groupId>org.junit</groupId><artifactId>junit-bom</artifactId><version>5.10.0</version>
+      <type>pom</type><scope>import</scope></dependency>
+    <dependency><groupId>org.mockito</groupId><artifactId>mockito-core</artifactId><version>5.0.0</version>
+      <scope>test</scope></dependency>
+    <dependency><groupId>org.managed</groupId><artifactId>only-managed</artifactId><version>1.0</version></dependency>
+  </dependencies></dependencyManagement>
+  <build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>
+    <dependencies><dependency><groupId>org.plugin</groupId><artifactId>plugin-dep</artifactId></dependency></dependencies>
+  </plugin></plugins></build>
+</project>"""
+
+CHILD_POM = """<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <parent><groupId>org.example</groupId><artifactId>parent</artifactId><version>1.0-SNAPSHOT</version></parent>
+  <artifactId>core</artifactId>
+  <dependencies>
+    <dependency><groupId>${jackson.group}</groupId><artifactId>jackson-databind</artifactId></dependency>
+    <dependency><groupId>${project.groupId}</groupId><artifactId>api</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.mockito</groupId><artifactId>mockito-core</artifactId></dependency>
+    <dependency><groupId>jakarta.servlet</groupId><artifactId>jakarta.servlet-api</artifactId><scope>provided</scope></dependency>
+    <dependency><groupId>org.both</groupId><artifactId>both</artifactId><scope>test</scope></dependency>
+  </dependencies>
+  <profiles><profile><dependencies>
+    <dependency><groupId>org.profile</groupId><artifactId>profiled</artifactId></dependency>
+  </dependencies></profile></profiles>
+</project>"""
+
+API_POM = """<project><parent><groupId>org.example</groupId><artifactId>parent</artifactId></parent>
+  <artifactId>api</artifactId>
+  <dependencies><dependency><groupId>org.both</groupId><artifactId>both</artifactId></dependency></dependencies>
+  <build><pluginManagement><plugins><plugin><groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId><configuration><release>21</release></configuration>
+  </plugin></plugins></pluginManagement></build>
+</project>"""
+
+GO_MOD = """module github.com/example/app
+
+go 1.22.3
+
+toolchain go1.23.4
+
+require github.com/single/dep v1.0.0
+require github.com/single/indirect v1.0.0 // indirect
+
+require (
+\tgithub.com/a/direct v1.2.3
+\tgolang.org/x/net v0.62.0 // some note
+\tgolang.org/x/crypto v0.58.0 // indirect
+\t"github.com/quoted/mod" v0.1.0
+)
+
+replace github.com/a/direct => ../local
+"""
+
+
+class ManifestEcosystemTests(unittest.TestCase):
+    """Maven, Go and .NET manifests: own modules, direct dependencies, test-only scope, runtimes."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.src = Path(self._tmp.name).resolve()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def maven_tree(self):
+        write(self.src, {"pom.xml": ROOT_POM, "core/pom.xml": CHILD_POM, "api/pom.xml": API_POM})
+
+    def test_maven_ga_and_package_key(self):
+        self.assertEqual(readers.maven_ga("pkg:maven/org.example/lib@1.0?type=jar"), "org.example:lib")
+        self.assertEqual(readers.maven_ga("pkg:maven/org.example/lib"), "org.example:lib")
+        self.assertIsNone(readers.maven_ga("pkg:npm/lib@1.0"))
+        self.assertEqual(readers.package_key("Maven", "lib", "pkg:maven/org.example/lib@1.0"), "org.example:lib")
+        self.assertEqual(readers.package_key("PyPI", "Foo_Bar", ""), "foo-bar")
+        self.assertEqual(readers.package_key("Go", "golang.org/x/net", "pkg:golang/golang.org/x/net@v1"),
+                         "golang.org/x/net")
+
+    def test_maven_own_modules_are_self_packages(self):
+        self.maven_tree()
+        own = {k for k in readers.self_packages(self.src) if k[0] == "Maven"}
+        self.assertEqual(own, {("Maven", "org.example:parent"), ("Maven", "org.example:core"),
+                               ("Maven", "org.example:api")})
+
+    def test_maven_direct_reads_dependencies_not_management_or_plugins(self):
+        self.maven_tree()
+        direct = {k[1]: v for k, v in readers.direct_deps(self.src, []).items() if k[0] == "Maven"}
+        self.assertEqual(sorted(direct), [
+            "com.fasterxml.jackson.core:jackson-databind",      # ${…} resolved from the parent's properties
+            "jakarta.servlet:jakarta.servlet-api", "org.both:both", "org.example:api",
+            "org.junit.jupiter:junit-jupiter", "org.mockito:mockito-core", "org.profile:profiled"])
+        self.assertEqual(sorted(direct["org.both:both"]), ["api/pom.xml", "core/pom.xml"])
+        self.assertNotIn("org.managed:only-managed", direct)
+        self.assertNotIn("org.plugin:plugin-dep", direct)
+
+    def test_maven_test_scope_with_dependency_management(self):
+        self.maven_tree()
+        self.assertEqual(readers.dev_only_deps(self.src, []), {
+            ("Maven", "org.junit.jupiter:junit-jupiter"),      # explicit <scope>test</scope>
+            ("Maven", "org.mockito:mockito-core"),             # scope from the parent's dependencyManagement
+        })                                                    # provided, and test+compile ("both"), stay production
+
+    def test_maven_ignore_patterns_apply(self):
+        self.maven_tree()
+        direct = readers.direct_deps(self.src, ["core"])
+        self.assertNotIn(("Maven", "org.junit.jupiter:junit-jupiter"), direct)
+
+    def test_broken_pom_is_reported_and_skipped(self):
+        write(self.src, {"pom.xml": "<project><artifactId>x</artifactId>", "ok/pom.xml": API_POM})
+        comps = readers.read_tree(self.src, [])
+        errors = [c for c in comps if c.props.get("error")]
+        self.assertEqual([c.name for c in errors], ["pom.xml"])
+        self.assertIn("ParseError", errors[0].props["error"])
+        self.assertIn(("Maven", "org.both:both"), readers.direct_deps(self.src, []))
+
+    def test_java_language_level_runtime(self):
+        self.maven_tree()
+        rts = [c for c in readers.read_tree(self.src, []) if c.kind == "runtime" and c.ecosystem == "java"]
+        got = {c.locations[0]: (c.version, c.props["detail"]) for c in rts}
+        self.assertEqual(set(got), {"pom.xml", "api/pom.xml"})   # core sets none of its own
+        self.assertEqual(got["pom.xml"][0], "17")
+        self.assertIn("maven.compiler.release = 17", got["pom.xml"][1])
+        self.assertIn("not the JDK it runs on", got["pom.xml"][1])
+        self.assertEqual(got["api/pom.xml"][0], "21")
+        self.assertIn("maven-compiler-plugin <release>", got["api/pom.xml"][1])
+
+    def test_java_level_from_properties_and_legacy_notation(self):
+        write(self.src, {"pom.xml": "<project><groupId>g</groupId><artifactId>a</artifactId><properties>"
+                                    "<java.version>1.8</java.version><maven.compiler.source>${java.version}"
+                                    "</maven.compiler.source></properties></project>"})
+        rts = [c for c in readers.read_tree(self.src, []) if c.ecosystem == "java"]
+        self.assertEqual([c.version for c in rts], ["8"])
+        self.assertIn("maven.compiler.source = 1.8", rts[0].props["detail"])
+
+    def test_go_mod_parse(self):
+        mod = readers.parse_go_mod(GO_MOD)
+        self.assertEqual((mod["module"], mod["go"], mod["toolchain"]),
+                         ("github.com/example/app", "1.22.3", "go1.23.4"))
+        self.assertEqual(mod["require"], [
+            ("github.com/single/dep", False), ("github.com/single/indirect", True),
+            ("github.com/a/direct", False), ("golang.org/x/net", False), ("golang.org/x/crypto", True),
+            ("github.com/quoted/mod", False)])
+
+    def test_go_direct_own_and_runtime(self):
+        write(self.src, {"go.mod": GO_MOD, "tools/go.mod": "module github.com/example/tools\n\ngo 1.21\n"
+                                                          "require github.com/tool/x v1.0.0\n"})
+        direct = {k[1] for k in readers.direct_deps(self.src, []) if k[0] == "Go"}
+        self.assertEqual(direct, {"github.com/single/dep", "github.com/a/direct", "golang.org/x/net",
+                                  "github.com/quoted/mod", "github.com/tool/x"})
+        own = {k for k in readers.self_packages(self.src) if k[0] == "Go"}
+        self.assertEqual(own, {("Go", "github.com/example/app"), ("Go", "github.com/example/tools")})
+        rts = {c.locations[0]: c for c in readers.read_tree(self.src, []) if c.ecosystem == "go"}
+        self.assertEqual(rts["go.mod"].version, "1.23")              # toolchain wins over the go line
+        self.assertIn("toolchain go1.23.4", rts["go.mod"].props["detail"])
+        self.assertEqual(rts["tools/go.mod"].version, "1.21")
+        self.assertIn("minimum Go", rts["tools/go.mod"].props["detail"])
+
+    def test_dotnet_runtimes(self):
+        """Unit-tested only: not yet checked against a real .NET repository."""
+        write(self.src, {
+            "global.json": '{"sdk": {"version": "8.0.100", "rollForward": "latestFeature"}}',
+            "src/App/App.csproj": "<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework>"
+                                  "</PropertyGroup></Project>",
+            "src/Lib/Lib.csproj": "<Project><PropertyGroup><TargetFrameworks>netstandard2.0;net48;net6.0;"
+                                  "netcoreapp3.1</TargetFrameworks></PropertyGroup></Project>",
+            "Directory.Build.props": "<Project><PropertyGroup><TargetFramework>net8.0-windows"
+                                     "</TargetFramework></PropertyGroup></Project>"})
+        rts = sorted((c.locations[0], c.version) for c in readers.read_tree(self.src, []) if c.ecosystem == "dotnet")
+        self.assertEqual(rts, [("Directory.Build.props", "8"), ("global.json", "8"), ("src/App/App.csproj", "9"),
+                               ("src/Lib/Lib.csproj", "3.1"), ("src/Lib/Lib.csproj", "6")])

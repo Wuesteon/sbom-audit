@@ -31,7 +31,7 @@ HOOK_TEMPLATE = PLUGIN_ROOT / "templates" / "session-hook" / "session-start.py"
 # Subcommands autonomous mode allows: they read, or write only to the local security/ folder. `hosts check`
 # logs in with the forced-command audit key, which can only print the package list.
 AUTONOMOUS_SUBCOMMANDS = ("status", "lookup", "incident", "code", "issues", "run", "scan", "audit",
-                          "vex add", "secrets", "hosts check", "hosts accept")
+                          "vex add", "secrets", "hosts check", "hosts accept", "sbom check", "verify")
 NEVER_AUTONOMOUS = ("setup", "hosts patch", "hosts bootstrap", "hosts unbootstrap", "settings")
 HOOK_MATCHER = "startup|resume|clear"
 HOOK_TIMEOUT = 5

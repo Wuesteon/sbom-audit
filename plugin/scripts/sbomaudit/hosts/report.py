@@ -15,6 +15,9 @@ Layout decisions:
   and `hostkey` findings are critical even if the flag says otherwise.
 - `vuln` findings (the non-critical per-package vulnerability summaries) have the section `Vulnerabilities`
   between `Lynis warnings` and `Third-party updates`, where the checker ranks them.
+- The `Logins` section starts with `LOGIN_RULE` (what makes a login finding critical and what accepting one
+  covers) whenever the host has a login finding, critical or not; the accept hint of a per-key login finding
+  says that the decision covers that user's later logins with that key.
 - A failed host is rendered as failed with its error and the time of its last successful check; the findings
   it carries are marked as from that check, and the host is never counted as clean.
 """
@@ -41,6 +44,12 @@ GROUP_LABEL = {"warning": "check did not run", "hostkey": "host key", "change": 
                "login": "login", "patch": "patch automation", "permissive": "permissive default",
                "lynis_index": "Lynis index", "lynis_warning": "Lynis warning", "vuln": "vulnerability",
                "third_party": "third-party update", "lynis_suggestion": "Lynis suggestion", "info": "info"}
+LOGIN_RULE = ("One finding per user and key (count, first and last time, source addresses). Critical: the key "
+              "is not in the baseline's authorized_keys, a password or keyboard-interactive login, a user who is "
+              "not in the baseline, or root while the baseline's PermitRootLogin is no; a login after 10 or more "
+              "failures from its own address is also listed on its own. A known key of a known user from a new "
+              "address is not critical. Accepting `login:<user>/<key>` covers that user's later logins with that "
+              "key; a new key or a password login is a new finding.")
 FIX_LABEL = {"installable": "fix installable (apply the pending update)",
              "reboot": "fixed kernel installed, reboot needed",
              "not installable": "fix released, not installable yet (stale lists, phased update, or for a "
@@ -166,6 +175,8 @@ def _hint(host: str, f: dict) -> str:
     if id_ == "baseline:unreadable":
         return "restore the baseline file from git or delete it, then re-run `hosts check`"
     suffix = " --review-by YYYY-MM-DD" if id_.startswith("kev:") else ""
+    if f.get("kind") == "key":
+        suffix += " (covers this user's later logins with this key; only if you recognise the key)"
     return f"accept with: hosts accept {core.md(host)} {_code(id_)} \"<note>\"{suffix}"
 
 
@@ -243,7 +254,10 @@ def _host_section(name: str, h: dict, decisions: dict) -> list[str]:
                                           *lines(failed_checks)])
     out += _section("Host key", lines([f for f in critical if f.get("group") == "hostkey"]))
     for title, groups in SECTIONS:
-        out += _section(title, lines([f for f in rest if f.get("group") in groups]))
+        items = lines([f for f in rest if f.get("group") in groups])
+        if groups == ("login",) and any(f.get("group") == "login" for f in findings):
+            items = [LOGIN_RULE, "", *items]
+        out += _section(title, items)
     suggestions = [f for f in rest if f.get("group") == "lynis_suggestion"]
     if suggestions:
         out += [f"<details>", f"<summary>Lynis suggestions ({len(suggestions)})</summary>", "",

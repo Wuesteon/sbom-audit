@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import plistlib
+import re
 import socket
 import subprocess
 import sys
@@ -310,6 +311,10 @@ class SchedulerTests(unittest.TestCase):
                        "SBOM_AUDIT_REF:", 'gh repo clone Wuesteon/sbom-audit', '--out "$GITHUB_WORKSPACE"', "SBOM_AUDIT_SECRETS_KEY: ${{ secrets.SBOM_AUDIT_SECRETS_KEY }}",
                        "syft", "osv-scanner", "gitleaks", "git commit", '"issue", "create"', "status.json", "audit.json"):
             self.assertIn(needle, text)
+        # the CLI path the template runs must exist in a checkout of this repository
+        match = re.search(r'\$RUNNER_TEMP/sbom-audit/(\S+?sbom_audit_cli\.py)"', text)
+        self.assertIsNotNone(match)
+        self.assertTrue((ROOT / match.group(1)).is_file(), match.group(1))
         # the visibility guard comes before anything is installed or run
         self.assertLess(text.index("must be private"), text.index("osv-scanner"))
         self.assertLess(text.index("must be private"), text.index("SBOM_AUDIT_SECRETS_KEY: ${{"))

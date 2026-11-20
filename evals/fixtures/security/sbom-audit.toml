@@ -10,19 +10,53 @@ push = false
 # [discovery]
 # github_owner = "..."
 # include_forks = false
+# protocol = "ssh"  # "https" after: gh auth setup-git
 
 # Scheduled headless assessment (writes a proposal only, never a VEX statement).
 # [schedule]
 # assess = false
 # assess_budget_usd = 5.0
 
+# Assessment drafts by an OpenAI-compatible endpoint (`assess draft`); off until base_url and model
+# are set. Sends report excerpts to that endpoint. The key stays in the named environment variable.
+# [assess]
+# base_url = "https://openrouter.ai/api/v1"
+# model = "..."
+# api_key_env = "OPENROUTER_API_KEY"
+
 # Secret scanning (gitleaks).
 # [secrets]
 # enabled = true
+# Findings in tests, fixtures, examples, docs, vendored code, data files and dev setups rank one class
+# lower (labelled, counted, never dropped). Patterns per label add to the defaults in classes.toml:
+# "dir/" matches that directory anywhere in the path, anything else the file name (glob). `deployable`
+# lists paths that are never context. rank_by_context = false turns the ranking off.
+# rank_by_context = true
+# [secrets.context]
+# test = ["qa/"]
+# deployable = ["deploy/examples/"]
+
+# Management report (REPORT.html): organisation name on the cover, language en or de.
+# [report]
+# organisation = "..."
+# language = "en"
+
+# Release scanning (off until tags is set): one SBOM and audit per release tag for the newest `keep`
+# tags, and each release's support period (months from its date and/or an end date; both: the later).
+# Per project: releases = { tags = "app-v*", support_months = 24 } overrides key by key; false = off.
+# [releases]
+# tags = "v*"
+# keep = 3
+# support_months = 60
+# support_until = 2031-12-31
+# prereleases = false             # true also audits pre-release tags (-rc.1, -beta, -SNAPSHOT)
 
 # Per-project options: production = true puts CRITICAL/HIGH findings first;
 # ignore = ["path/"] drops subtrees from the inventory.
+# sbom = "<path>" takes the package list of the ecosystems a CycloneDX JSON build SBOM committed at that
+# path contains from it (read from the scanned commit); a file written by `import` wins over it.
 [projects]
 # [projects."<name>"]
 # github = "owner/repo"
+# sbom = "target/bom.json"
 "shop-web" = { production = true }

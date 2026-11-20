@@ -8,8 +8,10 @@ from pathlib import Path
 from . import __version__, config
 from .errors import ConfigError
 
-COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings")
-WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts")
+COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
+            "assess", "report", "cra", "releases", "import", "sbom", "verify")
+WRITING_COMMANDS = ("setup", "run", "scan", "audit", "vex", "issues", "secrets", "hosts", "assess", "report", "cra",
+                    "import")
 EXIT_READ_ONLY = 5
 SECRETS_STATUSES = ("open", "rotated", "false_positive", "test_fixture", "accepted")  # = secrets.store.STATUSES
 
@@ -77,6 +79,15 @@ def build_parser() -> argparse.ArgumentParser:
     vex_p = sub.add_parser("vex", parents=[common], help="record an OpenVEX decision")
     add_vex_args(vex_p, common)
     sub.add_parser("status", parents=[common], help="print STATUS.md from the last run (writes nothing)")
+    rel_p = sub.add_parser("releases", parents=[common],
+                           help="releases under audit from releases.json: support status, open counts, and with "
+                                "--fixed the advisories no longer present compared with the previous release "
+                                "(writes nothing)")
+    rel_p.add_argument("--project", default=None, help="only this project")
+    rel_p.add_argument("--fixed", default=None, metavar="TAG",
+                       help="with --project: advisories no longer present in the SBOM of TAG compared with the "
+                            "previous release under audit")
+    rel_p.add_argument("--json", action="store_true", help="print JSON instead of text")
     issues_p = sub.add_parser("issues", parents=[common],
                               help="rebuild issues.json and ISSUES.md (every open issue and where it occurs); "
                                    "with a filter or --json, print the selected issues and write nothing")
@@ -86,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
     issues_p.add_argument("--max-priority", type=int, default=None, choices=range(1, 7), metavar="1-6",
                           help="only issues of this priority or more urgent (1 is the most urgent)")
     issues_p.add_argument("--json", action="store_true", help="print the selection as JSON instead of one line each")
+    report_p = sub.add_parser("report", parents=[common],
+                              help="rebuild REPORT.html, the printable management report, from the JSON of the "
+                                   "last run (no scan)")
+    report_p.add_argument("--lang", default=None, choices=("en", "de"),
+                          help="report language (default: [report] language in the config, else en)")
     secrets_p = sub.add_parser("secrets", parents=[common],
                                help="scan git history for leaked credentials (gitleaks), record decisions")
     add_secrets_args(secrets_p, common)
@@ -103,7 +119,69 @@ def build_parser() -> argparse.ArgumentParser:
     hosts_p = sub.add_parser("hosts", parents=[common],
                              help="read-only audit of servers over ssh: check, accept, bootstrap, patch")
     add_hosts_args(hosts_p, common)
+    assess_p = sub.add_parser("assess", parents=[common],
+                              help="assessment proposal by an OpenAI-compatible endpoint ([assess] in the config)")
+    assess_sub = assess_p.add_subparsers(dest="assess_command", metavar="action")
+    assess_sub.required = True
+    draft_p = assess_sub.add_parser("draft", parents=[common],
+                                    help="send report excerpts, write reports/<date>-assessment-proposal.md "
+                                         "(records no decision)")
+    draft_p.add_argument("--dry-run", action="store_true",
+                         help="print the request body (no key) and exit; sends and writes nothing")
+    add_import_args(sub.add_parser("import", parents=[common],
+                                   help="use a CycloneDX JSON build SBOM as the package list of a project branch or "
+                                        "release tag (validates it, copies it to imports/, records provenance)"))
+    add_cra_args(sub.add_parser("cra", parents=[common],
+                                help="EU Cyber Resilience Act readiness per configured product ([cra.products]): "
+                                     "evidence present, missing or stale; starter documents"), common)
+    add_sbom_args(sub.add_parser("sbom", parents=[common],
+                                 help="SBOM quality: structural check and data-field coverage (writes nothing)"),
+                  common)
+    verify_p = sub.add_parser("verify", parents=[common],
+                              help="recompute the SHA-256 of every file manifest.json lists: ok, changed or "
+                                   "missing (writes nothing)")
+    verify_p.add_argument("--json", action="store_true", help="print the full result as JSON")
     return parser
+
+
+def add_sbom_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
+    sbom_sub = p.add_subparsers(dest="sbom_command", metavar="action")
+    sbom_sub.required = True
+    check_p = sbom_sub.add_parser("check", parents=[common],
+                                  help="structural findings and data-field coverage of CycloneDX JSON SBOMs (default: "
+                                       "every SBOM under sbom/); exit 1 on structural errors, 2 when unreadable")
+    check_p.add_argument("path", nargs="?", type=Path, default=None, help="one CycloneDX JSON file")
+    check_p.add_argument("--project", default=None, help="the SBOMs of this project under sbom/")
+    check_p.add_argument("--branch", default=None, help="with --project: only this branch or release label")
+    check_p.add_argument("--json", action="store_true", help="print JSON instead of text")
+
+
+def add_cra_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
+    cra_sub = p.add_subparsers(dest="cra_command", metavar="action")
+    cra_sub.required = True
+    cra_sub.add_parser("check", parents=[common],
+                       help="check the evidence for every configured product, write CRA.md and cra.json")
+    init_p = cra_sub.add_parser("init", parents=[common],
+                                help="starter documents for one product in cra/<product>/ (plan without --yes; "
+                                     "never writes into the product repository, never overwrites)")
+    init_p.add_argument("product", help="a project listed under [cra.products]")
+    init_p.add_argument("--lang", default=None, choices=("en", "de"),
+                        help="template language (default: [report] language in the config, else en)")
+    init_p.add_argument("--yes", action="store_true", help="write the planned files (after the user confirmed)")
+
+
+def add_import_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--root", type=Path, default=None, help="folder of projects (default: parent of --out)")
+    p.add_argument("--project", required=True, help="project folder name")
+    ref = p.add_mutually_exclusive_group(required=True)
+    ref.add_argument("--branch", default=None, help="an audited branch")
+    ref.add_argument("--tag", default=None, help="a release tag")
+    p.add_argument("--commit", default=None, metavar="SHA",
+                   help="the commit the SBOM was built from (default: the current commit of the branch or tag)")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("file", nargs="?", type=Path, default=None, help="CycloneDX JSON file from the build")
+    source.add_argument("--from-artifact", default=None, metavar="PATH_OR_IMAGE",
+                        help="generate the SBOM with Syft from a built artefact (JAR, WAR, folder or image)")
 
 
 def add_code_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
@@ -245,6 +323,16 @@ def _issues(args) -> int:
     return issues.cli(args)
 
 
+def _releases(args) -> int:
+    from . import releases
+    return releases.cli(args)
+
+
+def _report(args) -> int:
+    from . import management
+    return management.cli(args)
+
+
 def _secrets(args) -> int:
     from . import secrets
     return secrets.cli_secrets(args)
@@ -263,6 +351,41 @@ def _code(args) -> int:
 def _settings(args) -> int:
     from . import integration
     return integration.cli(args)
+
+
+def _assess(args) -> int:
+    from . import draft
+    return draft.cli(args)
+
+
+def _import(args) -> int:
+    from . import sbomimport
+    return sbomimport.cli(args)
+
+
+def _sbom(args) -> int:
+    from . import sbomquality
+    if args.path is not None and args.project:
+        print("sbom check: give a path or --project, not both", file=sys.stderr)
+        return 2
+    if args.branch and not args.project:
+        print("sbom check: --branch needs --project", file=sys.stderr)
+        return 2
+    return sbomquality.cli(args)
+
+
+def _cra(args) -> int:
+    from . import cra
+    return cra.cli(args)
+
+
+def _verify(args) -> int:
+    from . import manifest
+    return manifest.cli_verify(args)
+
+
+# commands that write outside the evidence folder (settings) or create it (setup): no manifest refresh
+NO_MANIFEST_REFRESH = ("run", "setup", "settings")
 
 
 def _refresh_integration() -> None:
@@ -284,6 +407,10 @@ def _writes(args) -> bool:
         return False
     if args.command == "settings":
         return bool(args.autonomy or args.session_hook)
+    if args.command == "assess":
+        return not args.dry_run
+    if args.command == "cra" and args.cra_command == "init":
+        return bool(args.yes)
     if args.command == "issues":
         from . import issues
         return not issues.is_query(args)
@@ -302,17 +429,30 @@ def main(argv: list[str] | None = None) -> int:
     handler = HANDLERS.get(args.command)
     if handler is None:
         parser.error(f"{args.command}: not implemented yet")
+    before = None
+    if _writes(args) and args.command not in NO_MANIFEST_REFRESH:
+        from . import manifest                  # a later command rewrites reports: keep manifest.json honest
+        before = manifest.snapshot(Path(args.out))
     try:
         return handler(args)
     except ConfigError as exc:
         print(f"{config.CONFIG_NAME}: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if before is not None:
+            label = manifest.command_label(args)
+            changed = manifest.refresh_changed(Path(args.out), before, label)
+            if changed:
+                print(f"manifest.json: {len(changed)} entr{'y' if len(changed) == 1 else 'ies'} refreshed "
+                      f"by `{label}`", file=sys.stderr)
 
 
 HANDLERS: dict[str, object] = {"setup": _setup, "scan": _scan, "vex": _vex, "run": _run,
                                "audit": _audit, "lookup": _lookup, "incident": _incident,
                                "status": _status, "issues": _issues, "secrets": _secrets, "hosts": _hosts,
-                               "code": _code, "settings": _settings}
+                               "code": _code, "settings": _settings, "assess": _assess, "report": _report,
+                               "cra": _cra, "releases": _releases, "import": _import, "sbom": _sbom,
+                               "verify": _verify}
 
 
 if __name__ == "__main__":

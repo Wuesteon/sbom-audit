@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.3.0 — 2026-11-21
+
+Evidence you can hand to an auditor: every run records how it was produced and can be verified later,
+each SBOM is checked for validity and data-field coverage, released versions and CRA readiness get
+their own reports, and a build SBOM fills what a repository scan cannot resolve.
+
+- Run manifest and `verify`: every run writes `manifest.json` with the plugin and tool versions (syft,
+  osv-scanner, git, the secrets engine, gh), the data sources and their dates in UTC, a digest of the
+  config, the audited commit per project and branch, and the SHA-256 and size of every evidence file.
+  `verify [--json]` compares the folder with it and names each file as ok, appended, changed, missing or
+  invalid (exit 0, 1 or 2; read-only). Later writing commands refresh only the entries they wrote.
+  `AUDIT.md` and `REPORT.html` gain a "How this report was produced" block.
+- SBOM quality: `sbom check [<path> | --project <p> [--branch <b>]] [--json]` checks a CycloneDX file
+  structurally and reports the share of components with a version, a package URL, a unique identifier,
+  a licence, a hash and a supplier, and whether a dependency graph is present. `INVENTORY.md` and
+  `inventory.json` carry the same numbers per SBOM. `docs/reference.md` maps the columns to the NTIA
+  minimum elements (2021) and BSI TR-03183-2 v2.1.0; the tool reports coverage and never states
+  compliance. Every SBOM the tool writes has a serial number and a timestamp.
+- Imported build SBOMs: `import --project <p> (--branch <b> | --tag <t>) bom.json` stores a CycloneDX
+  JSON SBOM from your build under `imports/`; later runs use its packages for the ecosystems it covers,
+  with direct and transitive dependencies from its graph. It supplements the repository scan: packages
+  only the scan found stay in the inventory, marked `sbom-audit:not_in_build_sbom`. Hashes, licences,
+  supplier, manufacturer, CPE, external references and the dependency graph of the imported file are
+  carried into the written SBOM. Coverage statements name the imported file and say when it was not
+  built from the scanned commit; a checked-in SBOM gets its commit from git history.
+- Releases (opt-in, `[releases]`): an SBOM and audit per release tag, support periods, `RELEASES.md` and
+  `releases.json`, and `releases --project <p> --fixed <tag>` for the advisories no longer present
+  compared with the previous release. Version order is semver with pre-releases opt-in.
+- CRA readiness (opt-in, `[cra.products]`): `cra check` writes `CRA.md` and `cra.json` per product and
+  obligation with its article reference (evidence present, missing, stale, or the manufacturer's
+  responsibility); `cra init` writes starter documents in English and German after you confirm the
+  plan. An SBOM with structural errors counts as missing. Evidence tooling, not legal advice.
+- Management report: `REPORT.html`, one self-contained page that prints to A4/PDF, in English or
+  German, built from the run's JSON.
+- Without Claude Code: `assess draft` sends the report excerpts to an endpoint you configure under
+  `[assess]` and writes a draft assessment; `--dry-run` prints the exact request. The README documents
+  the CLI for other agents and plain shells.
+- Gradle: build files and version catalogues are read statically for direct dependencies, scope and
+  declared versions. A version the files do not state is listed as "version not resolved". Next to a
+  `pom.xml` that resolves the same coordinate, the Gradle declaration adds its location to that entry
+  instead of a second row. Convention plugins and published catalogues are not read; a build SBOM
+  covers them.
+- Maven and Go: manifests are read for direct, test-only and own packages; Java, Go and .NET runtimes
+  are detected. Go modules that only tests or tools import count as dev-only. A Maven package is named
+  `group:artifact` everywhere (issue ids are unchanged).
+- Accuracy: an unknown dependency type reads "unknown" and is `null` in `audit.json`, `issues.json`
+  and coverage entries, never "transitive". The Go version in `go.mod` is a build minimum (runtime
+  status `minimum`), not an end-of-life runtime. Packages without a version and advisories without a
+  rating are reported as coverage gaps. End of life "unknown" is its own state. Unchecked GitHub
+  Actions are listed.
+- Secrets: findings are ranked by context (key body evidence, path labels, value shape).
+- Hosts: login findings are aggregated per user and key.
+- Status: a delta never reports a rule change as progress; a count that follows other rules than the
+  previous run reads "not comparable with the previous run". A run commits the config it read.
+- Fix: the GitHub Actions template runs the CLI at `plugin/scripts/sbom_audit_cli.py`; in 1.2.1 it
+  called a path that does not exist in the tag.
+- Fix: `sbom check --project` and `--branch` cannot name a path outside the `sbom/` folder.
+
 ## 1.2.1 — 2026-11-16
 
 - Upgrading from 1.2.0: the SessionStart hook is no longer installed with the plugin. Run

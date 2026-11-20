@@ -1,7 +1,9 @@
-"""SECRETS.md: open class A and B findings with rotation hints, then the rotated and accepted appendices.
+"""SECRETS.md: open class A and B findings with rotation hints, the open findings ranked down to class C by
+their context (test, docs, vendored, a key header without a key, ...), then the rotated and accepted
+appendices.
 
-Rendered from the redacted `secrets.json` document only, so it can hold no secret value. Class C findings
-(publishable keys, test keys) stay in `secrets.json` and never appear here.
+Rendered from the redacted `secrets.json` document only, so it can hold no secret value. Other class C
+findings (publishable keys, test keys) stay in `secrets.json` and never appear here.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from pathlib import Path
 from ..report import REPORTS_DIR, md
 from ..scan import INVENTORY_FILE
 from . import store
-from .classify import Classes
+from .classify import VALUE_CONTEXTS, Classes, context_text, ranked_lower
 
 SECRETS_FILE = "SECRETS.md"
 CLASS_LABELS = {"A": "A (full access, rotate now)", "B": "B (scoped or billable)"}
@@ -87,11 +89,45 @@ def _entry(f: dict, classes: Classes, inventory, scan_day: str) -> list[str]:
     if f.get("reopened_from"):
         lines.append(f"- reopened: same value as the rotated `{_line(f['reopened_from'])}`, committed after "
                      "its rotation")
+    if f.get("context"):
+        kept = "" if ranked_lower(f) else ("; not ranked lower (the same value is also in a file without "
+                                             "context, or `rank_by_context` is off)")
+        lines.append(f"- context: {_line(context_text(f['context']))}" + _from_class(f) + kept)
     if provider:
-        lines.append(f"- rotate: {_line(provider.hint)}")
+        lines.append(f"- {'if the value is real, rotate' if ranked_lower(f) else 'rotate'}: {_line(provider.hint)}")
         users = also_uses(inventory, provider.packages, f.get("repo") or "")
         if users:
             lines.append(f"- also uses {f.get('provider')}: {', '.join(users)}")
+    return lines + [""]
+
+
+def _from_class(f: dict) -> str:
+    return f", ranked lower from class {f.get('base_class')}" if ranked_lower(f) else ""
+
+
+def _context_counts(open_: list[dict]) -> list[str]:
+    """One line: how many open findings are ranked lower, by context label. Empty when there are none."""
+    counts: dict[str, int] = {}
+    for f in open_:
+        if ranked_lower(f) or f.get("context") in VALUE_CONTEXTS:
+            counts[str(f["context"])] = counts.get(str(f["context"]), 0) + 1
+    if not counts:
+        return []
+    parts = ", ".join(f"{n} {md(context_text(label))}" for label, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    return [f"Ranked lower by context: {sum(counts.values())} open ({parts}). Each is still a finding: a test, "
+            "docs or vendored file can hold a real key. Check it, then rotate it or record a decision.", ""]
+
+
+def _context_section(items: list[dict]) -> list[str]:
+    lines = ["## Ranked lower by context", "",
+             "Open class C findings that are class C only because of where or what they are. A key in test, "
+             "docs, example or vendored files is ranked one class lower; a match that holds no key (header text, "
+             "a variable reference, a name or version) is class C.", ""]
+    if not items:
+        return lines + ["None.", ""]
+    for f in _newest_first(items):
+        lines.append(f"- `{_line(f.get('fingerprint'))}` {_line(f.get('repo'))} `{_line(f.get('file'))}:{f.get('line')}` "
+                     f"({_line(f.get('rule_id'))}): {_line(context_text(f.get('context')))}" + _from_class(f))
     return lines + [""]
 
 
@@ -129,12 +165,14 @@ def render(out: Path, doc: dict, classes: Classes) -> str:
         known = [f["age_days"] for f in items if f.get("age_days") is not None]
         oldest = _age(max(known)) if known else ("unknown" if items else "–")
         L.append(f"| {md(label)} | {len(items)} | {oldest} |")
-    L += ["", ADVICE, "", "## Open", ""]
+    every_open = [f for f in doc.get("findings") or [] if isinstance(f, dict) and f.get("status") == "open"]
+    L += [""] + _context_counts(every_open) + [ADVICE, "", "## Open", ""]
     if not open_:
         L += ["None.", ""]
     for cls in ("A", "B"):
         for f in _newest_first([f for f in open_ if f.get("class") == cls]):
             L += _entry(f, classes, inventory, scan_day)
+    L += _context_section([f for f in every_open if f.get("class") == "C" and f.get("context")])
     L += _appendix("Rotated", [f for f in shown if f.get("status") == "rotated"], decisions, True)
     L += _appendix("Accepted", [f for f in shown if f.get("status") == "accepted"], decisions, False)
     return "\n".join(L).rstrip("\n") + "\n"

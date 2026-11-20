@@ -12,8 +12,10 @@ from pathlib import Path
 
 from . import config, report, scan, vex
 from .config import Config
+from .coverage import UNRESOLVED_TEXT as UNRESOLVED_EVIDENCE
 from .enrich import http_get_json
-from .model import BranchInventory, Component
+from .matching import version_unresolved
+from .model import BranchInventory, Component, direct_text
 from .versions import norm_py
 
 OSV_VULN_API = "https://api.osv.dev/v1/vulns/"
@@ -32,7 +34,7 @@ class Row:
     branch: str
     manifest: str
     version: str
-    how: str                 # direct | transitive | image | runtime
+    how: str                 # direct | transitive | unknown | image | runtime
     ecosystem: str = ""
 
 
@@ -72,11 +74,16 @@ def _norm(ecosystem: str, name: str) -> str:
 def _how(c: Component) -> str:
     if c.kind in ("image", "runtime"):
         return c.kind
-    return "direct" if c.direct else "transitive"
+    return direct_text(c.direct)            # "unknown" when the scan could not tell, never "transitive"
+
+
+def _names(c: Component) -> set[str]:
+    """The normalised names a package answers to: its own and the OSV form (Maven `group:artifact`)."""
+    return {_norm(c.ecosystem, c.name), _norm(c.ecosystem, c.qualified_name())}
 
 
 def _matches(c: Component, patterns: list[str]) -> bool:
-    candidates = {_norm(c.ecosystem, c.name), c.name.lower()}
+    candidates = _names(c) | {c.name.lower(), c.qualified_name().lower()}
     if c.kind == "image":
         image = (c.props.get("image") or "").lower()
         candidates |= {image, image.split("@", 1)[0]}
@@ -88,7 +95,8 @@ def _matches(c: Component, patterns: list[str]) -> bool:
 def rows(out: Path, names: list[str]) -> list[Row]:
     """Every project@branch component whose name (or image reference) matches one of `names`.
 
-    Patterns are case-insensitive fnmatch globs; PyPI names are PEP 503 normalised on both sides.
+    Patterns are case-insensitive fnmatch globs; PyPI names are PEP 503 normalised on both sides. A Maven
+    package matches its artifact name and its `group:artifact` (the name is listed in the latter form).
     """
     inventories, _ = scan.read_inventory(Path(out))
     patterns = [p.lower() for p in names if p]
@@ -97,7 +105,7 @@ def rows(out: Path, names: list[str]) -> list[Row]:
     for inv in inventories:
         for c in inv.components:
             if _matches(c, patterns):
-                found.append(Row(name=c.name, project=inv.project, branch=inv.branch,
+                found.append(Row(name=c.qualified_name() if c.kind == "package" else c.name, project=inv.project, branch=inv.branch,
                                  manifest="; ".join(c.locations) or c.props.get("source", ""),
                                  version=c.version, how=_how(c), ecosystem=c.ecosystem))
     found.sort(key=lambda r: (r.name.lower(), r.project, r.branch, r.version))
@@ -226,9 +234,11 @@ def _audit_hits(rep: dict, ids: set[str]) -> dict[tuple[str, str, str, str, str]
             evidence += f", fix {entry['version']} → {v['fixed_in']}"
         if v.get("kev"):
             evidence = "KEV, " + evidence
+        # `package` is the OSV name (Maven `group:artifact`); an audit.json before it carries the bare name only
+        name = entry.get("package") or entry["name"]
         for loc in entry.get("locations") or []:
             key = (loc["project"], loc["branch"], entry["ecosystem"].lower(),
-                   _norm(entry["ecosystem"], entry["name"]), entry["version"])
+                   _norm(entry["ecosystem"], name), entry["version"])
             hits[key] = evidence + (f" ({loc['manifest']})" if loc.get("manifest") else "")
     for sup in rep.get("suppressed") or []:
         f, st = sup["finding"], sup["statement"]
@@ -236,15 +246,20 @@ def _audit_hits(rep: dict, ids: set[str]) -> dict[tuple[str, str, str, str, str]
         if not ids & ({v.get("id", "")} | set(v.get("aliases") or [])):
             continue
         c = f["component"]
-        key = (f["project"], f["branch"], c["ecosystem"].lower(), _norm(c["ecosystem"], c["name"]), c["version"])
+        name = Component.from_dict(c).qualified_name()
+        key = (f["project"], f["branch"], c["ecosystem"].lower(), _norm(c["ecosystem"], name), c["version"])
         hits.setdefault(key, f"suppressed by VEX: {st.get('status')} ({st.get('justification') or 'no justification'})")
     return hits
 
 
 def _verdicts(inventories: list[BranchInventory], affected: list[tuple[str, str]],
               fixed: dict, hits: dict, incomplete: dict[tuple[str, str], str] | None = None) -> list[Verdict]:
+    """One verdict per affected package occurrence, else one per branch. Names compare in OSV form (Maven
+    `group:artifact` from the purl namespace). A finding audit.json lists is always a hit, even when the
+    inventory no longer names the package the same way: the audit never answers "absent" for it."""
     wanted = {(eco.lower(), _norm(eco, name)): (eco, name) for eco, name in affected}
     incomplete = incomplete or {}
+    used: set[tuple] = set()
     out: list[Verdict] = []
     for inv in inventories:
         gap = incomplete.get((inv.project, inv.branch))
@@ -253,24 +268,39 @@ def _verdicts(inventories: list[BranchInventory], affected: list[tuple[str, str]
         for c in inv.components:
             if c.kind != "package":
                 continue
-            key = (c.ecosystem.lower(), _norm(c.ecosystem, c.name))
-            if key not in wanted:
+            keys = [(c.ecosystem.lower(), n) for n in (_norm(c.ecosystem, c.qualified_name()), _norm(c.ecosystem, c.name))]
+            key = next((k for k in keys if k in wanted), None)
+            if key is None:
                 continue
             found_any = True
-            hit = hits.get((inv.project, inv.branch, *key, c.version))
+            hit_key = next((hk for hk in ((inv.project, inv.branch, *k, c.version) for k in keys) if hk in hits), None)
+            hit = hits.get(hit_key) if hit_key else None
+            if hit_key:
+                used.add(hit_key)
+            name = c.qualified_name()
             if hit and not hit.startswith("suppressed by VEX"):
-                out.append(Verdict(inv.project, inv.branch, VERDICT_HIT, c.name, c.ecosystem, c.version, hit))
+                out.append(Verdict(inv.project, inv.branch, VERDICT_HIT, name, c.ecosystem, c.version, hit))
             elif gap and not hit:
-                out.append(Verdict(inv.project, inv.branch, VERDICT_UNKNOWN, c.name, c.ecosystem, c.version, gap_evidence))
+                out.append(Verdict(inv.project, inv.branch, VERDICT_UNKNOWN, name, c.ecosystem, c.version, gap_evidence))
+            elif not hit and version_unresolved(c.version):
+                out.append(Verdict(inv.project, inv.branch, VERDICT_UNKNOWN, name, c.ecosystem, c.version or "",
+                                   UNRESOLVED_EVIDENCE + (f" ({'; '.join(c.locations)})" if c.locations else "")))
             else:
                 fixes = fixed.get(wanted[key]) or []
                 evidence = hit or (f"{c.version} not in the affected range per osv-scanner"
                                    + (f" (fixed: {', '.join(fixes)})" if fixes else ""))
-                out.append(Verdict(inv.project, inv.branch, VERDICT_PRESENT, c.name, c.ecosystem, c.version, evidence))
+                out.append(Verdict(inv.project, inv.branch, VERDICT_PRESENT, name, c.ecosystem, c.version, evidence))
         if not found_any and gap:
             out.append(Verdict(inv.project, inv.branch, VERDICT_UNKNOWN, evidence=gap_evidence))
         elif not found_any:
             out.append(Verdict(inv.project, inv.branch, VERDICT_ABSENT, evidence="not in SBOM"))
+    scanned = {(inv.project, inv.branch) for inv in inventories}
+    for hk, evidence in hits.items():         # audit.json says affected, the inventory match missed it
+        project, branch, eco, name, version = hk
+        if hk in used or evidence.startswith("suppressed by VEX") or (project, branch) not in scanned:
+            continue                          # `hits` holds only the incident's ids
+        out = [v for v in out if not (v.project == project and v.branch == branch and v.verdict == VERDICT_ABSENT)]
+        out.append(Verdict(project, branch, VERDICT_HIT, name, eco, version, evidence + " (from audit.json)"))
     order = {VERDICT_HIT: 0, VERDICT_UNKNOWN: 1, VERDICT_PRESENT: 2, VERDICT_ABSENT: 3}
     out.sort(key=lambda v: (order[v.verdict], v.project, v.branch, v.name))
     return out
@@ -328,10 +358,13 @@ def verdict_table(inc: Incident) -> str:
 def _affected_purl(eco: str, name: str, inventories: list[BranchInventory]) -> str:
     for inv in inventories:
         for c in inv.components:
-            if c.kind == "package" and c.ecosystem.lower() == eco.lower() and _norm(eco, c.name) == _norm(eco, name) and c.purl:
+            if (c.kind == "package" and c.ecosystem.lower() == eco.lower() and c.purl
+                    and _norm(eco, c.qualified_name()) == _norm(eco, name)):
                 return vex.versionless(c.purl)
     ptype = PURL_TYPE.get(eco.lower(), eco.lower())
     pname = norm_py(name) if ptype == "pypi" else name
+    if ptype == "maven" and ":" in pname:      # OSV `group:artifact` -> purl namespace/name
+        pname = "/".join(pname.split(":", 1))
     return f"pkg:{ptype}/{pname}"
 
 
@@ -407,9 +440,12 @@ def cli_incident(args) -> int:
     print(verdict_table(inc))
     hits = [v for v in inc.verdicts if v.verdict == VERDICT_HIT]
     unknown = [v for v in inc.verdicts if v.verdict == VERDICT_UNKNOWN]
+    unresolved = [v for v in unknown if v.evidence.startswith(UNRESOLVED_EVIDENCE)]
+    unknown = [v for v in unknown if v not in unresolved]
     absent = sorted({v.project for v in inc.verdicts if v.verdict == VERDICT_ABSENT})
     print(f"\n{len(hits)} hit(s), {len(unknown)} branch(es) with an incomplete audit, "
-          f"{len(absent)} project(s) without the component.")
+          + (f"{len(unresolved)} occurrence(s) with the version not resolved, " if unresolved else "")
+          + f"{len(absent)} project(s) without the component.")
     if getattr(args, "vex", False) and absent:
         cfg = config.load(out)
         files = record_absent(cfg, inc, author=getattr(args, "author", None))
@@ -420,4 +456,8 @@ def cli_incident(args) -> int:
     if unknown and not hits:
         print(f"Re-run /sbom-audit:run to complete the audit for: "
               + ", ".join(sorted({f'{v.project}@{v.branch}' for v in unknown})))
-    return 1 if hits else (2 if unknown else 0)
+    if unresolved and not hits:
+        print("A re-run does not help where the version is not resolved: check the version the build actually "
+              "uses (for Maven `mvn dependency:tree` or the BOM that manages it) for: "
+              + ", ".join(sorted({f'{v.project}@{v.branch} ({v.name})' for v in unresolved})))
+    return 1 if hits else (2 if unknown or unresolved else 0)

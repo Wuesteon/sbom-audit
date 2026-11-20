@@ -51,11 +51,22 @@ class ReleaseTests(unittest.TestCase):
 
     def test_changelog_has_1_2_1_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
-        self.assertRegex(text, r"^# Changelog\n\n## 1\.2\.1 — 2026-11-16\n")
+        self.assertRegex(text, r"\n## 1\.2\.1 — 2026-11-16\n")
+        self.assertLess(text.find("## 1.2.1"), text.find("## 1.2.0"), "newest entry first")
         section = text.split("## 1.2.1", 1)[1].split("\n## ", 1)[0]
         for needle in ("/sbom-audit:settings", "autonomous", "code grep", "plugin/", "hook on"):
             self.assertIn(needle, section, needle)
-        self.assertEqual(VERSION, "1.2.1")
+
+    def test_changelog_has_1_3_0_section(self):
+        text = (ROOT / "CHANGELOG.md").read_text()
+        self.assertRegex(text, r"^# Changelog\n\n## 1\.3\.0 — 2026-11-21\n")
+        section = text.split("## 1.3.0", 1)[1].split("\n## ", 1)[0]
+        for needle in ("manifest.json", "`verify", "sbom check", "not_in_build_sbom", "[releases]", "cra check",
+                       "REPORT.html", "assess draft", "Gradle", "group:artifact", "plugin/scripts/sbom_audit_cli.py"):
+            self.assertIn(needle, section, needle)
+        self.assertEqual(VERSION, "1.3.0")
+        template = (ROOT / "plugin" / "templates" / "github-actions" / "sbom-audit.yml").read_text()
+        self.assertIn('SBOM_AUDIT_REF: "sbom-audit--v1.3.0"', template)
 
     def test_changelog_has_1_0_0_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
@@ -74,7 +85,7 @@ class ReleaseTests(unittest.TestCase):
         text = readme + (ROOT / "docs" / "reference.md").read_text()
         for needle in ("## Scheduler", "## Secrets", "STATUS.md", "status.json", "SECRETS.md", "secrets.json",
                        "secrets-decisions.toml", "## Hosts", "HOSTS.md", "hosts-decisions.toml", "api.github.com", "sbom-audit@wuesteon-plugins",
-                       "Art. 13(1)", "Annex I Part II", "Art. 14", "assess_budget_usd", "proposal waiting:"):
+                       "Art. 13(7)", "Annex I Part II", "Art. 14", "assess_budget_usd", "proposal waiting:"):
             self.assertIn(needle, text, needle)
         for skill in ("setup", "run", "status", "assess", "lookup", "incident", "vex", "secrets", "schedule", "hosts"):
             self.assertIn(f"/sbom-audit:{skill}", text, skill)

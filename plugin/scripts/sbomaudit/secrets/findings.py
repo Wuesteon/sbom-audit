@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import gitio
-from .classify import Classes, classify
+from .classify import Classes, classify, value_context
 
 if TYPE_CHECKING:  # the fixture lives in the tests package; never imported at runtime
     from tests.secrets_fixture import Planted
@@ -23,7 +23,7 @@ KEY_FILE = ".cache/secrets-id.key"
 KEY_ENV = "SBOM_AUDIT_SECRETS_KEY"
 FIELDS = ("fingerprint", "value_id", "repo", "branches", "commit", "author", "date", "file", "line",
           "rule_id", "provider", "class", "entropy", "live_in_tree", "age_days", "status",
-          "first_seen", "last_seen", "reopened_from", "rotated_on")
+          "first_seen", "last_seen", "reopened_from", "rotated_on", "base_class", "context")
 _DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _WINDOW = 5
 _HEX_WINDOW = 8       # a window starting with 5 lowercase hex characters: see assert_redacted
@@ -154,6 +154,8 @@ def redact(row: dict, *, repo_name: str, repo: Path, key: bytes, classes: Classe
         "last_seen": today,
         "reopened_from": None,
         "rotated_on": None,
+        "base_class": cls,                           # class of rule and value; `class` adds the path context
+        "context": value_context(row["RuleID"], secret),  # a value-shape label; the path label is set later
     }
     return {name: values[name] for name in FIELDS}
 

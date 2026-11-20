@@ -1,10 +1,12 @@
 # sbom-audit status 2026-11-07
 
-Run host `eval-fixture`, sbom-audit 1.0.0, mode portfolio, duration 12.0 s, exit 1.
+Run host `eval-fixture`, sbom-audit 1.3.0, mode portfolio, duration 12.0 s, exit 1.
 
-🛡️ sbom-audit 1.0.0: findings not assessed yet; run /sbom-audit:assess
+🛡️ sbom-audit 1.3.0: findings not assessed yet; run /sbom-audit:assess
 
 ## Since last run
+
+*Resolved* means no longer open: fixed, or closed by a VEX decision. *No longer counted* means the advisory left this set (its severity, KEV flag or production scope changed, or a VEX decision covers only some projects) but AUDIT.md still reports it.
 
 Counts: 1 vulnerable package versions, 0 KEV, 1 CRITICAL/HIGH in production, 0 EOL, 0 floating tags, 0 suppressed by VEX.
 

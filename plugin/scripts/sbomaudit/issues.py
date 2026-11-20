@@ -6,8 +6,9 @@ the kind, the triage priority, the place (project or host, branches, file, line)
 Suppressed (VEX), decided (secrets), accepted (hosts) and informational findings are left out.
 
 Priorities follow the assessment's triage order:
-1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production project (not dev-only)
-and class B secrets · 4 end-of-life runtimes and images · 5 floating image tags · 6 everything else.
+1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production project (not dev-only),
+an advisory with no severity ("not rated", reason `unrated_production`) in the same scope, and class B secrets ·
+4 end-of-life runtimes and images · 5 floating image tags · 6 everything else.
 """
 from __future__ import annotations
 
@@ -19,8 +20,11 @@ from pathlib import Path
 
 from . import __version__
 from .cache import atomic_write
+from .coverage import severity_text, unrated_advisories
 from .cvss import SEV_ORDER
-from .report import ACTIONABLE, JSON_FILE as AUDIT_JSON, md, worst_advisory
+from .model import direct_text, merge_direct
+from .report import ACTIONABLE, JSON_FILE as AUDIT_JSON, counts_as_production, md, worst_advisory
+from .secrets.classify import context_text, ranked_lower
 from .versions import ver_key
 
 ISSUES_JSON = "issues.json"
@@ -28,12 +32,16 @@ ISSUES_FILE = "ISSUES.md"
 SCHEMA = 1
 MD_BRANCHES = 3                                  # ISSUES.md names this many branches; issues.json has all
 KINDS = ("secret", "vulnerability", "eol", "floating_tag", "host")
-PRIORITY_REASONS = {1: ("secret_a",), 2: ("kev", "host_critical"), 3: ("critical_high_production", "secret_b"),
-                    4: ("eol",), 5: ("floating_tag",), 6: ("other",)}
+PRIORITY_REASONS = {1: ("secret_a",), 2: ("kev", "host_critical"),
+                    3: ("critical_high_production", "unrated_production", "secret_b"),
+                    4: ("eol", "secret_context"), 5: ("floating_tag",), 6: ("other",)}
 # host finding groups a fixer can act on; logins, Lynis suggestions and `info` are not work items
 HOST_GROUPS = ("change", "patch", "permissive", "lynis_warning", "lynis_index", "third_party")
 ROTATE_HINT = ("rotate the credential at the provider, redeploy what uses it, verify the old value is dead, "
                "then `secrets resolve <fingerprint> rotated`; removing the line does not un-leak it")
+CHECK_HINT = ("{context}, so ranked one class lower: check whether the value is a real credential. If it is, "
+              "rotate it like any leak (`secrets resolve <fingerprint> rotated`); if not, "
+              "`secrets resolve <fingerprint> test_fixture` or `false_positive`")
 
 
 def _now() -> str:
@@ -78,33 +86,62 @@ def _vulnerabilities(rep: dict) -> list[dict]:
             places.setdefault((loc["project"], loc["manifest"]), []).append(loc)
         for (project, manifest), locs in sorted(places.items()):
             dev_only = all(l.get("scope") == "optional" for l in locs)
-            direct = any(l.get("direct") for l in locs)
+            direct = merge_direct(l.get("direct") for l in locs)      # None: the scan could not tell
             in_production = project in production
+            # a supported release ranks like production (out-of-support releases are not in audit.json)
+            ranked = any(counts_as_production(l, production) for l in locs)
             if v.get("kev"):
                 priority, reason = 2, "kev"
-            elif v.get("max_severity") in ACTIONABLE and in_production and not dev_only:
+            elif v.get("max_severity") in ACTIONABLE and ranked:
                 priority, reason = 3, "critical_high_production"
+            elif ranked and unrated_advisories(v):   # not rated is not low: read it before the MEDIUMs
+                priority, reason = 3, "unrated_production"
             else:
                 priority, reason = 6, "other"
             version = v.get("version") or "unresolved"
+            where = {"project": project, "branches": sorted({l["branch"] for l in locs}),
+                     "path": manifest, "line": None}
+            tags = sorted({l["release"] for l in locs if l.get("release")})
+            if tags:                         # only with release scanning: the release tags holding it
+                where["releases"] = tags
             issues.append({
+                # the id keeps the short name (ids are stable across versions); every text names the package
+                # in full, Maven `group:artifact`
                 "id": f"vuln:{project}:{manifest}:{v['ecosystem']}:{v['name']}@{version}",
                 "kind": "vulnerability", "priority": priority, "reason": reason,
                 "severity": v.get("max_severity"), "production": in_production,
-                "title": f"{v['name']} {version}: {len(advisories)} advisories, worst {v.get('max_severity')}"
+                "title": f"{v.get('package') or v['name']} {version}: {len(advisories)} advisories, worst {severity_text(v.get('max_severity'))}"
+                         + (f", {n} not rated" if (n := len(unrated_advisories(v))) and v.get("max_severity") != "UNKNOWN"
+                            else "")
                          + (" (KEV, actively exploited)" if v.get("kev") else ""),
-                "where": {"project": project, "branches": sorted({l["branch"] for l in locs}),
-                          "path": manifest, "line": None},
-                "details": {"ecosystem": v["ecosystem"], "package": v["name"], "version": v.get("version"),
+                "where": where,
+                "details": {"ecosystem": v["ecosystem"], "package": v.get("package") or v["name"],
+                            "version": v.get("version"),
                             "direct": direct, "dev_only": dev_only, "kev": bool(v.get("kev")),
                             "worst": _worst(advisories),
                             "advisories": [_advisory(a) for a in advisories]},
                 "fix": {"action": "upgrade" if target else "no_fix_released", "target": target,
                         "unfixed_advisories": sum(1 for f in fixes if not f),
-                        "hint": ("bump the package in the manifest and refresh the lockfile" if direct else
-                                 "transitive: upgrade the parent that pulls it in, or refresh the lockfile")},
+                        "hint": _upgrade_hint(direct, locs)},
             })
     return issues
+
+
+def _upgrade_hint(direct: bool | None, locs: list[dict]) -> str:
+    if direct:
+        return "bump the package in the manifest and refresh the lockfile"
+    if direct is None:                      # unknown is not transitive: say what to check, not what it is
+        if any(l.get("imported") for l in locs):
+            return ("listed by the imported build SBOM, which does not say whether it is direct: if the build "
+                    "declares it, bump it there; otherwise upgrade the parent that pulls it in, or pin the version "
+                    "where the build manages versions (Maven: <dependencyManagement>), then re-import the SBOM")
+        return ("dependency type unknown (the scan could not tell whether the manifest declares it): if it does, "
+                "bump it there and refresh the lockfile; otherwise upgrade the parent that pulls it in")
+    if any(l.get("imported") for l in locs):
+        # found only by an imported build SBOM: there is no manifest line or lockfile entry to point at
+        return ("transitive, listed by the imported build SBOM: upgrade the parent that pulls it in, or pin the "
+                "version where the build manages versions (Maven: <dependencyManagement>), then re-import the SBOM")
+    return "transitive: upgrade the parent that pulls it in, or refresh the lockfile"
 
 
 def _secrets(doc: dict | None, production: set[str]) -> list[dict]:
@@ -114,17 +151,24 @@ def _secrets(doc: dict | None, production: set[str]) -> list[dict]:
             continue
         cls = f.get("class")
         priority, reason = {"A": (1, "secret_a"), "B": (3, "secret_b")}.get(str(cls), (6, "other"))
+        lower = ranked_lower(f)                 # a test, docs, vendored, ... file: below production work
+        if lower and cls == "B":
+            priority, reason = 4, "secret_context"
+        fix = ({"action": "review", "target": None, "hint": CHECK_HINT.format(context=context_text(f["context"]).capitalize())}
+               if lower else {"action": "rotate", "target": None, "hint": ROTATE_HINT})
         issues.append({
             "id": f"secret:{f['fingerprint']}",
             "kind": "secret", "priority": priority, "reason": reason, "severity": f"class {cls}",
-            "production": f.get("repo") in production,
-            "title": f"{f.get('rule_id')} ({f.get('provider')}) in {f.get('file')}:{f.get('line')}",
+            "production": f.get("repo") in production and not lower,
+            "title": f"{f.get('rule_id')} ({f.get('provider')}) in {f.get('file')}:{f.get('line')}"
+                     + (f" ({context_text(f['context'])})" if f.get("context") else ""),
             "where": {"project": f.get("repo"), "branches": sorted(f.get("branches") or []),
                       "path": f.get("file"), "line": f.get("line")},
             "details": {"fingerprint": f["fingerprint"], "rule_id": f.get("rule_id"), "provider": f.get("provider"),
                         "class": cls, "commit": f.get("commit"), "live_in_tree": bool(f.get("live_in_tree")),
-                        "age_days": f.get("age_days")},
-            "fix": {"action": "rotate", "target": None, "hint": ROTATE_HINT},
+                        "age_days": f.get("age_days"), "context": f.get("context"),
+                        "base_class": f.get("base_class") or cls},
+            "fix": fix,
             "_first_seen": f.get("first_seen"),
         })
     return issues
@@ -137,16 +181,22 @@ def _eol(rep: dict) -> list[dict]:
         if r.get("status") != "EOL":
             continue
         places: dict[tuple[str, str], set[str]] = {}
+        tags: dict[tuple[str, str], set[str]] = {}
         for loc in r.get("locations") or []:
             places.setdefault((loc["project"], loc.get("source") or ""), set()).add(loc["branch"])
+            if loc.get("release"):
+                tags.setdefault((loc["project"], loc.get("source") or ""), set()).add(loc["release"])
         for (project, source), branches in sorted(places.items()):
+            where = {"project": project, "branches": sorted(branches),
+                     "path": source.split(":", 1)[0] or None, "line": None}
+            if tags.get((project, source)):
+                where["releases"] = sorted(tags[(project, source)])
             issues.append({
                 "id": f"eol:{project}:{r['product']}@{r['cycle']}:{source}",
                 "kind": "eol", "priority": 4, "reason": "eol", "severity": "EOL",
                 "production": project in production,
                 "title": f"{r['product']} {r['cycle']} is past end of life ({r.get('eol_date') or 'date unknown'})",
-                "where": {"project": project, "branches": sorted(branches),
-                          "path": source.split(":", 1)[0] or None, "line": None},
+                "where": where,
                 "details": {"product": r["product"], "cycle": r["cycle"], "eol_date": r.get("eol_date"),
                             "latest_in_cycle": r.get("latest"), "source": source},
                 "fix": {"action": "upgrade_runtime", "target": None,
@@ -224,9 +274,52 @@ def _hosts(doc: dict | None, accepted: dict[str, set[str]] | None = None) -> lis
 
 # --------------------------------------------------------------------------- document
 
+def dependency_type(i: dict) -> str | None:
+    """'direct', 'transitive' or 'unknown' for a vulnerability issue (`details.direct` true, false or null);
+    None for every other kind. Only an explicit false is transitive."""
+    details = i.get("details")
+    if i.get("kind") != "vulnerability" or not isinstance(details, dict):
+        return None
+    return direct_text(details.get("direct"))
+
+
+def is_transitive(i: dict) -> bool:
+    """A vulnerability known not to be a direct dependency of that manifest (`details.direct` false). Unknown
+    (null) is not transitive. Every other kind is False."""
+    return dependency_type(i) == "transitive"
+
+
+def dependency_rank(i: dict) -> int:
+    """Order within a priority: direct 0, unknown 1, transitive 2 (and every other kind 0)."""
+    return {"unknown": 1, "transitive": 2}.get(dependency_type(i) or "", 0)
+
+
+def dependency_split(issues: list[dict], max_priority: int = 3) -> dict:
+    """Vulnerability issues at priority `max_priority` or more urgent, counted as direct, transitive and unknown
+    dependencies (`dev_only` counts those of them only dev-only manifests hold). A view, not a ranking: the
+    priority of an issue does not depend on it."""
+    vulns = [i for i in issues if isinstance(i, dict) and i.get("kind") == "vulnerability"
+             and isinstance(i.get("priority"), int) and i["priority"] <= max_priority]
+    kinds = Counter(dependency_type(i) for i in vulns)
+    return {"total": len(vulns), "direct": kinds["direct"], "transitive": kinds["transitive"],
+            "unknown": kinds["unknown"],
+            "dev_only": sum(1 for i in vulns if (i.get("details") or {}).get("dev_only"))}
+
+
+def split_text(split: dict) -> str:
+    """'3, of which 1 in direct dependencies and 2 in transitive ones', naming the unknown ones when there are."""
+    head = f"{split['total']}, of which {split['direct']} in direct dependencies"
+    if split.get("unknown"):
+        return (f"{head}, {split['transitive']} in transitive ones and {split['unknown']} whose dependency type "
+                "the scan could not tell")
+    return f"{head} and {split['transitive']} in transitive ones"
+
+
 def _sort_key(i: dict):
+    """Priority, production first, direct dependencies before unknown and transitive ones, severity, place, id."""
     place = i["where"].get("project") or i["where"].get("host") or ""
-    return (i["priority"], not i["production"], SEV_ORDER.get(str(i.get("severity")), 5), place.lower(), i["id"])
+    return (i["priority"], not i["production"], dependency_rank(i), SEV_ORDER.get(str(i.get("severity")), 5),
+            place.lower(), i["id"])
 
 
 def _counts(issues: list[dict]) -> dict:
@@ -284,6 +377,18 @@ def _where_cell(i: dict) -> str:
     return f"{path} ({shown or '–'})"
 
 
+def _kind_cell(i: dict) -> str:
+    """The kind; a vulnerability also says whether the package is a direct or transitive dependency, or that
+    the scan could not tell."""
+    text = i["kind"].replace("_", " ")
+    if i["kind"] == "vulnerability" and isinstance(i.get("details"), dict):
+        kind = dependency_type(i)
+        text += ", dependency type unknown" if kind == "unknown" else f", {kind}"
+        if i["details"].get("dev_only"):
+            text += ", dev-only"
+    return text
+
+
 def _fix_cell(i: dict) -> str:
     fix = i["fix"]
     text = fix["action"].replace("_", " ") + (f" → {md(fix['target'])}" if fix.get("target") else "")
@@ -299,8 +404,19 @@ def render_md(doc: dict) -> str:
          "the machine-readable list is `issues.json`. Never edit either by hand. Suppressed, decided, accepted and "
          "informational findings are not listed.", "",
          f"{counts['total']} open: " + (", ".join(f"{n} {k}" for k, n in counts["by_kind"].items()) or "nothing") + ".",
-         "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production, class B "
-         "secret · 4 end of life · 5 floating tag · 6 other.", ""]
+         "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production or a supported "
+         "release or not rated there, class B secret · 4 end of life, a secret ranked lower by its context "
+         "(test, docs, ...) · 5 floating tag · 6 other.", ""]
+    split = dependency_split(doc["issues"])
+    if split["total"]:
+        L += [f"Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "
+              + split_text(split) + ". Within a priority, direct dependencies are listed first: they are fixed in "
+              "your own manifest; a transitive one through the parent that pulls it in, or a lockfile refresh"
+              + ("; one of unknown type comes between them: check the manifest first, unknown is not transitive"
+                 if split["unknown"] else "") + ". Transitive "
+              "does not mean harmless: a transitive package is installed and can run like a direct one, and there "
+              "is no reachability analysis, so each one stays a finding until it is fixed or a VEX decision says "
+              "otherwise.", ""]
     if doc.get("incomplete"):
         L += ["**Incomplete:** these sources failed, so their part of the list may be missing issues:", ""]
         L += [f"- {md(s.get('source'))}: {md(s.get('detail'))}" for s in doc["incomplete"]] + [""]
@@ -314,7 +430,7 @@ def render_md(doc: dict) -> str:
         flag = " (production)" if items[0]["production"] else ""
         L += [f"## {'Host ' if kind == 'host' else ''}{md(name)}{flag}", "",
               "| P | Kind | Issue | Where | Fix | Open since |", "|---|---|---|---|---|---|"]
-        L += [f"| {i['priority']} | {i['kind'].replace('_', ' ')} | {md(i['title'])} | {_where_cell(i)} | "
+        L += [f"| {i['priority']} | {_kind_cell(i)} | {md(i['title'])} | {_where_cell(i)} | "
               f"{_fix_cell(i)} | {i['first_seen']} |" for i in items]
         L.append("")
     return "\n".join(L)

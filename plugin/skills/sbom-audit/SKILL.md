@@ -45,7 +45,7 @@ Rotation sequence: rotate at the provider → redeploy → verify by hand that t
 
 ## CRA
 
-The Cyber Resilience Act's Art. 14 reporting obligations apply since 2026-09-11, and the reporting runbook arrives in a later release. Evidence tooling, not legal advice.
+Art. 14 reporting applies since 2026-09-11. `/sbom-audit:cra` shows readiness per configured product, never a verdict. Evidence tooling, not legal advice.
 
 ## Common mistakes
 

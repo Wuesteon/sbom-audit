@@ -1,6 +1,6 @@
 # Dependency Audit — 2026-11-07
 
-Generated 2026-11-07T03:00:00Z by sbom-audit 1.0.0. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
+Generated 2026-11-07T03:00:00Z by sbom-audit 1.3.0. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
 
 ## Source status
 
@@ -20,6 +20,8 @@ A failed source means its section below is empty, not clean.
 | … in CISA KEV (actively exploited) | 0 |
 | … max severity HIGH | 1 |
 | CRITICAL/HIGH in production projects (excluding dev-only) | 1 |
+| Severity not rated in production (excluding dev-only, KEV) | 0 |
+| Packages with version not resolved, not checked for vulnerabilities | 0 |
 | Dev-only vulnerable package versions | 0 |
 | Vulnerable direct dependencies | 1 |
 | Runtimes / images past end-of-life | 0 |
@@ -28,7 +30,7 @@ A failed source means its section below is empty, not clean.
 | Direct deps ≥1 major behind latest | 0 |
 | Suppressed by VEX | 0 |
 
-MEDIUM, LOW and UNKNOWN advisories are not listed below; they are in `audit.json` under `vulnerabilities`.
+MEDIUM and LOW advisories are not listed below, nor not-rated ones outside production; they are in `audit.json` under `vulnerabilities`.
 
 ## 🔴 Actively exploited (CISA KEV)
 
@@ -36,7 +38,7 @@ None of the vulnerable package versions is in the CISA Known Exploited Vulnerabi
 
 ## Critical and high severity by project
 
-KEV, CRITICAL and HIGH package versions with runtime scope; dev-only occurrences are listed further down. Production projects come first. `Fix target` is the lowest version that closes every listed advisory (`–` = no fix released). `direct` = the manifest declares the package itself; otherwise it is transitive and the fix is a lockfile refresh of the parent.
+KEV, CRITICAL and HIGH package versions with runtime scope; dev-only occurrences are listed further down. Production projects come first. `Fix target` is the lowest version that closes every listed advisory (`–` = no fix released). Direct `yes` = the manifest declares the package itself; `no` = it is transitive and the fix is a lockfile refresh of the parent; `unknown` = the scan could not tell whether the manifest declares it, which is not the same as transitive: check the manifest first.
 
 ### shop-web (production)
 
@@ -73,4 +75,24 @@ None.
 ## Notes
 
 None.
+
+## How this report was produced
+
+sbom-audit fixture on Python 3.12.0 (fixture). Configuration: `sbom-audit.toml` not read (defaults).
+
+| Tool | Version |
+|---|---|
+| syft | 1.18.1 |
+| osv-scanner | 2.0.2 |
+| git | 2.47.1 |
+
+| Data source | Status | Freshness |
+|---|---|---|
+| OSV (osv-scanner) | ok | queried live during this audit (2026-11-07T03:00:00Z) |
+| CISA KEV | ok | catalogue 2026-11-06T15:00:00.000Z (version 2026.11.06), fetched 2026-11-07T02:59:00+00:00, downloaded during this audit |
+| endoflife.date | ok | nothing to look up |
+| npm/PyPI/JSR registries | ok | nothing to look up |
+| OpenVEX | ok | 0 statements in `vex/` |
+
+The secrets scan's own results are in `SECRETS.md`. `manifest.json` records the run's start and end, the audited commits and the SHA-256 and size of every file the run wrote; `sbom_audit_cli.py verify` recomputes them.
 

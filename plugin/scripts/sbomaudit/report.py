@@ -12,11 +12,11 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import __version__
+from . import __version__, coverage, sbomimport, sbomquality
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import fixed_in
-from .model import BranchInventory, Finding
+from .model import BranchInventory, Finding, qualified_name
 from .versions import ver_key
 from .vex import Suppressed
 
@@ -30,13 +30,19 @@ OUTDATED_CAP = 60
 SEVERITY_ROWS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 ACTIONABLE = ("CRITICAL", "HIGH")
 EOL_ICON = {"EOL": "🔴 EOL", "EOL soon": "🟠 EOL soon", "supported": "🟢 supported", "unknown": "⚪ unknown"}
-EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3}
+EOL_ORDER = {"EOL": 0, "EOL soon": 1, "unknown": 2, "supported": 3, "minimum": 4}   # minimum: enrich.build_minimum
 # INVENTORY.md overview columns: (header, component kind, names)
 OVERVIEW_COLUMNS = [("Node", "runtime", ("nodejs",)), ("Python", "runtime", ("python",)),
                     ("Deno", "runtime", ("deno",)), ("Expo/React Native", "package", ("expo", "react-native")),
                     ("SvelteKit", "package", ("@sveltejs/kit",)), ("NestJS", "package", ("@nestjs/core",)),
                     ("Astro", "package", ("astro",)), ("Vite", "package", ("vite",)),
                     ("FastAPI", "package", ("fastapi",)), ("Postgres", "runtime", ("postgresql",))]
+# shown only when a branch has a value in them (a JavaScript portfolio keeps the table above unchanged); the
+# names are endoflife.date products, as the readers write a runtime component's name
+OVERVIEW_OPTIONAL = [("Java/JDK", "runtime", ("java", "jdk", "openjdk", "eclipse-temurin", "amazon-corretto",
+                                              "oracle-jdk", "azul-zulu", "microsoft-build-of-openjdk",
+                                              "redhat-build-of-openjdk", "sapmachine", "graalvm")),
+                     ("Go", "runtime", ("go",)), (".NET", "runtime", ("dotnet", "dotnetfx"))]
 
 LOG_HEADER = ("# sbom-audit log\n\nAppend-only. Each run appends one line with the fields: time, `run`, projects, "
               "vulnerable package versions, KEV, CRITICAL, HIGH, EOL runtimes/images, floating images, suppressed by VEX. "
@@ -55,6 +61,17 @@ _CONTROLS = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 def md(s) -> str:
     """One table-safe line from untrusted text (advisory summaries, paths, authors, host output)."""
     return _CONTROLS.sub(" ", _LINE_BREAKS.sub(" ", str(s).replace("|", "\\|")))
+
+
+def _pkg(v: dict) -> str:
+    """The package name a reader sees: Maven `group:artifact`, every other ecosystem its own full name.
+    `name` (the bare artifact for Maven) stays in audit.json for the issue ids and status identities."""
+    return v.get("package") or v["name"]
+
+
+def _direct_cell(direct) -> str:
+    """The Direct column: `yes`, `no` (transitive) or `unknown` (the scan could not tell; never shown as `no`)."""
+    return {True: "yes", False: "no"}.get(direct, "unknown")
 
 
 def _sev_label(v: dict) -> str:
@@ -110,20 +127,39 @@ def _sources(sources: dict | None) -> dict:
     return out
 
 
-def _vulnerabilities(findings: list[Finding]) -> list[dict]:
+def out_of_support(releases: dict | None, project: str, branch: str) -> bool:
+    """True for a release past its support period: listed in releases.json, not counted as open work."""
+    info = (releases or {}).get((project, branch))
+    return bool(info) and not info.get("supported", True)
+
+
+def counts_as_production(loc: dict, production: set[str]) -> bool:
+    """A location ranked like production: runtime scope in a production project or in a supported release
+    (a release location in `audit.json` carries `release`; out-of-support ones are not in it)."""
+    return loc.get("scope") != "optional" and (loc["project"] in production or bool(loc.get("release")))
+
+
+def _vulnerabilities(findings: list[Finding], releases: dict | None = None) -> list[dict]:
     groups: dict[tuple, dict] = {}
     scopes: dict[tuple, set] = defaultdict(set)
     ids: dict[tuple, dict] = defaultdict(dict)
     for f in findings:
+        if out_of_support(releases, f.project, f.branch):
+            continue
         c = f.component
         key = (c.ecosystem, c.name, c.version)
         g = groups.get(key)
         if g is None:
             g = groups[key] = {"ecosystem": c.ecosystem, "name": c.name, "version": c.version,
+                               "package": c.qualified_name(), "purl": c.purl.split("?", 1)[0],
                                "scope": "unknown", "direct_anywhere": False, "locations": [], "vulns": []}
         scopes[key].add(c.scope)
         loc = {"project": f.project, "branch": f.branch, "manifest": _manifest(c),
-               "direct": bool(c.direct), "scope": c.scope}
+               "direct": c.direct, "scope": c.scope}
+        if c.props.get("imported"):          # from an imported build SBOM (only then: audit.json unchanged)
+            loc["imported"] = True
+        if (f.project, f.branch) in (releases or {}):
+            loc["release"] = releases[(f.project, f.branch)]["tag"]
         if loc not in g["locations"]:
             g["locations"].append(loc)
         if c.direct:
@@ -152,14 +188,23 @@ def _vulnerabilities(findings: list[Finding]) -> list[dict]:
     return rows
 
 
-def _runtimes(eol_rows: list[dict]) -> list[dict]:
+def _runtimes(eol_rows: list[dict], releases: dict | None = None) -> list[dict]:
     groups: dict[tuple, dict] = {}
     for r in eol_rows:
-        key = (r["product"], r.get("cycle", ""))
+        if out_of_support(releases, r["project"], r["branch"]):
+            continue
+        # a go.mod build minimum (status `minimum`, enrich.build_minimum) is its own row, never merged into
+        # the runtime row of the same cycle
+        key = (r["product"], r.get("cycle", ""), r.get("basis"))
         g = groups.setdefault(key, {"product": r["product"], "cycle": r.get("cycle", ""),
                                     "status": r.get("status", "unknown"), "eol_date": r.get("eol_date"),
                                     "latest": r.get("latest"), "locations": []})
-        g["locations"].append({"project": r["project"], "branch": r["branch"], "source": r.get("source", "")})
+        if r.get("basis"):
+            g.update(basis=r["basis"], cycle_status=r.get("cycle_status", "unknown"))
+        loc = {"project": r["project"], "branch": r["branch"], "source": r.get("source", "")}
+        if (r["project"], r["branch"]) in (releases or {}):
+            loc["release"] = releases[(r["project"], r["branch"])]["tag"]
+        g["locations"].append(loc)
     rows = list(groups.values())
     for g in rows:
         g["locations"].sort(key=lambda l: (l["project"], l["branch"]))
@@ -170,6 +215,8 @@ def _runtimes(eol_rows: list[dict]) -> list[dict]:
 def _unpinned_images(inventories: list[BranchInventory]) -> list[dict]:
     rows = []
     for inv in inventories:
+        if inv.release:                      # a release is frozen: the tag is pinned on the branches
+            continue
         for c in inv.components:
             if c.kind == "image" and c.props.get("floating"):
                 rows.append({"project": inv.project, "branch": inv.branch, "image": c.props.get("image") or c.name,
@@ -192,32 +239,71 @@ def _notes(inventories: list[BranchInventory]) -> list[str]:
                 notes.append(f"{tag}: `{c.props.get('image', c.name)}` ({_manifest(c)}) installs {files} with "
                              "non-pinned requirements, so the image may run versions other than the lockfile "
                              "audited here. Pin them (`uv export --format requirements-txt`) or install from the lockfile.")
-        unresolved = sorted({c.name for c in inv.components if c.kind == "package" and c.direct and not c.version})
-        if unresolved:
-            shown = ", ".join(f"`{n}`" for n in unresolved[:10]) + (" …" if len(unresolved) > 10 else "")
-            notes.append(f"{tag}: {len(unresolved)} direct dependencies have no lockfile version (unresolved, "
-                         f"not matched against OSV): {shown}")
+    # packages without a version: `unresolved_versions` (coverage.py)
+    return notes + _import_notes(inventories) + _unchecked_actions_notes(inventories)
+
+
+def imported_sboms(inventories: list[BranchInventory]) -> list[dict]:
+    """One row per inventory whose packages (of some ecosystems) come from an imported build SBOM."""
+    return [{"project": inv.project, "branch": inv.branch, "scanned_commit": inv.commit, **inv.package_source}
+            for inv in sorted(inventories, key=lambda i: (i.project.lower(), i.branch)) if inv.package_source]
+
+
+def _import_notes(inventories: list[BranchInventory]) -> list[str]:
+    return [f"{md(r['project'])}@{md(r['branch'])}: {md(sbomimport.describe(r))}" for r in imported_sboms(inventories)]
+
+
+def is_github_action(c) -> bool:
+    """A GitHub Action used in a workflow (`pkg:github/<owner>/<repo>@<ref>`, Syft's workflow catalogers)."""
+    return c.kind == "package" and (c.ecosystem == "github" or (c.purl or "").startswith("pkg:github/"))
+
+
+def unchecked_actions(inventories: list[BranchInventory]) -> int:
+    """GitHub Actions in the branches' inventories (one per action and branch). They are inventoried but not
+    checked for vulnerabilities: OSV's "GitHub Actions" advisories carry only ECOSYSTEM ranges, which OSV
+    does not match against a version, and workflows mostly pin a floating major tag (`v4`) or a commit."""
+    return sum(1 for inv in inventories if not inv.release for c in inv.components if is_github_action(c))
+
+
+def _unchecked_actions_notes(inventories: list[BranchInventory]) -> list[str]:
+    notes = []
+    for inv in sorted(inventories, key=lambda i: (i.project.lower(), i.branch)):
+        if inv.release:
+            continue
+        names = sorted({c.name for c in inv.components if is_github_action(c)})
+        if names:
+            shown = ", ".join(f"`{md(n)}`" for n in names[:10]) + (" …" if len(names) > 10 else "")
+            notes.append(f"{inv.project}@{inv.branch}: {len(names)} GitHub Actions are inventoried but not checked "
+                         f"for vulnerabilities (OSV does not match versions for this ecosystem): {shown}")
     return notes
 
 
 def build(cfg: Config, inventories: list[BranchInventory], findings: list[Finding],
-          suppressed: list[Suppressed], eol: list[dict], outdated: list[dict], sources: dict | None) -> dict:
-    """Everything the writers need, JSON-serialisable (this is `audit.json`)."""
+          suppressed: list[Suppressed], eol: list[dict], outdated: list[dict], sources: dict | None,
+          releases: dict | None = None) -> dict:
+    """Everything the writers need, JSON-serialisable (this is `audit.json`).
+
+    `releases` is `releases.context()`: (project, branch) -> release info for every release inventory.
+    Locations in a supported release carry `release: <tag>`; out-of-support releases are left out of
+    `vulnerabilities` and `runtimes` (they are listed in `releases` and in `releases.json`)."""
     packages = [c for inv in inventories for c in inv.components if c.kind == "package"]
     stats = {
         "projects": len({i.project for i in inventories}),
-        "branches": len(inventories),
+        "branches": sum(1 for i in inventories if not i.release),
         "unique_package_versions": len({(c.ecosystem, c.name, c.version) for c in packages}),
         "occurrences": len(packages),
         "direct_dependencies": sum(1 for c in packages if c.direct),
         "images": sum(1 for inv in inventories for c in inv.components if c.kind == "image"),
         "runtimes": sum(1 for inv in inventories for c in inv.components if c.kind == "runtime"),
+        "github_actions_unchecked": unchecked_actions(inventories),
     }
-    return {
+    unresolved = coverage.unresolved_versions(inventories, releases)
+    stats["unresolved_versions"] = sum(r["count"] for r in unresolved)
+    rep = {
         "generated_at": _now(),
         "sources": _sources(sources),
-        "vulnerabilities": _vulnerabilities(findings),
-        "runtimes": _runtimes(eol),
+        "vulnerabilities": _vulnerabilities(findings, releases),
+        "runtimes": _runtimes(eol, releases),
         "outdated": [dict(o) for o in outdated],
         "unpinned_images": _unpinned_images(inventories),
         "suppressed": [s.to_dict() if isinstance(s, Suppressed) else dict(s) for s in suppressed],
@@ -225,6 +311,19 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "stats": stats,
         "production_projects": sorted(name for name, opts in cfg.projects.items() if opts.production),
     }
+    if unresolved:                           # only when some package was not checked (coverage.py)
+        rep["unresolved_versions"] = unresolved
+    imports = imported_sboms(inventories)
+    if imports:                              # only with an imported build SBOM (sbomimport.py)
+        rep["imported_sboms"] = imports
+        stats["imported_sboms"] = len(imports)
+        stats["imported_sboms_not_current"] = sum(1 for r in imports if sbomimport.staleness(r))
+    if releases:                             # only with release scanning: audit.json is unchanged without it
+        stats["releases"] = len(releases)
+        rep["releases"] = [{"project": p, "branch": b, "tag": r["tag"], "date": r.get("date"),
+                            "supported": r["supported"], "support_until": r["support_until"]}
+                           for (p, b), r in sorted(releases.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1]))]
+    return rep
 
 
 def write_json(rep: dict, out: Path) -> Path:
@@ -267,17 +366,24 @@ def _summary(rep: dict) -> list[str]:
     production = set(rep.get("production_projects", []))
     by_sev = Counter(v["max_severity"] for v in vulns)
     prod_rows = [v for v in vulns if _actionable(v)
-                 and any(l["project"] in production and l.get("scope") != "optional" for l in v["locations"])]
+                 and any(counts_as_production(l, production) for l in v["locations"])]
     dev_only = [v for v in vulns if v["scope"] == "optional"]
+    scanned = f"{st['projects']} / {st['branches']}"
+    if st.get("releases"):
+        scanned += f" (+ {st['releases']} release{'' if st['releases'] == 1 else 's'})"
     rows: list[tuple[str, object]] = [
-        ("Projects / branches scanned", f"{st['projects']} / {st['branches']}"),
+        ("Projects / branches scanned", scanned),
         ("Unique package versions checked", st["unique_package_versions"]),
         ("Vulnerable package versions", len(vulns)),
         ("… in CISA KEV (actively exploited)", sum(1 for v in vulns if v["kev"])),
     ]
-    rows += [(f"… max severity {s}", by_sev[s]) for s in SEVERITY_ROWS if by_sev.get(s)]
+    rows += [(f"… max severity {coverage.severity_text(s)}", by_sev[s]) for s in SEVERITY_ROWS if by_sev.get(s)]
     rows += [
-        ("CRITICAL/HIGH in production projects (excluding dev-only)", len(prod_rows)),
+        ("CRITICAL/HIGH in production projects" + (" or supported releases" if st.get("releases") else "")
+         + " (excluding dev-only)", len(prod_rows)),
+        ("Severity not rated in production" + (" or supported releases" if st.get("releases") else "")
+         + " (excluding dev-only, KEV)", sum(1 for v in vulns if unrated_in_production(v, production))),
+        ("Packages with version not resolved, not checked for vulnerabilities", st.get("unresolved_versions", 0)),
         ("Dev-only vulnerable package versions", len(dev_only)),
         ("Vulnerable direct dependencies", sum(1 for v in vulns if v["direct_anywhere"])),
         ("Runtimes / images past end-of-life", sum(1 for r in rep["runtimes"] if r["status"] == "EOL")),
@@ -287,14 +393,24 @@ def _summary(rep: dict) -> list[str]:
          len({(o["project"], o["ecosystem"], o["name"]) for o in rep["outdated"]})),
         ("Suppressed by VEX", len(rep["suppressed"])),
     ]
+    if st.get("github_actions_unchecked"):
+        rows.append(("GitHub Actions inventoried, not checked for vulnerabilities", st["github_actions_unchecked"]))
     L = ["## Summary", "", "| Metric | Count |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in rows]
     L.append("")
-    if not production:
+    if not production and not st.get("releases"):
         L += ["_No project is marked `production = true` in `sbom-audit.toml`, so the production row counts nothing; "
               "mark the projects that serve traffic or hold keys._", ""]
-    L += ["MEDIUM, LOW and UNKNOWN advisories are not listed below; they are in `audit.json` under `vulnerabilities`.", ""]
+    L += ["MEDIUM and LOW advisories are not listed below, nor not-rated ones outside production; they are in "
+          "`audit.json` under `vulnerabilities`.", ""]
     return L
+
+
+def unrated_in_production(v: dict, production: set[str]) -> bool:
+    """A package version with an advisory that has no severity, in runtime scope of a production project or
+    supported release, and not already ranked as KEV. Ranks with CRITICAL/HIGH (`coverage.py`)."""
+    return (not v.get("kev") and bool(coverage.unrated_advisories(v))
+            and any(counts_as_production(l, production) for l in v.get("locations") or []))
 
 
 def _fix_cells(v: dict) -> tuple[str, str, str]:
@@ -305,7 +421,7 @@ def _fix_cells(v: dict) -> tuple[str, str, str]:
     fix_cell = (target or "–") + (f" ({unfixed} unfixed)" if unfixed and target else "")
     worst = worst_advisory(v["vulns"]) or {"id": "?", "cves": [], "summary": ""}
     adv = worst["id"] + (f" ({worst['cves'][0]})" if worst.get("cves") and worst["id"] not in worst["cves"] else "")
-    sev = v["max_severity"] + (f" {worst['cvss']}" if worst.get("cvss") is not None else "") + (" 🔴KEV" if v["kev"] else "")
+    sev = coverage.severity_text(v["max_severity"]) + (f" {worst['cvss']}" if worst.get("cvss") is not None else "") + (" 🔴KEV" if v["kev"] else "")
     return sev, fix_cell, f"{adv}: {md(worst.get('summary', '')[:90])}"
 
 
@@ -318,7 +434,7 @@ def _kev_section(vulns: list[dict]) -> list[str]:
         ids = ", ".join(f"{s['id']} {' '.join(s.get('cves', []))}".strip() for s in v["vulns"] if s.get("kev"))
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in v["locations"]}))
         scope = "dev-only" if v["scope"] == "optional" else "runtime scope"
-        L.append(f"- **{md(v['name'])}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): {ids} — used by {where}")
+        L.append(f"- **{md(_pkg(v))}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): {ids} — used by {where}")
     return L + [""]
 
 
@@ -326,8 +442,9 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
     L = ["## Critical and high severity by project", "",
          "KEV, CRITICAL and HIGH package versions with runtime scope; dev-only occurrences are listed further down. "
          "Production projects come first. `Fix target` is the lowest version that closes every listed advisory "
-         "(`–` = no fix released). `direct` = the manifest declares the package itself; otherwise it is transitive "
-         "and the fix is a lockfile refresh of the parent.", ""]
+         "(`–` = no fix released). Direct `yes` = the manifest declares the package itself; `no` = it is transitive "
+         "and the fix is a lockfile refresh of the parent; `unknown` = the scan could not tell whether the manifest "
+         "declares it, which is not the same as transitive: check the manifest first.", ""]
     per: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for v in vulns:
         if not _actionable(v):
@@ -346,8 +463,8 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
                   "|---|---|---|---|---|---|---|---|"]
             for v, l in rows:
                 sev, fix, worst = _fix_cells(v)
-                L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
-                         f"{'yes' if l['direct'] else 'no'} | `{md(l['manifest'])}` | {worst} |")
+                L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                         f"{_direct_cell(l.get('direct'))} | `{md(l['manifest'])}` | {worst} |")
             L.append("")
     return L
 
@@ -360,11 +477,18 @@ def _runtime_section(runtimes: list[dict]) -> list[str]:
     for r in runtimes:
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in r["locations"]}))
         via = "; ".join(sorted({l["source"] for l in r["locations"] if l.get("source")}))
-        L.append(f"| {EOL_ICON.get(r['status'], r['status'])} | {r['product']} | {r['cycle'] or '?'} | "
+        status = (f"build minimum (cycle {r.get('cycle_status') or 'unknown'})" if r["status"] == "minimum"
+                  else EOL_ICON.get(r["status"], r["status"]))
+        L.append(f"| {status} | {r['product']} | {r['cycle'] or '?'} | "
                  f"{r.get('eol_date') or '–'} | {r.get('latest') or '–'} | {md(where)} | {md(via)} |")
     L += ["", "_`engines` / `requires-python` give the lowest version the manifest allows (what runs depends on the "
           "host); Dockerfile and compose images are what actually runs in containers; Supabase edge runtime and "
           "Postgres are managed but still age out._", ""]
+    if any(r["status"] == "minimum" for r in runtimes):
+        L += ["_`build minimum`: the Go version in a go.mod (`go` or `toolchain` line) is the lowest Go that may "
+              "build the module, not the Go that runs it: the binary carries the runtime of whichever toolchain "
+              "builds it. It is listed for information and not counted as end of life; the cycle's own status is "
+              "in brackets. To check what you ship, look at the `golang` build image or the CI's Go version._", ""]
     return L
 
 
@@ -417,8 +541,8 @@ def _dev_only_section(vulns: list[dict]) -> list[str]:
           "|---|---|---|---|---|---|---|---|---|"]
     for v, l in rows:
         sev, fix, _ = _fix_cells(v)
-        L.append(f"| {sev} | {md(v['name'])} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
-                 f"{'yes' if l['direct'] else 'no'} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
+        L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                 f"{_direct_cell(l.get('direct'))} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
     return L + [""]
 
 
@@ -433,9 +557,28 @@ def _suppressed_section(suppressed: list[dict]) -> list[str]:
     for s in suppressed:
         f, st, c = s["finding"], s["statement"], s["finding"]["component"]
         vid = f["vulns"][0]["id"] if f.get("vulns") else st["vuln"]
-        L.append(f"| {vid} | {md(c['name'])} | {c['version'] or 'unresolved'} | {f['project']}@{f['branch']} | "
+        L.append(f"| {vid} | {md(qualified_name(c['ecosystem'], c['name'], c.get('purl') or ''))} | {c['version'] or 'unresolved'} | {f['project']}@{f['branch']} | "
                  f"{st['status']} | {st.get('justification') or '–'} | {md(st.get('impact') or '–')} | "
                  f"`{Path(st.get('path') or '').name or '–'}` |")
+    return L + [""]
+
+
+def _releases_section(releases: list[dict]) -> list[str]:
+    """Short list of the releases under audit; details (counts, fixed advisories) are in RELEASES.md."""
+    if not releases:
+        return []
+    L = ["## Releases under audit", "",
+         "Release tags scanned like branches (location `tags/<tag>`). Findings in a supported release rank like "
+         "production; out-of-support releases are left out of the sections above. Per-release counts and "
+         "advisories fixed since the previous release: `RELEASES.md` / `releases.json`.", ""]
+    for r in releases:
+        if not r.get("support_until"):
+            state = "supported (no period configured)"
+        elif r["supported"]:
+            state = f"supported until {r['support_until']}"
+        else:
+            state = f"out of support since {r['support_until']}"
+        L.append(f"- {r['project']} `{md(r['tag'])}` ({(r.get('date') or '?')[:10]}): {state}")
     return L + [""]
 
 
@@ -454,6 +597,20 @@ def carried_over(previous: str) -> str:
     return "\n" + previous[m.start():].rstrip("\n") + "\n"
 
 
+def _imports_line(imports: list[dict]) -> list[str]:
+    """Coverage: which package lists come from an imported build SBOM, and which of those are not this commit's."""
+    if not imports:
+        return []
+    off = [r for r in imports if sbomimport.staleness(r)]
+    text = (f"Imported build SBOMs: {len(imports)} project branches or releases take the packages of some ecosystems "
+            "from a build SBOM; packages only the repository scan found are kept in addition (counts under Notes "
+            "and in `INVENTORY.md`)")
+    if off:
+        text += (f"; {len(off)} of them not built from the scanned commit or with no commit recorded: "
+                 + ", ".join(f"{md(r['project'])}@{md(r['branch'])} ({sbomimport.staleness(r)})" for r in off))
+    return [text + ".", ""]
+
+
 def write_audit_md(rep: dict, out: Path) -> Path:
     out = Path(out)
     production = set(rep.get("production_projects", []))
@@ -462,16 +619,25 @@ def write_audit_md(rep: dict, out: Path) -> Path:
          "(committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), "
          "endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements "
          "in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.", ""]
+    L += _imports_line(rep.get("imported_sboms") or [])
     L += _source_status(rep.get("sources") or {})
     L += _summary(rep)
     L += _kev_section(rep["vulnerabilities"])
     L += _by_project_section(rep["vulnerabilities"], production)
+    if any(unrated_in_production(v, production) for v in rep["vulnerabilities"]):
+        L += coverage.unrated_section(rep["vulnerabilities"], lambda v: unrated_in_production(v, production))
     L += _runtime_section(rep["runtimes"])
     L += _floating_section(rep["unpinned_images"])
     L += _outdated_section(rep["outdated"])
     L += _dev_only_section(rep["vulnerabilities"])
     L += _suppressed_section(rep["suppressed"])
+    L += _releases_section(rep.get("releases") or [])
+    if rep.get("unresolved_versions"):
+        L += coverage.unresolved_section(rep["unresolved_versions"])
     L += _notes_section(rep["notes"])
+    if "provenance" in rep:                     # tool versions and data source dates (manifest.py)
+        from .manifest import audit_md_section
+        L += audit_md_section(rep["provenance"])
     text = "\n".join(L) + "\n"
     path = out / AUDIT_FILE
     if path.exists():
@@ -584,6 +750,19 @@ def _overview_cell(inv: BranchInventory, kind: str, names: tuple[str, ...]) -> s
     return ", ".join(sorted(vals)) or "–"
 
 
+def overview_columns(invs: list[BranchInventory]) -> list[tuple[str, str, tuple[str, ...]]]:
+    """The overview table's columns: `OVERVIEW_COLUMNS` always, `OVERVIEW_OPTIONAL` when some branch has a
+    value there, then one column per other runtime pinned in a manifest (not derived from an image, which
+    the Images column shows), named by its endoflife.date product, so a runtime a reader learns to detect
+    shows up without a change here."""
+    cols = list(OVERVIEW_COLUMNS)
+    cols += [col for col in OVERVIEW_OPTIONAL if any(_overview_cell(i, col[1], col[2]) != "–" for i in invs)]
+    covered = {n for _, kind, names in cols + OVERVIEW_OPTIONAL if kind == "runtime" for n in names}
+    extra = sorted({c.name.lower() for i in invs for c in i.components
+                    if c.kind == "runtime" and c.name and "image" not in c.props and c.name.lower() not in covered})
+    return cols + [(name, "runtime", (name,)) for name in extra]
+
+
 def _branch_order(cfg: Config, branches: set[str]) -> list[str]:
     return sorted(branches, key=lambda b: (cfg.branches.index(b) if b in cfg.branches else len(cfg.branches), b))
 
@@ -601,6 +780,8 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
         L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {len(pkgs)} packages ({eco}; "
                  f"{sum(1 for c in pkgs if c.direct)} direct, {sum(1 for c in pkgs if c.scope == 'optional')} dev-only), "
                  f"{n_images} images, {n_runtimes} runtime pins")
+        if inv.package_source:
+            L.append(f"  - packages: {md(sbomimport.describe(inv.package_source))}")
         for err in inv.errors:
             L.append(f"  - error: {md(err)}")
     L.append("")
@@ -632,7 +813,7 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
     for inv in invs:
         for c in inv.components:
             if c.kind == "package" and c.direct:
-                d = direct.setdefault((c.ecosystem, c.name, _manifest(c)), {"versions": {}, "scopes": set()})
+                d = direct.setdefault((c.ecosystem, c.qualified_name(), _manifest(c)), {"versions": {}, "scopes": set()})
                 d["versions"][inv.branch] = c.version or "unresolved"
                 d["scopes"].add(c.scope)
     branches = _branch_order(cfg, {inv.branch for inv in invs})
@@ -649,26 +830,53 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
     return L
 
 
+def _inventory_releases(releases: list[BranchInventory]) -> list[str]:
+    """One line per release under audit; its components are in its own SBOM (not repeated here)."""
+    if not releases:
+        return []
+    L = ["## Releases", "",
+         "Release tags under audit, one SBOM each (`sbom/<project>/tags__<tag>.cdx.json`). Support status and fixed "
+         "advisories: `RELEASES.md`.", "",
+         "| Project | Tag | Commit | Tag date | Packages | Images | Runtime pins | SBOM |", "|---|---|---|---|---|---|---|---|"]
+    for inv in sorted(releases, key=lambda i: (i.project.lower(), -int(i.release.get("index", 0)))):
+        pkgs = sum(1 for c in inv.components if c.kind == "package")
+        imgs = sum(1 for c in inv.components if c.kind == "image")
+        rts = sum(1 for c in inv.components if c.kind == "runtime")
+        sbom = f"`{inv.sbom_path}`" if inv.sbom_path else "–"
+        L.append(f"| {md(inv.project)} | `{md(inv.release.get('tag', inv.branch))}` | {inv.commit[:7] or '–'} | "
+                 f"{(inv.release.get('date') or '?')[:10]} | {pkgs} | {imgs} | {rts} | {sbom} |")
+        if inv.package_source:
+            L.append(f"| | | | | | | | packages: {md(sbomimport.describe(inv.package_source))} |")
+        for err in inv.errors:
+            L.append(f"| | | | | | | | error: {md(err)} |")
+    return L + [""]
+
+
 def write_inventory_md(cfg: Config, inventories: list[BranchInventory], out: Path) -> Path:
-    invs = sorted(inventories, key=lambda i: (i.project.lower(), i.branch))
+    releases = [i for i in inventories if i.release]
+    invs = sorted((i for i in inventories if not i.release), key=lambda i: (i.project.lower(), i.branch))
     branches = ", ".join(f"`{b}`" for b in cfg.branches)
+    columns = overview_columns(invs)
     L = ["# Inventory", "",
          f"Generated {_now()} from `{cfg.root}` ({cfg.mode} mode, branches {branches}). Components come from the "
          "Syft SBOM of each branch's committed tree (`sbom/<project>/<branch>.cdx.json`) plus own readers for "
-         "images and runtime pins; the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.", "",
+         "images and runtime pins, or, for the ecosystems it holds, from a build SBOM imported for that branch (marked "
+         "below); the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.", "",
          "## Overview", "",
-         "| Project | Branch | " + " | ".join(h for h, _, _ in OVERVIEW_COLUMNS) + " | Images |",
-         "|---|" * (len(OVERVIEW_COLUMNS) + 3)]
+         "| Project | Branch | " + " | ".join(md(h) for h, _, _ in columns) + " | Images |",
+         "|" + "---|" * (len(columns) + 3)]
     for inv in invs:
-        cells = [_overview_cell(inv, kind, names) for _, kind, names in OVERVIEW_COLUMNS]
+        cells = [_overview_cell(inv, kind, names) for _, kind, names in columns]
         images = ", ".join(sorted({f"`{c.props.get('image', c.name)}`" for c in inv.components if c.kind == "image"})) or "–"
         L.append(f"| {md(inv.project)} | {inv.branch} | " + " | ".join(cells) + f" | {images} |")
     L.append("")
+    L += sbomquality.inventory_section(invs + releases)
     by_project: dict[str, list[BranchInventory]] = defaultdict(list)
     for inv in invs:
         by_project[inv.project].append(inv)
     for project, group in by_project.items():
         L += _inventory_project(cfg, project, group)
+    L += _inventory_releases(releases)
     path = Path(out) / INVENTORY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(L) + "\n", encoding="utf-8")

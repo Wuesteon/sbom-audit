@@ -4,7 +4,7 @@ Exit codes: 0 clean, 1 findings present, 2 a source failed (a branch could not b
 matched, or a database could not be reached), 3 an OpenVEX file could not be read, 4 a required
 tool is missing (checked before anything is written). After the audit, `run` prunes stale sbom/ folders,
 scans for secrets, refreshes the folder docs, writes status.json / STATUS.md and commits (and optionally
-pushes) exactly the files it wrote. Of all that, only a failed secrets scan (a repository, the decisions
+pushes) exactly the files it wrote, plus the `sbom-audit.toml` it read (`config.commit_refusal` says when not). Of all that, only a failed secrets scan (a repository, the decisions
 file or a crash of the step) changes the exit code, to 2; a missing secrets engine is reported as skipped
 and changes nothing. The host step (`[hosts]` active) sets 2 for a failed host or a crash of the step, 1 for an
 open critical host finding on an otherwise clean run, and changes nothing when skipped (no audit key here).
@@ -17,7 +17,8 @@ import socket
 import time
 from pathlib import Path
 
-from . import assess, config, enrich, evidence, issues, matching, preflight, report, scan, scheduler, status, vex
+from . import (assess, config, enrich, evidence, issues, manifest, matching, preflight, releases, report, sbomimport,
+               scan, scheduler, status, vex)
 from .cache import Cache
 from .config import Config, Project
 from .errors import VexError
@@ -148,9 +149,33 @@ def purl_of(cfg: Config, inventories: list[BranchInventory]) -> dict[str, str]:
     return mapping
 
 
+def _gh_used(cfg: Config) -> bool:
+    """Whether the run asks `gh` (the visibility of the own repository, or GitHub discovery)."""
+    return (cfg.mode == "portfolio" and evidence.is_own_repo(cfg.out.resolve())) or bool(cfg.discovery.github_owner)
+
+
+def finish_tools(cfg: Config) -> dict[str, str]:
+    """The tools the steps after the audit will run and `manifest.json` records next to syft, osv-scanner and git:
+    the secrets engine (when `[secrets]` is on and an engine is found) and `gh` (when used). AUDIT.md is written
+    before those steps, so its tool table takes them from here; never raises."""
+    tools: dict[str, str] = {}
+    try:
+        if cfg.secrets.enabled:
+            from .secrets import engine
+            found = engine.find_engine()
+            if isinstance(found, engine.Engine):
+                tools[found.name] = found.version
+        if _gh_used(cfg):
+            tools.update(manifest.tool_versions(("gh",)))
+    except Exception:
+        pass
+    return tools
+
+
 def audit(cfg: Config, inventories: list[BranchInventory], log=None,
-          http=None) -> tuple[dict, list[Path]]:
+          http=None, extra_tools: dict | None = None) -> tuple[dict, list[Path]]:
     """Match, enrich, apply VEX and write every report; returns the report and the paths written.
+    `extra_tools`: tools later steps of the same run use (`finish_tools`), listed in the report's tool table.
 
     Raises VexError before any matching.
 
@@ -166,6 +191,7 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
         sources = {"git": {"branches": len(inventories), "failed": git_failed}, **sources}
 
     cache = Cache(cfg.out / ENRICH_CACHE_DIR)
+    since = time.time()                         # cache entries stored from here on were fetched by this audit
     say("CISA KEV …")
     kev_ids, kev_error = enrich.load_kev(cache, http)
     sources["cisa_kev"] = {"loaded": len(kev_ids), "flagged": enrich.mark_kev(findings, kev_ids),
@@ -176,18 +202,27 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
                             "unknown": sum(1 for r in eol_rows if r["status"] == "unknown"),
                             "failed": eol_failed}
     say("registries …")
-    direct = {(c.ecosystem, c.name) for inv in inventories for c in inv.components
+    branch_invs = [inv for inv in inventories if not inv.release]   # a release is frozen: no "latest" drift
+    direct = {(c.ecosystem, c.name) for inv in branch_invs for c in inv.components
               if c.kind == "package" and c.direct and c.ecosystem in enrich.LATEST_ECOSYSTEMS and c.version}
-    latest_rows, latest_failed = enrich.latest(inventories, cache, http)
+    latest_rows, latest_failed = enrich.latest(branch_invs, cache, http)
     sources["registries"] = {"queried": len(direct), "major_behind": len(latest_rows), "failed": latest_failed}
 
     kept, suppressed = vex.apply(findings, statements, purl_of=purl_of(cfg, inventories))
     sources["openvex"] = {"statements": len(statements), "suppressed": len(suppressed)}
 
-    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources)
+    release_ctx = releases.context(cfg, inventories)
+    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx)
+    tools = {**manifest.tool_versions(), **(extra_tools or {})}
+    rep["provenance"] = manifest.try_provenance(cfg, cache, since, sources=sources, eol_rows=eol_rows,
+                                                latest_keys=direct, generated_at=rep.get("generated_at"),
+                                                tools=tools)
+    rel_doc = releases.build(cfg, inventories, findings, kept, eol_rows, sources)
     written = [report.write_json(rep, cfg.out),
                report.write_inventory_md(cfg, inventories, cfg.out),
                report.write_audit_md(rep, cfg.out),
+               releases.write_json(rel_doc, cfg.out),
+               releases.write_md(rel_doc, cfg.out),
                report.write_dated_copy(cfg.out),
                report.append_log(cfg.out, rep, inventories)]
     return rep, written
@@ -211,9 +246,14 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
     kev = sum(1 for v in vulns if v["kev"])
     crit_high = sum(1 for v in vulns if v["max_severity"] in ("CRITICAL", "HIGH"))
     eol = sum(1 for r in rep["runtimes"] if r["status"] == "EOL")
-    return (f"{s['projects']} projects, {s['branches']} branches: {len(vulns)} vulnerable package versions "
+    rel = f", {s['releases']} releases" if s.get("releases") else ""
+    unrated = sum(1 for v in vulns if report.unrated_in_production(v, set(rep.get("production_projects") or [])))
+    gaps = (f", {unrated} not rated in production" if unrated else "") + (
+        f", {s['unresolved_versions']} packages with version not resolved (not checked)"
+        if s.get("unresolved_versions") else "")
+    return (f"{s['projects']} projects, {s['branches']} branches{rel}: {len(vulns)} vulnerable package versions "
             f"({kev} KEV, {crit_high} critical/high), {eol} EOL runtimes/images, "
-            f"{len(rep['suppressed'])} suppressed by VEX — {cfg.out / report.AUDIT_FILE} "
+            f"{len(rep['suppressed'])} suppressed by VEX{gaps} — {cfg.out / report.AUDIT_FILE} "
             f"({time.monotonic() - started:.1f}s)")
 
 
@@ -262,6 +302,14 @@ def _expected_commit(cfg: Config, own: bool) -> dict:
     if not own:
         return {"status": "skipped", "sha": None, "detail": NOT_OWN_REPO}
     return {"status": "committed", "sha": None, "detail": "this commit"}
+
+
+def _config_refusal(cfg: Config, out: Path) -> str | None:
+    """Why the run's commit leaves `sbom-audit.toml` out (`config.commit_refusal`), or None to commit it."""
+    try:
+        return config.commit_refusal(out, cfg.digest)
+    except Exception as exc:                    # never breaks the run; the config then stays a pending hand edit
+        return type(exc).__name__
 
 
 def _expected_push(cfg: Config, own: bool, visibility: str, commit: dict) -> dict:
@@ -334,6 +382,10 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     written = [Path(p) if Path(p).is_absolute() else out / p for p in written]
     written.append(out / scan.INVENTORY_FILE)
     written += [out / inv.sbom_path for inv in inventories if inv.sbom_path]
+    for inv in inventories:                     # imported build SBOMs used by this run are evidence too
+        if (inv.package_source or {}).get("in") == "evidence":
+            path = sbomimport.import_path(out, inv.project, inv.branch)
+            written += [p for p in (path, sbomimport.provenance_path(path)) if p.is_file()]
     try:
         written += [out / "sbom" / name for name in _prune(cfg, inventories, say)]
     except Exception as exc:
@@ -374,12 +426,17 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     proposal = None
     if cfg.schedule.assess:
         try:                                    # never changes the exit code; never echoes the proposal
-            res = assess.run_headless(cfg, out, scheduler.plugin_root())
+            if cfg.assess.configured:           # [assess] endpoint instead of `claude -p`
+                from . import draft
+                res = draft.run(cfg, out)
+            else:
+                res = assess.run_headless(cfg, out, scheduler.plugin_root())
             if res["status"] == "written":
                 proposal = res["path"]
                 written.append(out / proposal)
                 written.append(report.append_assess_log(out, proposal, res.get("cost_usd")))
-                say(f"assess: proposal written to {proposal}")
+                via = f" (model {res['model']})" if res.get("model") else ""
+                say(f"assess: proposal written to {proposal}{via}")
             else:
                 say(f"assess: {res['status']} ({res.get('reason') or 'no reason'})")
         except Exception as exc:
@@ -389,9 +446,17 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
     own = cfg.mode == "portfolio" and evidence.is_own_repo(out)
     visibility = evidence.remote_visibility(out) if own else "unknown"
     status_paths = [out / status.STATUS_JSON, out / status.STATUS_FILE]
-    pending = (evidence.pending_hand_edits(out, set(written + status_paths))
+    expected_commit = _expected_commit(cfg, own)
+    if expected_commit["status"] == "committed":
+        refusal = _config_refusal(cfg, out)
+        if refusal is None:
+            written.append(out / config.CONFIG_NAME)    # the configuration this run read goes into its commit
+        elif (out / config.CONFIG_NAME).exists():
+            expected_commit["config"] = f"{config.CONFIG_NAME} not committed: {refusal}"
+            say(f"commit: {expected_commit['config']}")
+    pending = (evidence.pending_hand_edits(out, set(written + status_paths + [out / manifest.MANIFEST_FILE]))
                if own or cfg.mode == "single" else [])
-    expected_commit = {**_expected_commit(cfg, own), "pending_hand_edits": pending}
+    expected_commit["pending_hand_edits"] = pending
     expected_push = _expected_push(cfg, own, visibility, expected_commit)
 
     hosts_doc = _hosts_for_status(cfg, hosts_result)
@@ -411,12 +476,20 @@ def finish(cfg: Config, rep: dict, inventories: list[BranchInventory], written: 
         doc = build(None)
     written += [status.write(out, doc), status.write_md(out, doc)]
     written += issues.try_refresh(out, say, hosts_active=hosts_doc is not None)
+    from . import cra, management
+    written += cra.try_check(cfg, out, say)     # only with [cra.products]; never changes the exit code
+    written += management.try_write(out, say, hosts_active=hosts_doc is not None)
+    written += manifest.try_write(       # lists every file above with its SHA-256; the commit covers it
+        out, rep, inventories, written, say, exit_code=code, secrets=secrets, hosts=hosts_result,
+        started_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=time.monotonic() - started),
+        gh_used=own or bool(cfg.discovery.github_owner))   # the same test as `_gh_used`
     commit = _do_commit(cfg, doc["commit"], doc, written, say)
     push = _do_push(cfg, doc["push"], commit["status"], visibility, say)
     if commit != doc["commit"] or push != doc["push"]:
         doc = {**doc, "commit": commit, "push": push}
         status.write(out, doc)
         status.write_md(out, doc)
+        manifest.refresh_paths(out, status_paths, "run (commit and push outcome)")
     say((out / status.STATUS_FILE).read_text(encoding="utf-8").rstrip("\n"))
     return doc
 
@@ -463,7 +536,7 @@ def _write_failed_status(cfg: Config, exc: Exception, started: float, say) -> No
         if previous and previous.get("schema") == status.SCHEMA:
             # nothing was read: keep the last known open sets and counts so the next run's deltas stay right
             doc.update(open=previous.get("open") or doc["open"], counts=previous.get("counts") or doc["counts"],
-                       first_run=False)
+                       open_rules=status.open_rules_of(previous), first_run=False)   # the rules those sets were built by
         status.write(cfg.out, doc)
         status.write_md(cfg.out, doc)
     except Exception as inner:
@@ -486,7 +559,7 @@ def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, l
         result = scan.scan(cfg, only=only, fetch=fetch, log=say)
         for s in result.skipped:
             say(f"skipped {s['project']}: {s['reason']}")
-        rep, written = audit(cfg, result.inventories, log=say, http=http)
+        rep, written = audit(cfg, result.inventories, log=say, http=http, extra_tools=finish_tools(cfg))
     except VexError as exc:
         say(f"OpenVEX: {exc}")
         return EXIT_VEX

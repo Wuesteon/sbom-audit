@@ -2,6 +2,45 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from urllib.parse import unquote
+
+
+def purl_namespace(purl: str) -> str:
+    """'pkg:maven/org.postgresql/postgresql@42.7.1?type=jar' -> 'org.postgresql'; '' without a namespace."""
+    body = (purl or "").split("?", 1)[0].split("#", 1)[0]
+    if not body.startswith("pkg:"):
+        return ""
+    parts = body[4:].split("/")
+    if len(parts) < 3:                     # type/name only
+        return ""
+    return "/".join(unquote(p) for p in parts[1:-1])
+
+
+def qualified_name(ecosystem: str, name: str, purl: str = "") -> str:
+    """The package name as OSV writes it. Maven is `group:artifact` (Syft stores the bare artifact, the
+    group is the purl namespace); every other ecosystem already carries its full name (npm `@scope/x`,
+    Go module path)."""
+    if (ecosystem or "").lower() == "maven" and ":" not in name:
+        group = purl_namespace(purl)
+        if group:
+            return f"{group}:{name}"
+    return name
+
+
+def merge_direct(values) -> bool | None:
+    """One `direct` for several places of a package: True when any place declares it, False only when every
+    place is known to be transitive, else None. Unknown is never turned into transitive."""
+    values = list(values)
+    if any(v is True for v in values):
+        return True
+    if values and all(v is False for v in values):
+        return False
+    return None
+
+
+def direct_text(direct: bool | None) -> str:
+    """'direct', 'transitive' or 'unknown' for a `direct` value."""
+    return "direct" if direct is True else "transitive" if direct is False else "unknown"
 
 
 @dataclass
@@ -15,12 +54,20 @@ class Component:
     locations: list[str] = field(default_factory=list)   # repo-relative manifest paths
     direct: bool | None = None
     props: dict = field(default_factory=dict)
+    # CycloneDX fields carried unchanged from an imported build SBOM (hashes, licenses, supplier, ...), already
+    # checked by `sbomimport.passthrough`; written into the SBOM document only, not into inventory.json
+    cdx: dict = field(default_factory=dict, compare=False, repr=False)
 
     def key(self) -> tuple[str, str, str, str]:
         return (self.kind, self.ecosystem, self.name, self.version)
 
+    def qualified_name(self) -> str:
+        return qualified_name(self.ecosystem, self.name, self.purl)
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        del d["cdx"]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Component":
@@ -37,10 +84,20 @@ class BranchInventory:
     components: list[Component] = field(default_factory=list)
     sbom_path: str = ""
     errors: list[str] = field(default_factory=list)
+    # a release tag instead of a branch: {"tag", "date", "order"}; `branch` is then "tags/<tag>"
+    release: dict | None = None
+    # an imported build SBOM supplied the packages of some ecosystems (sbomimport.source plus "replaced", the
+    # ecosystems it replaced); None: everything comes from the repository scan
+    package_source: dict | None = None
+    # structural check and data-field coverage of the written SBOM (sbomquality.summary); None: no SBOM written
+    sbom_quality: dict | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["components"] = [c.to_dict() for c in self.components]
+        for key in ("release", "package_source", "sbom_quality"):   # absent: the inventory.json entry stays as before
+            if d[key] is None:
+                del d[key]
         return d
 
     @classmethod

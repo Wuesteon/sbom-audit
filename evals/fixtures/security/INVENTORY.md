@@ -1,11 +1,11 @@
 # Inventory
 
-Generated 2026-11-07T02:58:00Z from `.` (portfolio mode, branches `main`, `dev`). Components come from the Syft SBOM of each branch's committed tree (`sbom/<project>/<branch>.cdx.json`) plus own readers for images and runtime pins; the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.
+Generated 2026-11-07T02:58:00Z from `.` (portfolio mode, branches `main`, `dev`). Components come from the Syft SBOM of each branch's committed tree (`sbom/<project>/<branch>.cdx.json`) plus own readers for images and runtime pins, or, for the ecosystems it holds, from a build SBOM imported for that branch (marked below); the working tree is never read. Findings: `AUDIT.md`; full data: `inventory.json`.
 
 ## Overview
 
 | Project | Branch | Node | Python | Deno | Expo/React Native | SvelteKit | NestJS | Astro | Vite | FastAPI | Postgres | Images |
-|---||---||---||---||---||---||---||---||---||---||---||---||---|
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | billing-api | main | – | – | – | – | – | – | – | – | – | – | `python:3.12-slim` |
 | docs-site | main | – | – | – | – | – | – | – | – | – | – | – |
 | shop-web | main | 18 | – | – | – | – | – | – | – | – | – | `node:18-alpine` |

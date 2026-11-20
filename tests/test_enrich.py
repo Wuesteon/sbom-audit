@@ -152,6 +152,18 @@ class EolTests(unittest.TestCase):
         self.assertEqual(by_cycle[("nodejs", "24")], "supported")
         self.assertEqual(by_cycle[("caddy", "2")], "supported")
 
+    def test_manifest_runtimes_map_to_endoflife_cycles(self):
+        """Java language levels are checked against Eclipse Temurin; .NET 5+ cycles are majors, .NET Core
+        cycles major.minor; Go cycles major.minor."""
+        from sbomaudit.versions import runtime_cycle
+        self.assertEqual(runtime_cycle("java", "1.8"), "8")
+        self.assertEqual(runtime_cycle("java", "17"), "17")
+        self.assertEqual(runtime_cycle("dotnet", "8.0.100"), "8")
+        self.assertEqual(runtime_cycle("dotnet", "3.1"), "3.1")
+        self.assertEqual(runtime_cycle("go", "1.22.3"), "1.22")
+        self.assertEqual(enrich.eol_url("java", "21"), "https://endoflife.date/api/eclipse-temurin/21.json")
+        self.assertEqual(enrich.eol_url("dotnet", "8"), "https://endoflife.date/api/dotnet/8.json")
+
     def test_eol_unknown_cycle_and_missing_product(self):
         """HTTP 404 is endoflife.date's answer (product or cycle unknown): cached, status unknown, not a failure."""
         def fetch(url):
@@ -184,6 +196,28 @@ class EolTests(unittest.TestCase):
             good = stub_fetch({"https://endoflife.date/api/nodejs/18.json": {"eol": True, "latest": "18.20.8"}})
             rows, failed = enrich.eol([inv], cache, fetch=good)
             self.assertEqual(([r["status"] for r in rows], failed), (["EOL"], []))
+
+    def test_go_mod_version_is_a_build_minimum_not_an_eol_runtime(self):
+        """go.mod `go` and `toolchain` lines are the lowest Go that may build the module; the binary carries the
+        runtime of whichever toolchain builds it. A golang image is what builds or runs it: that one counts."""
+        from sbomaudit.readers import go_runtime
+        fetch = stub_fetch({"https://endoflife.date/api/go/1.20.json": {"eol": "2024-02-06", "latest": "1.20.14"},
+                            "https://endoflife.date/api/go/1.21.json": {"eol": "2024-08-13", "latest": "1.21.13"}})
+        only_mod = inventory([go_runtime("module x\n\ngo 1.20\n", "go.mod")], project="mod")
+        toolchain = inventory([go_runtime("module x\n\ngo 1.20\ntoolchain go1.21.4\n", "svc/go.mod")], project="tc")
+        with_image = inventory([go_runtime("module x\n\ngo 1.20\n", "go.mod"),
+                                runtime_component("go", "1.20", "Dockerfile", detail="image golang:1.20",
+                                                  image="golang:1.20")], project="img")
+        with tempfile.TemporaryDirectory() as tmp:
+            rows, failed = enrich.eol([only_mod, toolchain, with_image], cache_mod.Cache(Path(tmp)), fetch=fetch,
+                                      today=dt.date(2026, 11, 18))
+        self.assertEqual(failed, [])
+        by = {r["project"]: r for r in rows}
+        self.assertEqual({k: by["mod"][k] for k in ("status", "basis", "cycle_status", "eol_date")},
+                         {"status": "minimum", "basis": "go.mod", "cycle_status": "EOL", "eol_date": "2024-02-06"})
+        self.assertEqual((by["tc"]["status"], by["tc"]["cycle"], by["tc"]["cycle_status"]), ("minimum", "1.21", "EOL"))
+        self.assertEqual(by["img"]["status"], "EOL")              # the image is a real runtime
+        self.assertNotIn("basis", by["img"])
 
     def test_eol_dedupes_same_runtime_and_maps_alpine_slug(self):
         fetch = stub_fetch({"https://endoflife.date/api/alpine-linux/3.19.json": {"eol": "2025-11-01", "latest": "3.19.9"}})

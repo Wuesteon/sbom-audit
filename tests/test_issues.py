@@ -95,6 +95,13 @@ class BuildTest(unittest.TestCase):
         self.assertNotIn("sk_live_VALUE", text)
         self.assertNotIn("v-fp-a", text)            # the value id stays in secrets.json
 
+    def test_go_mod_minimum_is_not_an_eol_issue(self):
+        rep = make_rep(runtimes=[{"product": "go", "cycle": "1.20", "status": "minimum", "basis": "go.mod",
+                                  "cycle_status": "EOL", "eol_date": "2024-02-06", "latest": "1.20.14",
+                                  "locations": [{"project": "prod", "branch": "main", "source": "go.mod: go 1.20"}]}])
+        doc = issues.build(rep, None, None)
+        self.assertEqual(doc["issues"], [])
+
     def test_eol_and_floating_tags(self):
         rep = make_rep(
             runtimes=[{"product": "nodejs", "cycle": "18", "status": "EOL", "eol_date": "2025-04-30", "latest": "18.20.8",
@@ -160,6 +167,82 @@ class BuildTest(unittest.TestCase):
         self.assertIn("**Incomplete:**", text)
         self.assertIn("- osv: timeout", text)
         self.assertNotIn("Nothing open.", text)     # a failed source is empty, not clean
+
+    def test_direct_before_transitive_within_a_priority_and_counted(self):
+        def transitive(v):
+            for loc in v["locations"]:
+                loc["direct"] = False
+            return v
+        rep = make_rep(vulnerabilities=[
+            transitive(vuln("crit", "CRITICAL", [("prod", "main", "p.json", "required")])),
+            vuln("high", "HIGH", [("prod", "main", "p.json", "required")]),
+            transitive(vuln("kev", "HIGH", [("prod", "main", "p.json", "required")], kev=True)),
+            transitive(vuln("dev", "HIGH", [("prod", "main", "tools.json", "optional")])),
+        ])
+        doc = issues.build(rep, None, None)
+        ids = [i["id"] for i in doc["issues"]]
+        # priorities and ids unchanged; within priority 3 the direct HIGH comes before the transitive CRITICAL
+        self.assertEqual(ids, ["vuln:prod:p.json:npm:kev@1.0.0", "vuln:prod:p.json:npm:high@1.0.0",
+                               "vuln:prod:p.json:npm:crit@1.0.0", "vuln:prod:tools.json:npm:dev@1.0.0"])
+        self.assertEqual([i["priority"] for i in doc["issues"]], [2, 3, 3, 6])
+        self.assertEqual(issues.dependency_split(doc["issues"]),
+                         {"total": 3, "direct": 1, "transitive": 2, "unknown": 0, "dev_only": 0})
+        self.assertFalse(issues.is_transitive({"kind": "secret", "details": {}}))
+        text = issues.render_md(doc)
+        self.assertIn("priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): 3, of which "
+                      "1 in direct dependencies and 2 in transitive ones", text)
+        self.assertIn("Transitive does not mean harmless", text)
+        self.assertIn("no reachability analysis", text)
+        self.assertIn("| 3 | vulnerability, direct | high 1.0.0", text)
+        self.assertIn("| 3 | vulnerability, transitive | crit 1.0.0", text)
+        self.assertIn("| 6 | vulnerability, transitive, dev-only | dev 1.0.0", text)
+        # nothing urgent: no split sentence
+        self.assertNotIn("transitive ones", issues.render_md(issues.build(make_rep(), None, None)))
+
+    def test_unknown_dependency_type_is_not_transitive(self):
+        def unknown(v, imported=False):
+            for loc in v["locations"]:
+                loc["direct"] = None
+                if imported:
+                    loc["imported"] = True
+            return v
+        rep = make_rep(vulnerabilities=[
+            unknown(vuln("unk", "CRITICAL", [("prod", "main", "p.json", "required")])),
+            vuln("high", "HIGH", [("prod", "main", "p.json", "required")]),
+            unknown(vuln("imp", "HIGH", [("prod", "main", "pom.xml", "required")]), imported=True),
+            dict(vuln("mixed", "HIGH", [("prod", "main", "q.json", "required"), ("prod", "dev", "q.json", "required")])),
+        ])
+        rep["vulnerabilities"][3]["locations"][0]["direct"] = None     # one branch unknown, the other direct
+        doc = issues.build(rep, None, None)
+        got = by_id(doc)
+        unk = got["vuln:prod:p.json:npm:unk@1.0.0"]
+        self.assertIsNone(unk["details"]["direct"])
+        self.assertTrue(got["vuln:prod:q.json:npm:mixed@1.0.0"]["details"]["direct"])
+        self.assertFalse(issues.is_transitive(unk))
+        self.assertNotIn("transitive", unk["fix"]["hint"])
+        self.assertIn("could not tell", unk["fix"]["hint"])
+        imp = got["vuln:prod:pom.xml:npm:imp@1.0.0"]
+        self.assertNotIn("transitive", imp["fix"]["hint"])
+        self.assertIn("build SBOM", imp["fix"]["hint"])
+        self.assertEqual(issues.dependency_split(doc["issues"]),
+                         {"total": 4, "direct": 2, "transitive": 0, "unknown": 2, "dev_only": 0})
+        # direct first, then unknown, then transitive
+        self.assertEqual([i["id"] for i in doc["issues"]][:2],
+                         ["vuln:prod:p.json:npm:high@1.0.0", "vuln:prod:q.json:npm:mixed@1.0.0"])
+        text = issues.render_md(doc)
+        self.assertIn("| 3 | vulnerability, dependency type unknown | unk 1.0.0", text)
+        self.assertIn("4, of which 2 in direct dependencies, 0 in transitive ones and 2 whose dependency type the "
+                      "scan could not tell", text)
+
+    def test_maven_title_names_group_and_artifact_and_the_id_is_unchanged(self):
+        v = vuln("lib", "HIGH", [("prod", "main", "pom.xml", "required")])
+        v.update(ecosystem="Maven", package="org.lib:lib")
+        doc = issues.build(make_rep(vulnerabilities=[v]), None, None)
+        i = doc["issues"][0]
+        self.assertEqual(i["id"], "vuln:prod:pom.xml:Maven:lib@1.0.0")          # stable id: the short name
+        self.assertTrue(i["title"].startswith("org.lib:lib 1.0.0: 2 advisories"), i["title"])
+        self.assertEqual(i["details"]["package"], "org.lib:lib")
+        self.assertIn("org.lib:lib 1.0.0", issues.render_md(doc))
 
     def test_markdown_names_a_few_branches_and_counts_the_rest(self):
         secrets = {"findings": [secret("fp", "A", branches=[f"b{n}" for n in range(9)])]}

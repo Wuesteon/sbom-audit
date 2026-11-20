@@ -3,7 +3,11 @@
 Verified against Syft 1.56.0 (2026-11-05):
 - npm devDependencies are left out by default; SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES=true
   adds them. `inventory()` runs Syft twice and labels the difference as dev-only (scope
-  "optional"). Other ecosystems get "required" from the production run.
+  "optional"). Other ecosystems get "required" from the production run; scan.py then marks
+  Maven dependencies declared only with `<scope>test</scope>` as "optional" (readers.dev_only_deps).
+- Maven: the java-pom-cataloger lists the dependencies declared in each pom.xml (not
+  <dependencyManagement>, no transitive resolution without network), one entry per purl, plus the
+  reactor's own modules, which scan.py drops. Syft carries no Maven scope.
 - A package.json without a lockfile yields no components; readers.py covers that case.
 - The CycloneDX document also lists the scanned files (type "file", no purl) and the
   project's own package (e.g. pkg:npm/<name>@<version>); callers drop the latter via

@@ -8,13 +8,21 @@ from pathlib import Path
 
 from . import __version__
 from .cache import atomic_write
-from .report import ACTIONABLE, _actionable, _sev_label, md
+from .report import ACTIONABLE, _actionable, _sev_label, counts_as_production, md, unrated_in_production
 
 STATUS_FILE = "STATUS.md"
 STATUS_JSON = "status.json"
 SCHEMA = 1
 
 OPEN_KEYS = ("kev", "critical_high_production", "eol", "secrets_a", "secrets_b", "hosts_critical")
+# The counting rule of each open set, stored in status.json as `open_rules`. Raise a key's number whenever
+# what goes into that set changes: a delta compares only sets built by the same rule, so a rule change is
+# never reported as new or resolved findings. Rule 2 of critical_high_production (1.2.0): only the KEV and
+# CRITICAL/HIGH advisories of an actionable production package; rule 1 (up to 1.1.x) took all its advisories.
+OPEN_RULES = {"kev": 1, "critical_high_production": 2, "eol": 1, "secrets_a": 1, "secrets_b": 1,
+              "hosts_critical": 1}
+# Keys whose identities are `<advisory> <eco>:<name>@<version>`: checked against the audit's own rows
+REPORTED_KEYS = ("kev", "critical_high_production")
 OVERDUE_DAYS = 7
 SCHEDULER_MISSED_DAYS = 8
 HOSTS_NOT_CHECKED_DAYS = 8
@@ -75,16 +83,58 @@ def open_sets(rep: dict, secrets: dict | None, hosts: dict | None = None) -> dic
             "hosts_critical": sorted(i for n, h in _host_entries(hosts).items() for i in _host_critical(n, h))}
 
 
-def _deltas(now_open: dict, previous: dict | None) -> tuple[dict, bool]:
+def _version(text) -> tuple[int, ...] | None:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", str(text or ""))
+    return tuple(int(p) for p in match.groups()) if match else None
+
+
+def open_rules_of(doc: dict) -> dict:
+    """The counting rule per open key a status.json was written with (None: unknown).
+
+    Its `open_rules`; a file from before that field (up to 1.2.1) is dated by its `plugin_version`:
+    critical_high_production took every advisory of an actionable package before 1.2.0."""
+    rules = doc.get("open_rules")
+    if isinstance(rules, dict):
+        return {key: rules.get(key) for key in OPEN_KEYS}
+    version = _version(doc.get("plugin_version"))
+    legacy = dict.fromkeys(OPEN_KEYS, 1)
+    legacy["critical_high_production"] = None if version is None else 2 if version >= (1, 2, 0) else 1
+    return legacy
+
+
+def _reported(rep: dict) -> set[str]:
+    """`<advisory> <eco>:<name>@<version>` of every advisory the audit still reports (any severity, scope)."""
+    return {f"{x['id']} {v['ecosystem']}:{v['name']}@{v['version']}"
+            for v in rep.get("vulnerabilities", []) for x in v.get("vulns", [])}
+
+
+def _deltas(now_open: dict, previous: dict | None, rep: dict | None = None) -> tuple[dict, bool]:
+    """new / resolved per open key against the previous run, comparing like with like.
+
+    A key whose previous set was built by another counting rule (`OPEN_RULES`) gets no numbers but
+    `not_comparable` (the reason). An advisory that left the KEV or CRITICAL/HIGH set while the audit
+    still reports it (severity, KEV flag, production scope or a VEX decision for one project changed) is
+    listed under `not_counted`, never as resolved."""
     first_run = previous is None or previous.get("schema") != SCHEMA
     prev_open = {} if first_run else previous.get("open") or {}
+    prev_rules = {} if first_run else open_rules_of(previous)
+    reported = _reported(rep or {})
     deltas = {}
     for key in OPEN_KEYS:
         if first_run:
             deltas[key] = {"new": [], "resolved": []}
             continue
+        if prev_rules.get(key) != OPEN_RULES[key]:
+            deltas[key] = {"new": [], "resolved": [], "not_comparable":
+                           f"the previous run (sbom-audit {previous.get('plugin_version') or 'unknown'}) "
+                           "counted this set by other rules"}
+            continue
         before, after = set(prev_open.get(key, [])), set(now_open[key])
-        deltas[key] = {"new": sorted(after - before), "resolved": sorted(before - after)}
+        gone = before - after
+        still = gone & reported if key in REPORTED_KEYS else set()
+        deltas[key] = {"new": sorted(after - before), "resolved": sorted(gone - still)}
+        if still:
+            deltas[key]["not_counted"] = sorted(still)
     return deltas, first_run
 
 
@@ -123,7 +173,8 @@ def oldest_text(scan: dict) -> str:
 
 
 def _in_production(v: dict, production: set) -> bool:
-    return any(l["project"] in production and l.get("scope") != "optional" for l in v.get("locations", []))
+    """Runtime scope in a production project or in a supported release (`report.counts_as_production`)."""
+    return any(counts_as_production(l, production) for l in v.get("locations", []))
 
 
 def _hosts_counts(hosts: dict | None) -> dict | None:
@@ -168,13 +219,22 @@ def _counts(rep: dict, now_open: dict, secrets: dict | None, hosts: dict | None 
     open_secrets = _open_secrets(secrets)
     production = set(rep.get("production_projects", []))
     vulns = rep.get("vulnerabilities", [])
-    return {"projects": stats.get("projects", 0), "branches": stats.get("branches", 0),
-            "vulnerable": len(vulns), "kev": sum(1 for v in vulns if v.get("kev")),
-            "critical_high_production": sum(1 for v in vulns if _actionable(v) and _in_production(v, production)),
-            "eol": len(now_open["eol"]), "floating_tags": len(rep.get("unpinned_images", [])),
-            "suppressed": len(rep.get("suppressed", [])),
-            "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
-            "hosts": _hosts_counts(hosts)}
+    counts = {"projects": stats.get("projects", 0), "branches": stats.get("branches", 0),
+              "vulnerable": len(vulns), "kev": sum(1 for v in vulns if v.get("kev")),
+              "critical_high_production": sum(1 for v in vulns if _actionable(v) and _in_production(v, production)),
+              "unrated_production": sum(1 for v in vulns if unrated_in_production(v, production)),
+              "unresolved_versions": stats.get("unresolved_versions", 0),
+              "eol": len(now_open["eol"]), "floating_tags": len(rep.get("unpinned_images", [])),
+              "suppressed": len(rep.get("suppressed", [])),
+              "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
+              "hosts": _hosts_counts(hosts)}
+    if stats.get("imported_sboms"):          # only with an imported build SBOM
+        counts["imported_sboms"] = {"total": stats["imported_sboms"],
+                                    "not_current": stats.get("imported_sboms_not_current", 0)}
+    if rep.get("releases"):                  # only with release scanning
+        counts["releases"] = {"scanned": len(rep["releases"]),
+                              "supported": sum(1 for r in rep["releases"] if r.get("supported"))}
+    return counts
 
 
 def build(rep: dict, *, secrets: dict | None, previous: dict | None, duration_s: float,
@@ -184,13 +244,14 @@ def build(rep: dict, *, secrets: dict | None, previous: dict | None, duration_s:
     """The `status.json` document for one run. `hosts` is the `hosts.json` document, passed only when
     `[hosts]` is active (a missing document then reads as `{}`: never checked)."""
     now_open = open_sets(rep, secrets, hosts)
-    deltas, first_run = _deltas(now_open, previous)
+    deltas, first_run = _deltas(now_open, previous, rep)
     commit = dict(commit) if commit is not None else {"status": "skipped", "sha": None, "detail": ""}
     commit.setdefault("pending_hand_edits", [])
     return {
         "schema": SCHEMA, "generated_at": _now(), "duration_s": duration_s, "exit_code": exit_code,
         "plugin_version": __version__, "run_host": run_host, "mode": mode,
-        "counts": _counts(rep, now_open, secrets, hosts), "open": now_open, "deltas": deltas, "first_run": first_run,
+        "counts": _counts(rep, now_open, secrets, hosts), "open": now_open, "open_rules": dict(OPEN_RULES),
+        "deltas": deltas, "first_run": first_run,
         "failed_sources": _failed_sources(rep.get("sources") or {}),
         "secrets_scan": _secrets_scan(secrets),
         "last_assessment": last_assessment, "assessment_proposal": proposal,
@@ -369,8 +430,15 @@ def _delta_lines(status: dict) -> list[str]:
         d = status["deltas"][key]
         if key == "hosts_critical" and not status["counts"].get("hosts") and not (d["new"] or d["resolved"]):
             continue                                    # [hosts] inactive: nothing to say
-        lines.append(f"- {key}: {len(d['new'])} new, {len(d['resolved'])} resolved")
-        lines += [f"  - new: {md(i)}" for i in d["new"]] + [f"  - resolved: {md(i)}" for i in d["resolved"]]
+        if d.get("not_comparable"):
+            lines.append(f"- {key}: not comparable with the previous run: {md(d['not_comparable'])}; "
+                         f"{len((status.get('open') or {}).get(key) or [])} open now, compared from the next run on")
+            continue
+        not_counted = d.get("not_counted") or []
+        lines.append(f"- {key}: {len(d['new'])} new, {len(d['resolved'])} resolved"
+                     + (f", {len(not_counted)} no longer counted but still in AUDIT.md" if not_counted else ""))
+        lines += ([f"  - new: {md(i)}" for i in d["new"]] + [f"  - resolved: {md(i)}" for i in d["resolved"]]
+                  + [f"  - no longer counted: {md(i)}" for i in not_counted])
     return lines
 
 
@@ -415,11 +483,32 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
          f"Run host `{status['run_host']}`, sbom-audit {status['plugin_version']}, mode {status['mode']}, "
          f"duration {status['duration_s']} s, exit {'–' if status['exit_code'] is None else status['exit_code']}.", "",
          severity_line(status, scheduler, now), "", "## Since last run", "",
-         "*Resolved* means no longer open: fixed, or closed by a VEX decision.", ""]
+         "*Resolved* means no longer open: fixed, or closed by a VEX decision. *No longer counted* means the "
+         "advisory left this set (its severity, KEV flag or production scope changed, or a VEX decision covers only "
+         "some projects) but AUDIT.md still reports it.",
+         ""]
     n = status["counts"]
     L += [f"Counts: {n['vulnerable']} vulnerable package versions, {n['kev']} KEV, "
           f"{n['critical_high_production']} CRITICAL/HIGH in production, {n['eol']} EOL, "
           f"{n['floating_tags']} floating tags, {n['suppressed']} suppressed by VEX.", ""]
+    gaps = []                                # coverage gaps; absent in a status.json written before they existed
+    if n.get("unrated_production"):
+        gaps.append(f"{n['unrated_production']} with severity not rated in production")
+    if n.get("unresolved_versions"):
+        gaps.append(f"{n['unresolved_versions']} packages with version not resolved, not checked for vulnerabilities")
+    imports = n.get("imported_sboms")
+    if imports:
+        text = f"{imports['total']} package lists from an imported build SBOM"
+        if imports.get("not_current"):
+            text += (f" ({imports['not_current']} not built from the scanned commit or with no commit recorded, "
+                     "see AUDIT.md)")
+        gaps.append(text)
+    if gaps:
+        L[-2] = L[-2][:-1] + "; " + ", ".join(gaps) + "."
+    if n.get("releases"):
+        r = n["releases"]
+        L[-2] = L[-2][:-1] + (f"; {r['scanned']} releases under audit, {r['supported']} supported "
+                               "(their CRITICAL/HIGH count as production; details in `RELEASES.md`).")
     L += _delta_lines(status) + ["", "## Secrets", ""] + _secrets_lines(status) + _hosts_lines(status) + ["", "## Sources", ""]
     listed = [f"- {md(f['source'])}: FAILED: {md(f['detail'])}" for f in status["failed_sources"]]
     scan = status["secrets_scan"]
@@ -428,6 +517,7 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
     L += listed or ["All sources answered."]
     L += ["", "## Commit", "", f"- commit: {c['status']}" + (f" `{c['sha']}`" if c.get("sha") else "")
           + (f" ({md(c['detail'])})" if c.get("detail") else ""),
+          *([f"- configuration: {md(c['config'])}"] if c.get("config") else []),
           f"- push: {push['status']}" + (f" ({md(push['detail'])})" if push.get("detail") else ""),
           f"- remote visibility: {status['visibility']}", "", "## Scheduler", ""]
     L += _scheduler_lines(scheduler) + ["", "## Assessment", "",
