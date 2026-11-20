@@ -924,10 +924,12 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
         ref = f", read `{shown}`" if shown != inv.branch else ""
         eco = ", ".join(f"{e} {n}" for e, n in sorted(by_eco.items())) or "none"
         rows_note = f" in {n_rows} manifest rows" if n_rows != len(groups) else ""
-        L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {len(groups)} distinct packages{rows_note} "
-                 f"({eco}; {sum(1 for rows in groups.values() if any(c.direct for c in rows))} direct, "
+        n = len(groups)
+        L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {n} distinct package{'' if n == 1 else 's'}"
+                 f"{rows_note} ({eco}; {sum(1 for rows in groups.values() if any(c.direct for c in rows))} direct, "
                  f"{sum(1 for rows in groups.values() if all(c.scope == 'optional' for c in rows))} dev-only), "
-                 f"{n_images} images, {n_runtimes} runtime pins")
+                 f"{n_images} image{'' if n_images == 1 else 's'}, "
+                 f"{n_runtimes} runtime pin{'' if n_runtimes == 1 else 's'}")
         if inv.package_source:
             L.append(f"  - packages: {md(sbomimport.describe(inv.package_source))}")
         for err in inv.errors:

@@ -857,7 +857,7 @@ named by its endoflife.date product; runtimes read from a base image are in the 
 **One package in two manifests.** When a pom.xml and a build.gradle (or any two manifests) declare the
 same coordinate (ecosystem, name, and the same version or none resolved in either), `inventory.json`
 keeps one row per manifest as evidence. Counts of packages count the coordinate once: the branch line
-of `INVENTORY.md` reads "N distinct packages", adding "in M manifest rows" when the two differ; the
+of `INVENTORY.md` reads "N distinct packages" ("1 distinct package" for one), adding "in M manifest rows" when the two differ; the
 Direct dependencies table shows one line, "same coordinate, 2 manifests: `pom.xml`, `build.gradle`";
 the releases table counts distinct packages; `audit.json` `stats.unique_package_versions` and
 `stats.direct_dependencies` (per project and branch) count coordinates, and `stats.occurrences` counts

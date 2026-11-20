@@ -12,7 +12,7 @@ Generated 2026-11-07T02:58:00Z from `.` (portfolio mode, branches `main`, `dev`)
 
 ## billing-api
 
-- **`main`** 0000000 (in sync with origin): 1 distinct packages (PyPI 1; 1 direct, 0 dev-only), 1 images, 0 runtime pins
+- **`main`** 0000000 (in sync with origin): 1 distinct package (PyPI 1; 1 direct, 0 dev-only), 1 image, 0 runtime pins
 
 **Runtimes & images**
 
@@ -28,7 +28,7 @@ Generated 2026-11-07T02:58:00Z from `.` (portfolio mode, branches `main`, `dev`)
 
 ## docs-site
 
-- **`main`** 0000000 (in sync with origin): 1 distinct packages (npm 1; 1 direct, 0 dev-only), 0 images, 0 runtime pins
+- **`main`** 0000000 (in sync with origin): 1 distinct package (npm 1; 1 direct, 0 dev-only), 0 images, 0 runtime pins
 
 **Direct dependencies** (1; `⚠︎` = version differs between branches)
 
@@ -38,7 +38,7 @@ Generated 2026-11-07T02:58:00Z from `.` (portfolio mode, branches `main`, `dev`)
 
 ## shop-web
 
-- **`main`** 0000000 (in sync with origin): 1 distinct packages (npm 1; 1 direct, 0 dev-only), 1 images, 1 runtime pins
+- **`main`** 0000000 (in sync with origin): 1 distinct package (npm 1; 1 direct, 0 dev-only), 1 image, 1 runtime pin
 
 **Runtimes & images**
 

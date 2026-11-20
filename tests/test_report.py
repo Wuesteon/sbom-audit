@@ -471,6 +471,12 @@ class SameCoordinateTwoManifestsTests(unittest.TestCase):
         _, text, _ = self.build([inv("jvm", "main", [self.POM, self.GRADLE, pkg("lodash", "4.17.21")])])
         self.assertIn("2 distinct packages in 3 manifest rows (Maven 1, npm 1; 2 direct, 0 dev-only)", text)
 
+    def test_branch_line_uses_the_singular_for_one(self):
+        _, text, _ = self.build([inv("jvm", "main", [self.POM, self.GRADLE])])
+        self.assertIn("1 distinct package in 2 manifest rows (Maven 1;", text)
+        self.assertNotIn("1 distinct packages", text)
+        self.assertIn("0 images, 0 runtime pins", text)
+
     def test_release_package_total_counts_the_coordinate_once(self):
         rel = BranchInventory(project="jvm", branch="tags/v1", ref="refs/tags/v1", commit="abc1234def",
                               components=[self.POM, self.GRADLE], release={"tag": "v1", "date": "2026-01-01",
