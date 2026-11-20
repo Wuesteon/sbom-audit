@@ -452,9 +452,10 @@ def cli_incident(args) -> int:
         for f in files:
             print(f"wrote {f}")
     elif absent:
-        print(f"Record the no-hits with: /sbom-audit:incident {inc.ident} --vex")
+        print(f"Record the no-hits with: /sbom-audit:incident {inc.ident} --vex "
+              f"(CLI: sbom_audit_cli.py incident {inc.ident} --vex)")
     if unknown and not hits:
-        print(f"Re-run /sbom-audit:run to complete the audit for: "
+        print(f"Re-run /sbom-audit:run (CLI: sbom_audit_cli.py run) to complete the audit for: "
               + ", ".join(sorted({f'{v.project}@{v.branch}' for v in unknown})))
     if unresolved and not hits:
         print("A re-run does not help where the version is not resolved: check the version the build actually "

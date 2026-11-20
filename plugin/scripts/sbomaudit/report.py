@@ -12,7 +12,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import __version__, coverage, sbomimport, sbomquality
+from . import __version__, coverage, gaps, sbomimport, sbomquality
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import DECLARED_FLOORS, fixed_in
@@ -288,7 +288,8 @@ def _notes(inventories: list[BranchInventory]) -> list[str]:
                              "non-pinned requirements, so the image may run versions other than the lockfile "
                              "audited here. Pin them (`uv export --format requirements-txt`) or install from the lockfile.")
     # packages without a version: `unresolved_versions` (coverage.py)
-    return notes + _import_notes(inventories) + _unchecked_actions_notes(inventories)
+    return (notes + _import_notes(inventories) + _unchecked_actions_notes(inventories)
+            + _unmatched_notes(inventories) + _gap_notes(inventories))
 
 
 def imported_sboms(inventories: list[BranchInventory]) -> list[dict]:
@@ -303,7 +304,54 @@ def _import_notes(inventories: list[BranchInventory]) -> list[str]:
 
 def is_github_action(c) -> bool:
     """A GitHub Action used in a workflow (`pkg:github/<owner>/<repo>@<ref>`, Syft's workflow catalogers)."""
-    return c.kind == "package" and (c.ecosystem == "github" or (c.purl or "").startswith("pkg:github/"))
+    return (c.kind == "package" and not c.props.get("imported")
+            and (c.ecosystem == "github" or (c.purl or "").startswith("pkg:github/")))
+
+
+# purl types OSV holds no (or practically no) advisories under, so osv-scanner checks nothing for them: C/C++
+# libraries from a build SBOM (pkg:generic, pkg:github, pkg:conan, pkg:vcpkg). Listed as not checked, never clean.
+UNMATCHED_ECOSYSTEMS = {"generic", "github", "conan", "vcpkg", "bitbucket", "gitlab"}
+
+
+def is_unmatched(c) -> bool:
+    """A package with a version whose ecosystem OSV cannot match (GitHub Actions are counted apart)."""
+    return (c.kind == "package" and not is_github_action(c) and bool(c.version)
+            and c.ecosystem.lower() in UNMATCHED_ECOSYSTEMS)
+
+
+def unmatched_packages(inventories: list[BranchInventory]) -> int:
+    return sum(1 for inv in inventories if not inv.release for c in inv.components if is_unmatched(c))
+
+
+def _unmatched_notes(inventories: list[BranchInventory]) -> list[str]:
+    notes = []
+    for inv in sorted(inventories, key=lambda i: (i.project.lower(), i.branch)):
+        if inv.release:
+            continue
+        rows = sorted({(c.ecosystem, c.name, c.version) for c in inv.components if is_unmatched(c)})
+        if rows:
+            shown = ", ".join(f"`{md(n)}` {md(v)} ({e})" for e, n, v in rows[:10]) + (" …" if len(rows) > 10 else "")
+            notes.append(f"{inv.project}@{inv.branch}: {len(rows)} packages are inventoried but not checked for "
+                         f"vulnerabilities (OSV has no advisories under these package types; match them by CPE "
+                         f"or by hand): {shown}")
+    return notes
+
+
+def coverage_gaps(inventories: list[BranchInventory]) -> int:
+    """Branches whose tree holds code the scan cannot inventory (gaps.detect): submodules, C/C++, firmware."""
+    return sum(1 for inv in inventories if not inv.release and inv.coverage_gaps)
+
+
+def _gap_notes(inventories: list[BranchInventory]) -> list[str]:
+    return [f"{inv.project}@{inv.branch}: {md(gaps.describe(inv.coverage_gaps, bool(inv.package_source)))}"
+            for inv in sorted(inventories, key=lambda i: (i.project.lower(), i.branch))
+            if not inv.release and inv.coverage_gaps]
+
+
+def _skipped_notes(skipped: list[dict]) -> list[str]:
+    hint = (" Add a branch it has to `branches` in `sbom-audit.toml`, or add the project to `ignore_projects`.")
+    return [f"{md(s.get('project', '?'))}: not scanned ({md(s.get('reason', 'unknown'))}); nothing of it is in "
+            "this audit." + (hint if "exist" in str(s.get("reason", "")) else "") for s in skipped]
 
 
 def unchecked_actions(inventories: list[BranchInventory]) -> int:
@@ -328,7 +376,7 @@ def _unchecked_actions_notes(inventories: list[BranchInventory]) -> list[str]:
 
 def build(cfg: Config, inventories: list[BranchInventory], findings: list[Finding],
           suppressed: list[Suppressed], eol: list[dict], outdated: list[dict], sources: dict | None,
-          releases: dict | None = None) -> dict:
+          releases: dict | None = None, skipped: list[dict] | None = None) -> dict:
     """Everything the writers need, JSON-serialisable (this is `audit.json`).
 
     `releases` is `releases.context()`: (project, branch) -> release info for every release inventory.
@@ -347,6 +395,12 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "runtimes": sum(1 for inv in inventories for c in inv.components if c.kind == "runtime"),
         "github_actions_unchecked": unchecked_actions(inventories),
     }
+    # coverage gaps (`skipped`: the scan's {"project", "reason"} list); each key absent when zero
+    for key, value in (("packages_unmatched", unmatched_packages(inventories)),
+                       ("coverage_gaps", coverage_gaps(inventories)),
+                       ("projects_not_scanned", len(skipped or []))):
+        if value:
+            stats[key] = value
     unresolved = coverage.unresolved_versions(inventories, releases)
     stats["unresolved_versions"] = sum(r["count"] for r in unresolved)
     runtimes = _runtimes(eol, releases)
@@ -359,10 +413,12 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "outdated": [dict(o) for o in outdated],
         "unpinned_images": _unpinned_images(inventories),
         "suppressed": [s.to_dict() if isinstance(s, Suppressed) else dict(s) for s in suppressed],
-        "notes": _notes(inventories),
+        "notes": _skipped_notes(skipped or []) + _notes(inventories),
         "stats": stats,
         "production_projects": sorted(name for name, opts in cfg.projects.items() if opts.production),
     }
+    if skipped:                              # only when the scan left a project out
+        rep["skipped_projects"] = [dict(s) for s in skipped]
     if unresolved:                           # only when some package was not checked (coverage.py)
         rep["unresolved_versions"] = unresolved
     imports = imported_sboms(inventories)
@@ -449,6 +505,14 @@ def _summary(rep: dict) -> list[str]:
     ]
     if st.get("github_actions_unchecked"):
         rows.append(("GitHub Actions inventoried, not checked for vulnerabilities", st["github_actions_unchecked"]))
+    if st.get("packages_unmatched"):
+        rows.append(("Packages OSV cannot match (generic, GitHub, Conan, vcpkg), not checked for vulnerabilities",
+                     st["packages_unmatched"]))
+    if st.get("coverage_gaps"):
+        rows.append(("Branches with submodules, C/C++ code or firmware manifests not inventoried (see Notes)",
+                     st["coverage_gaps"]))
+    if st.get("projects_not_scanned"):
+        rows.insert(1, ("Projects not scanned (see Notes)", st["projects_not_scanned"]))
     L = ["## Summary", "", "| Metric | Count |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in rows]
     L.append("")

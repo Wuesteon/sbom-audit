@@ -328,6 +328,17 @@ def _releases_for(releases: dict | None, project: str) -> dict | None:
 
 # --------------------------------------------------------------------------- the check
 
+def _coverage_gap(out: Path, project: str, branch: str) -> str:
+    """The scan's coverage gap of project@branch from inventory.json (gaps.describe), or ""."""
+    from . import gaps
+    doc = _read_json(out / "inventory.json")
+    for inv in (doc or {}).get("inventories") or [] if isinstance(doc, dict) else []:
+        if isinstance(inv, dict) and inv.get("project") == project and inv.get("branch") == branch \
+                and isinstance(inv.get("coverage_gaps"), dict):
+            return "INCOMPLETE, " + gaps.describe(inv["coverage_gaps"], bool(inv.get("package_source")))
+    return ""
+
+
 def _ob(oid: str, status: str, evidence=None, note: str = "") -> dict:
     ref, title = OBLIGATIONS.get(oid) or MANUFACTURER[oid]
     return {"id": oid, "ref": ref, "title": title, "status": status, "evidence": list(evidence or []), "note": note}
@@ -417,7 +428,11 @@ def check_product(cfg, ccfg: CraConfig, product: Product, out: Path, *, audit: d
     if sbom and (out / sbom).is_file():
         # a file with structural errors is not usable evidence: "missing", the path and the errors in the note
         quality = sbomquality.summary(sbomquality.check_path(out / sbom))
-        obs.append(_ob("sbom", "present" if quality["valid"] else "missing", [sbom], sbomquality.cra_note(quality)))
+        note = sbomquality.cra_note(quality)
+        gap = _coverage_gap(out, product.key, res["branch"])
+        if gap:                              # an SBOM without the firmware's own components is not the whole answer
+            note = f"{note}; {gap}" if note else gap
+        obs.append(_ob("sbom", "present" if quality["valid"] else "missing", [sbom], note))
     else:
         obs.append(_ob("sbom", "missing", [], f"no {sbom or f'sbom/{product.key}/'} (run /sbom-audit:run)"))
     generated = _parse_time((audit or {}).get("generated_at"))

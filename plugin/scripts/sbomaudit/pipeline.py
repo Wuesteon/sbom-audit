@@ -173,7 +173,8 @@ def finish_tools(cfg: Config) -> dict[str, str]:
 
 
 def audit(cfg: Config, inventories: list[BranchInventory], log=None,
-          http=None, extra_tools: dict | None = None) -> tuple[dict, list[Path]]:
+          http=None, extra_tools: dict | None = None,
+          skipped: list[dict] | None = None) -> tuple[dict, list[Path]]:
     """Match, enrich, apply VEX and write every report; returns the report and the paths written.
     `extra_tools`: tools later steps of the same run use (`finish_tools`), listed in the report's tool table.
 
@@ -212,7 +213,8 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
     sources["openvex"] = {"statements": len(statements), "suppressed": len(suppressed)}
 
     release_ctx = releases.context(cfg, inventories)
-    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx)
+    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx,
+                       skipped=skipped)
     tools = {**manifest.tool_versions(), **(extra_tools or {})}
     rep["provenance"] = manifest.try_provenance(cfg, cache, since, sources=sources, eol_rows=eol_rows,
                                                 latest_keys=direct, generated_at=rep.get("generated_at"),
@@ -561,7 +563,8 @@ def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, l
         result = scan.scan(cfg, only=only, fetch=fetch, log=say)
         for s in result.skipped:
             say(f"skipped {s['project']}: {s['reason']}")
-        rep, written = audit(cfg, result.inventories, log=say, http=http, extra_tools=finish_tools(cfg))
+        rep, written = audit(cfg, result.inventories, log=say, http=http, extra_tools=finish_tools(cfg),
+                             skipped=result.skipped)
     except VexError as exc:
         say(f"OpenVEX: {exc}")
         return EXIT_VEX
@@ -612,12 +615,12 @@ def cli_audit(args) -> int:
     if tools_missing(preflight.AUDIT_TOOLS, print):
         return EXIT_TOOL_MISSING
     try:
-        inventories, _ = scan.read_inventory(cfg.out)
+        inventories, header = scan.read_inventory(cfg.out)
     except FileNotFoundError:
         print(f"{cfg.out / scan.INVENTORY_FILE} not found: run `scan` (or `run`) first.")
         return EXIT_SOURCE_FAILED
     try:
-        rep, _ = audit(cfg, inventories, log=print)
+        rep, _ = audit(cfg, inventories, log=print, skipped=header.get("skipped") or None)
     except VexError as exc:
         print(f"OpenVEX: {exc}")
         return EXIT_VEX

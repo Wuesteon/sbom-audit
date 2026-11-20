@@ -1272,6 +1272,24 @@ NTIA's practices (frequency, delivery, access control) are outside a file check.
 
 ## Limitations
 
+The overview, with C/C++ and firmware coverage, untested platforms and the data that leaves the
+machine per mode, is [Limitations](limitations.md); the plain-CLI sequence is
+[Using sbom-audit without Claude Code](without-claude-code.md). The details:
+
+- C/C++ and firmware: git submodules, vendored C/C++ code, Zephyr `west.yml`, ESP-IDF
+  `idf_component.yml`, PlatformIO `platformio.ini`/`library.json`, Conan `conanfile.py`, the
+  dependencies of `vcpkg.json` and CMake `FetchContent`/`ExternalProject` are not inventoried. They
+  are detected per branch (`coverage_gaps` in `inventory.json`) and reported, never as clean:
+  `AUDIT.md` summary row "Branches with submodules, C/C++ code or firmware manifests not inventoried"
+  and a Note per branch, `stats.coverage_gaps` in `audit.json`, the counts in `STATUS.md`, the limits of
+  `REPORT.html` and `INCOMPLETE` in the CRA SBOM row. Import a build SBOM to cover them.
+- Packages with a purl type OSV has no advisories for (`generic`, `github` outside workflows, `conan`,
+  `vcpkg`, `bitbucket`, `gitlab`), typically from an imported C/C++ build SBOM, are inventoried but not
+  checked: `stats.packages_unmatched`, the `AUDIT.md` summary row "Packages OSV cannot match" and a Note
+  per branch. CPEs are not used for matching.
+- A project with none of the configured branches is not scanned: `setup` warns, the run lists it in
+  `AUDIT.md` Notes, `skipped_projects` and `stats.projects_not_scanned` in `audit.json`, and `STATUS.md`
+  Sources and Counts. The exit code does not change.
 - Ecosystems OSV does not cover (CocoaPods, Swift packages, system packages) are listed
   in the inventory but not matched against vulnerabilities.
 - GitHub Actions used in workflows (`pkg:github/<owner>/<repo>@<ref>`) are inventoried but not

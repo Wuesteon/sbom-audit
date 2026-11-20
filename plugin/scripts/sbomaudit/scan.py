@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cyclonedx, gitio, matching, pomresolve, preflight, readers, sbomimport, sbomquality, syft
+from . import config, cyclonedx, gaps, gitio, matching, pomresolve, preflight, readers, sbomimport, sbomquality, syft
 from .config import Config, Project
 from .errors import ToolError
 from .model import BranchInventory, Component
@@ -226,6 +226,7 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
         gradle_unknown = readers.gradle_unknown_direct(src, project.ignore)
         extra = readers.read_tree(src, project.ignore, remote=project.remote)
         imported = _read_import(cfg, project, branch, src, inv)
+        inv.coverage_gaps = gaps.detect(src)       # submodules, unread C/C++/firmware manifests, C sources
     for image in [c for c in extra if c.kind == "image"]:
         runtime = readers.runtime_from_image(image)
         if runtime is not None:

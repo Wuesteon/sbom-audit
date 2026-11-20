@@ -231,6 +231,9 @@ def _counts(rep: dict, now_open: dict, secrets: dict | None, hosts: dict | None 
               "suppressed": len(rep.get("suppressed", [])),
               "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
               "hosts": _hosts_counts(hosts)}
+    for key in ("packages_unmatched", "coverage_gaps", "projects_not_scanned"):   # coverage gaps, only when > 0
+        if stats.get(key):
+            counts[key] = stats[key]
     if stats.get("imported_sboms"):          # only with an imported build SBOM
         counts["imported_sboms"] = {"total": stats["imported_sboms"],
                                     "not_current": stats.get("imported_sboms_not_current", 0)}
@@ -501,6 +504,13 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
         gaps.append(f"{n['unrated_production']} with severity not rated in production")
     if n.get("unresolved_versions"):
         gaps.append(f"{n['unresolved_versions']} packages with version not resolved, not checked for vulnerabilities")
+    if n.get("projects_not_scanned"):
+        gaps.append(f"{n['projects_not_scanned']} projects not scanned (see AUDIT.md Notes)")
+    if n.get("coverage_gaps"):
+        gaps.append(f"{n['coverage_gaps']} branches with submodules, C/C++ code or firmware manifests not "
+                    "inventoried (see AUDIT.md Notes)")
+    if n.get("packages_unmatched"):
+        gaps.append(f"{n['packages_unmatched']} packages OSV cannot match, not checked for vulnerabilities")
     imports = n.get("imported_sboms")
     if imports:
         text = f"{imports['total']} package lists from an imported build SBOM"
@@ -519,6 +529,9 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
     scan = status["secrets_scan"]
     if scan["mode"] == "skipped" and not any(f["source"] == "secrets" for f in status["failed_sources"]):
         listed.append(f"- secrets: {md(scan.get('skipped_reason') or 'not scanned')}")
+    if n.get("projects_not_scanned"):        # a project left out is not an answered source
+        listed.append(f"- git: {n['projects_not_scanned']} projects not scanned (names and reasons in "
+                      "AUDIT.md Notes)")
     L += listed or ["All sources answered."]
     L += ["", "## Commit", "", f"- commit: {c['status']}" + (f" `{c['sha']}`" if c.get("sha") else "")
           + (f" ({md(c['detail'])})" if c.get("detail") else ""),
