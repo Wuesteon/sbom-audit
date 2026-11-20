@@ -121,6 +121,27 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(run_wrapper(dev_wrapper, self.home, STUB_EXIT="3").returncode, 3)
         self.assertEqual(scheduler.read_state(self.out)["last_exit"], 3)
 
+    def test_wrapper_finds_the_newest_cached_version_when_its_own_is_gone(self):
+        """The wrapper was written by version 1.1.1; that directory was cleaned up and installed_plugins.json
+        cannot be read. The newest version directory next to it runs, never an older one or none."""
+        cache = self.tmp / "cache" / "wuesteon-plugins" / "sbom-audit"
+        old = cache / "1.1.1"                                  # FALLBACK_ROOT, removed below
+        for version in ("1.2.0", "1.10.0", "1.9.3"):
+            fake_install(cache / version)
+            (cache / version / "scripts" / "sbom_audit_cli.py").write_text(f'print("ran {version}")\n')
+        (cache / "notes").mkdir()                              # not a version directory
+        wrapper = scheduler.write_wrapper(self.out, "sbom-audit@wuesteon-plugins", old, self.tmp / "cfg")
+        proc = run_wrapper(wrapper, self.home)                 # no installed_plugins.json under this HOME
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        log = (self.out / ".cache" / "runs" / (dt.date.today().isoformat() + ".log")).read_text()
+        self.assertIn("ran 1.10.0", log)
+        self.assertEqual(scheduler.read_state(self.out)["plugin_install"], str(cache / "1.10.0"))
+        # installed_plugins.json, when readable, still wins over the directory listing
+        write_installed(self.home, "sbom-audit@wuesteon-plugins",
+                        [{"installPath": str(cache / "1.2.0"), "lastUpdated": "2026-11-06T00:00:00.000Z"}])
+        run_wrapper(wrapper, self.home)
+        self.assertEqual(scheduler.read_state(self.out)["plugin_install"], str(cache / "1.2.0"))
+
     def test_wrapper_sets_scheduled_marker(self):
         """The CLI refuses `hosts ... --confirm` under this marker (an unattended run must never patch)."""
         install = self.tmp / "marker-install"
@@ -285,8 +306,11 @@ class SchedulerTests(unittest.TestCase):
         (self.out / ".cache" / "scheduler.json").write_text(
             json.dumps({"installed": True, "last_fired": "2026-11-01T03:00:00Z", "next_fire": "2026-11-14T03:00:00+01:00"}))
         path = status.write_md(self.out, doc)
-        self.assertIn("Scheduler: installed.", path.read_text())
-        self.assertIn("- last fired: 2026-11-01T03:00:00Z", path.read_text())
+        text = path.read_text()
+        self.assertIn("Scheduler: installed, weekly Saturday 03:00 local.", text)
+        # local time in the zone of the run (generated_at is +01:00), with the recorded UTC stamp
+        self.assertIn("- last fired: 2026-11-01 04:00 +0100 local (2026-11-01T03:00:00Z)", text)
+        self.assertIn("- next fire: 2026-11-14T03:00:00+01:00", text)      # computed from the run's time
         from sbomaudit import pipeline
         self.assertIs(pipeline.read_scheduler_state, scheduler.read_state)
 

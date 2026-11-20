@@ -389,8 +389,23 @@ fork.
 - **One writer.** Only one machine runs the schedule and pushes to the evidence repository.
   When setup sees that the last run happened on another host, it says so; turn the timer
   off on one of them.
-- A missed week (the machine was asleep or off) shows in the session status line (when turned on) and in
-  `STATUS.md` as `scheduler did not run since …`.
+- A missed week (the machine was off at fire time, the timer is unloaded, or the wrapper cannot start)
+  shows in `status`, `STATUS.md` and the session status line (when turned on) as
+  `scheduler did not run since <day> (weekly run <n> days overdue)` once the last fire is more than 8 days
+  old; `<day>` is the local day of the last fire (`scheduler.json` stamps UTC). A timer that never fired
+  counts from its install date. A sleeping Mac is not a missed week: launchd starts the run on wake.
+- A scheduled run that the wrapper could not start or that ended abnormally (it recorded `last_error`, or an
+  exit other than the CLI's 0, 1 or 2, such as 127 when no plugin install or no Python 3.11 is found) shows as
+  `scheduled run of <day> failed (exit <n>)`; one that started more than a day ago and never recorded its exit
+  (killed, machine shut down) as `scheduled run of <day> did not finish`. Exit 1 is normal: findings present.
+- The `## Scheduler` section of `STATUS.md` and `status` lists the last fire (local time and the recorded UTC
+  stamp), its exit and meaning, the last error, the plugin directory the wrapper ran, and the next fire,
+  computed when the status is shown (the `next_fire` that `scheduler.json` keeps from install time is not
+  updated and not shown). When overdue or failing it names the command that shows the timer
+  (`launchctl print gui/$(id -u)/<label>` or `systemctl --user list-timers`).
+- The wrapper finds the plugin through `~/.claude/plugins/installed_plugins.json`; when that cannot be read
+  it runs the newest version directory in the plugin cache, and only then the directory that installed it.
+  The Linux timer test procedure is in [`docs/testing-linux-timer.md`](testing-linux-timer.md).
 - Unattended runs never prompt for a password or passphrase; when GitHub's host key is not
   yet in `~/.ssh/known_hosts`, the fetch fails with `Host key verification failed`, which
   one `ssh -T git@github.com` on that machine fixes.

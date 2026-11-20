@@ -555,7 +555,9 @@ class RunTests(unittest.TestCase):
                  contextlib.redirect_stdout(buf):
                 rc = cli.main(["--out", str(out), "status"])
             self.assertEqual(rc, 0)
-            self.assertIn(f"scheduler did not run since {fired[:10]}", buf.getvalue())
+            local_day = dt.datetime.fromisoformat(fired).astimezone().date().isoformat()    # not the UTC text
+            self.assertIn(f"scheduler did not run since {local_day} (weekly run 5 days overdue)", buf.getvalue())
+            self.assertIn("- OVERDUE OR FAILING: scheduler did not run since", buf.getvalue())
             (out / "status.json").write_text("{}")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):

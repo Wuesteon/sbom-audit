@@ -14,6 +14,7 @@ import sys
 OPEN_KEYS = ("kev", "critical_high_production", "eol", "secrets_a", "secrets_b", "hosts_critical")
 OVERDUE_DAYS = 7
 SCHEDULER_MISSED_DAYS = 8
+SCHEDULE_INTERVAL_DAYS = 7
 HOSTS_NOT_CHECKED_DAYS = 8
 ASSESS_SENTENCE = "Offer /sbom-audit:assess before other security work."
 # status.json may come from a cloned repository, so every string from it is untrusted: one line, printable,
@@ -94,15 +95,46 @@ def _elapsed(when, now):
     return _aware(now) - _aware(when)
 
 
+def _scheduler_day(value, now):
+    return _local_day(value, _aware(now).tzinfo)
+
+
 def _scheduler_missed(scheduler, now):
+    """Mirror of status.py: the local day of the last fire (or install), with how late the weekly run is."""
     if not scheduler or not scheduler.get("installed"):
         return None
     last = scheduler.get("last_fired") or scheduler.get("installed_at")
     fired = _parse(last)
-    if fired is None or _elapsed(fired, now) > dt.timedelta(days=SCHEDULER_MISSED_DAYS):
-        since = (last or "install")[:10]
+    if fired is not None and _elapsed(fired, now) <= dt.timedelta(days=SCHEDULER_MISSED_DAYS):
+        return None
+    since = _clean(_scheduler_day(last, now) or (last or "install")[:10], 10)
+    if fired is None:
         return "scheduler did not run since " + since
+    if not scheduler.get("last_fired"):
+        return "scheduler did not run since %s (never fired since install)" % since
+    late = (_elapsed(fired, now) - dt.timedelta(days=SCHEDULE_INTERVAL_DAYS)).days
+    return "scheduler did not run since %s (weekly run %d days overdue)" % (since, late)
+
+
+def _scheduler_failed(scheduler, now):
+    """Mirror of status.py: the wrapper recorded an error or an exit other than 0/1/2, or never finished."""
+    if not scheduler or not scheduler.get("installed") or not scheduler.get("last_fired"):
+        return None
+    day = _clean(_scheduler_day(scheduler.get("last_fired"), now) or "unknown day", 11)
+    code, error = scheduler.get("last_exit"), scheduler.get("last_error")
+    if error or (code is not None and code not in (0, 1, 2)):
+        return "scheduled run of %s failed (exit %s); see STATUS.md" % (day, _clean(code, 8))
+    fired = _parse(scheduler.get("last_fired"))
+    if ("last_exit" in scheduler and code is None and fired is not None
+            and _elapsed(fired, now) > dt.timedelta(days=1)):
+        return "scheduled run of %s did not finish; see STATUS.md" % day
     return None
+
+
+def _stale_text(age, overdue, missed):
+    if missed and overdue:
+        return "last run %d days ago, %s; run /sbom-audit:run" % (age.days, missed)
+    return missed if missed else "last run %d days ago; run /sbom-audit:run" % age.days
 
 
 def _local_day(value, tz=None):
@@ -155,14 +187,15 @@ def severity_line(status, scheduler, now):
     age = _elapsed(generated, now) if generated else None
     overdue = age is not None and age > dt.timedelta(days=OVERDUE_DAYS)
     missed = _scheduler_missed(scheduler, now)
+    sched_failed = _scheduler_failed(scheduler, now)
     hosts = counts.get("hosts") or {}
     not_checked = _hosts_not_checked(status, now)
     rules = [
         (status.get("exit_code") is None, "set up, no run yet; run /sbom-audit:run"),   # setup's placeholder
         ((status.get("exit_code") or 0) >= 2,
          "last run FAILED (exit %s); see STATUS.md" % _clean(status.get("exit_code"), 8)),
-        (overdue or missed,
-         missed if missed and not overdue else "last run %d days ago; run /sbom-audit:run" % age.days),
+        (sched_failed, sched_failed),
+        (overdue or missed, _stale_text(age, overdue, missed)),
         (secrets["A"] > 0,
          "%d class A, %d B secrets open, oldest %s" % (secrets["A"], secrets["B"], _oldest_text(scan))),
         ((hosts.get("critical") or 0) > 0,

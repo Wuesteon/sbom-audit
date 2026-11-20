@@ -335,6 +335,69 @@ class SeverityTest(unittest.TestCase):
         self.assertNotIn("scheduler did not", self.line(d, {"installed": True, "last_fired": fresh}))
         self.assertNotIn("scheduler did not", self.line(d, {"installed": False, "last_fired": None}))
 
+    def test_scheduler_overdue_line_names_the_local_day_and_how_late(self):
+        d = doc()
+        # the wrapper stamps UTC: Saturday 03:00 at +08:00 is Friday 19:00 UTC; the line gives the local Saturday
+        now = dt.datetime.fromisoformat("2026-11-25T12:00:00+08:00")
+        sched = {"installed": True, "installed_at": "2026-11-10T08:00:00Z", "last_fired": "2026-11-13T19:00:05Z",
+                 "last_exit": 1, "last_error": None}
+        text = self.line(d, sched, now)
+        self.assertIn("scheduler did not run since 2026-11-14 (weekly run 4 days overdue)", text)
+        self.assertNotIn("2026-11-13", text)
+        # on time (7.7 days after the last fire, the next fire not yet due): nothing to say
+        self.assertNotIn("scheduler", self.line(d, sched, dt.datetime.fromisoformat("2026-11-21T02:40:00+08:00")))
+        never = {"installed": True, "installed_at": "2026-11-01T08:00:00Z", "last_fired": None}
+        self.assertIn("scheduler did not run since 2026-11-01 (never fired since install)", self.line(d, never, now))
+
+    def test_stale_run_and_missed_schedule_are_both_named(self):
+        d = doc(generated_at="2026-10-20T10:00:00+01:00")
+        sched = {"installed": True, "last_fired": "2026-10-17T03:00:00+01:00"}
+        text = self.line(d, sched)
+        self.assertIn("last run 18 days ago, scheduler did not run since 2026-10-17", text)
+        self.assertIn("run /sbom-audit:run", text)
+        self.assertIn("last run 18 days ago; run /sbom-audit:run", self.line(d, None))
+
+    def test_scheduler_wrapper_failure_line(self):
+        d = doc()
+        fired = "2026-11-07T02:00:00Z"
+        for sched in ({"installed": True, "last_fired": fired, "last_exit": 127,
+                       "last_error": "plugin install path not found"},
+                      {"installed": True, "last_fired": fired, "last_exit": 1, "last_error": "wrapper failed: OSError: x"},
+                      {"installed": True, "last_fired": fired, "last_exit": -9, "last_error": None}):
+            with self.subTest(sched=sched):
+                self.assertIn("scheduled run of 2026-11-07 failed", self.line(d, sched))
+        for code in (0, 1, 2):          # the CLI's own exits; 2 is reported through status.json
+            self.assertNotIn("scheduled run", self.line(d, {"installed": True, "last_fired": fired, "last_exit": code}))
+        started = {"installed": True, "last_fired": "2026-11-05T02:00:00Z", "last_exit": None, "last_error": None}
+        self.assertIn("scheduled run of 2026-11-05 did not finish", self.line(d, started))
+        self.assertNotIn("scheduled run", self.line(d, {**started, "last_fired": fired}))       # still running
+        self.assertNotIn("scheduled run", self.line(d, {"installed": False, "last_fired": fired, "last_exit": 127}))
+
+    def test_status_md_scheduler_section_computes_next_fire_and_flags_overdue(self):
+        d = doc()
+        now = dt.datetime.fromisoformat("2026-11-25T12:00:00+08:00")
+        sched = {"installed": True, "installed_at": "2026-11-10T08:00:00Z", "last_fired": "2026-11-13T19:00:05Z",
+                 "last_exit": 1, "last_error": None, "next_fire": "2026-11-14T03:00:00+08:00",
+                 "platform": "darwin", "label": "dev.waiser.sbom-audit.abcd1234"}
+        section = status.render_md(d, sched, now).split("## Scheduler")[1].split("## Assessment")[0]
+        self.assertIn("- last fired: 2026-11-14 03:00 +0800 local (2026-11-13T19:00:05Z)", section)
+        self.assertIn("- last exit: 1 (findings present)", section)
+        self.assertIn("- next fire: 2026-11-28T03:00:00+08:00", section)      # computed, not the stored value
+        self.assertNotIn("2026-11-14T03:00:00", section)
+        self.assertIn("OVERDUE OR FAILING: scheduler did not run since 2026-11-14 (weekly run 4 days overdue)", section)
+        self.assertIn("launchctl print gui/$(id -u)/dev.waiser.sbom-audit.abcd1234", section)
+        on_time = status.render_md(d, sched, dt.datetime.fromisoformat("2026-11-21T02:40:00+08:00"))
+        self.assertNotIn("OVERDUE", on_time)
+        self.assertIn("- next fire: 2026-11-21T03:00:00+08:00", on_time)
+        failed = {**sched, "last_fired": "2026-11-20T19:00:05Z", "last_exit": 127, "platform": "linux",
+                  "last_error": "python 3.11 or newer not found on PATH", "plugin_install": "/p/1.3.0"}
+        section = status.render_md(d, failed, now).split("## Scheduler")[1]
+        self.assertIn("- last exit: 127 (the wrapper or the run failed)", section)
+        self.assertIn("- last error: python 3.11 or newer not found on PATH", section)
+        self.assertIn("- plugin used: /p/1.3.0", section)
+        self.assertIn("scheduled run of 2026-11-21 failed (exit 127)", section)
+        self.assertIn("systemctl --user list-timers", section)
+
 
 class AssessmentDateTest(unittest.TestCase):
     def test_last_assessment_date_parses_latest_heading(self):

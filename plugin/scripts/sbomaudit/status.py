@@ -25,6 +25,9 @@ OPEN_RULES = {"kev": 1, "critical_high_production": 2, "eol": 1, "secrets_a": 1,
 REPORTED_KEYS = ("kev", "critical_high_production")
 OVERDUE_DAYS = 7
 SCHEDULER_MISSED_DAYS = 8
+SCHEDULE_INTERVAL_DAYS = 7
+# What the CLI's `run` exit code means (docs/reference.md); the wrapper records it as `last_exit`.
+RUN_EXIT_MEANING = {0: "clean", 1: "findings present", 2: "a source failed"}
 HOSTS_NOT_CHECKED_DAYS = 8
 SKIPPED_SECRETS_REASON = "no secrets scan in this run"
 _ASSESSMENT_HEADING = re.compile(r"^## Assessment (\d{4}-\d{2}-\d{2})", re.M)
@@ -345,15 +348,52 @@ def _elapsed(when: dt.datetime, now: dt.datetime) -> dt.timedelta:
     return _aware(now) - _aware(when)
 
 
+def _scheduler_day(value, now: dt.datetime) -> str | None:
+    """The local calendar day of a scheduler stamp (the wrapper stamps UTC: slicing its text is up to a day off)."""
+    return _local_day(value, _aware(now).tzinfo)
+
+
 def _scheduler_missed(status: dict, scheduler: dict | None, now: dt.datetime) -> str | None:
+    """`scheduler did not run since <local day> (...)` when an installed timer has not fired for more than
+    SCHEDULER_MISSED_DAYS (one missed weekly fire plus a day of grace); a timer that never fired counts from
+    its install date. None when no timer is installed or it is on time."""
     if not scheduler or not scheduler.get("installed"):
         return None
     last = scheduler.get("last_fired") or scheduler.get("installed_at")    # a fresh install counts from its install date
     fired = _parse(last)
-    if fired is None or _elapsed(fired, now) > dt.timedelta(days=SCHEDULER_MISSED_DAYS):
-        since = (last or "install")[:10]
+    if fired is not None and _elapsed(fired, now) <= dt.timedelta(days=SCHEDULER_MISSED_DAYS):
+        return None
+    since = _scheduler_day(last, now) or (last or "install")[:10]
+    if fired is None:
         return f"scheduler did not run since {since}"
+    if not scheduler.get("last_fired"):
+        return f"scheduler did not run since {since} (never fired since install)"
+    late = (_elapsed(fired, now) - dt.timedelta(days=SCHEDULE_INTERVAL_DAYS)).days
+    return f"scheduler did not run since {since} (weekly run {late} days overdue)"
+
+
+def _scheduler_failed(scheduler: dict | None, now: dt.datetime) -> str | None:
+    """`scheduled run of <day> failed|did not finish` when the wrapper itself failed (it recorded `last_error`,
+    or an exit other than the CLI's 0/1/2, such as 127: no plugin install or no Python 3.11), or a run that
+    started more than a day ago never recorded its exit (killed, machine shut down). Exit 2 is the CLI's own
+    "a source failed", which status.json already reports for that run."""
+    if not scheduler or not scheduler.get("installed") or not scheduler.get("last_fired"):
+        return None
+    day = _scheduler_day(scheduler.get("last_fired"), now) or "unknown day"
+    code, error = scheduler.get("last_exit"), scheduler.get("last_error")
+    if error or (code is not None and code not in (0, 1, 2)):
+        return f"scheduled run of {day} failed (exit {code}); see STATUS.md"
+    fired = _parse(scheduler.get("last_fired"))
+    if ("last_exit" in scheduler and code is None and fired is not None
+            and _elapsed(fired, now) > dt.timedelta(days=1)):
+        return f"scheduled run of {day} did not finish; see STATUS.md"
     return None
+
+
+def _stale_text(age: dt.timedelta | None, overdue: bool, missed: str | None) -> str:
+    if missed and overdue:
+        return f"last run {age.days} days ago, {missed}; run /sbom-audit:run"
+    return missed if missed else f"last run {age.days} days ago; run /sbom-audit:run"
 
 
 def _hosts_not_checked(status: dict, now: dt.datetime) -> str | None:
@@ -392,14 +432,15 @@ def severity_line(status: dict, scheduler: dict | None, now: dt.datetime) -> str
     age = _elapsed(generated, now) if generated else None
     overdue = age is not None and age > dt.timedelta(days=OVERDUE_DAYS)
     missed = _scheduler_missed(status, scheduler, now)
+    sched_failed = _scheduler_failed(scheduler, now)
     hosts = counts.get("hosts") or {}
     not_checked = _hosts_not_checked(status, now)
     rules = [
         (status.get("exit_code") is None, "set up, no run yet; run /sbom-audit:run"),   # setup's placeholder
         ((status.get("exit_code") or 0) >= 2,
          f"last run FAILED (exit {status.get('exit_code')}); see STATUS.md"),
-        (overdue or missed,
-         missed if missed and not overdue else f"last run {age.days} days ago; run /sbom-audit:run"),
+        (sched_failed, sched_failed),
+        (overdue or missed, _stale_text(age, overdue, missed)),
         (secrets["A"] > 0,
          f"{secrets['A']} class A, {secrets['B']} B secrets open, oldest {oldest_text(scan)}"),
         ((hosts.get("critical") or 0) > 0,
@@ -468,11 +509,45 @@ def _hosts_lines(status: dict) -> list[str]:
             + (f", {unsupported} unsupported" if unsupported else "") + "; see HOSTS.md"]
 
 
-def _scheduler_lines(scheduler: dict | None) -> list[str]:
+def _stamp_text(value, now: dt.datetime) -> str:
+    """`<local time> local (<stamp as recorded>)`; the value alone when it is not a timestamp."""
+    when = _parse(value) if isinstance(value, str) else None
+    if when is None:
+        return str(value)
+    local = _aware(when).astimezone(_aware(now).tzinfo).strftime("%Y-%m-%d %H:%M %z")
+    return f"{local} local ({value})"
+
+
+def _scheduler_lines(scheduler: dict | None, now: dt.datetime) -> list[str]:
+    """The timer's last fire, its exit and error, the next fire computed from `now` (the `next_fire` stored at
+    install time is stale after the first fire) and, when overdue or failing, what to check."""
     if not scheduler or not scheduler.get("installed"):
         return ["Scheduler: not installed."]
-    return ["Scheduler: installed.", f"- last fired: {scheduler.get('last_fired') or 'never'}",
-            f"- next fire: {scheduler.get('next_fire') or 'unknown'}"]
+    from .scheduler import next_fire        # scheduler imports this module
+    fired = scheduler.get("last_fired")
+    L = ["Scheduler: installed, weekly Saturday 03:00 local.",
+         f"- last fired: {md(_stamp_text(fired, now)) if fired else 'never'}"]
+    if fired and "last_exit" in scheduler:
+        code = scheduler.get("last_exit")
+        meaning = ("not recorded: still running, or interrupted" if code is None
+                   else RUN_EXIT_MEANING.get(code, "the wrapper or the run failed"))
+        L.append(f"- last exit: {'–' if code is None else md(str(code))} ({meaning})")
+    if scheduler.get("last_error"):
+        L.append(f"- last error: {md(str(scheduler['last_error']))}")
+    if scheduler.get("plugin_install"):
+        L.append(f"- plugin used: {md(str(scheduler['plugin_install']))}")
+    L.append(f"- next fire: {next_fire(now)}")
+    problems = [p for p in (_scheduler_failed(scheduler, now), _scheduler_missed({}, scheduler, now)) if p]
+    if problems:
+        if scheduler.get("platform") == "darwin" and scheduler.get("label"):
+            where = f"`launchctl print gui/$(id -u)/{scheduler['label']}`"
+        elif scheduler.get("platform") == "linux":
+            where = "`systemctl --user list-timers` and `loginctl show-user $USER -p Linger`"
+        else:
+            where = "the timer of this machine"
+        L.append(f"- OVERDUE OR FAILING: {md('; '.join(problems))}. Check that the timer is loaded ({where}) "
+                 "and the run logs in `.cache/runs/`; reinstall it with `/sbom-audit:schedule weekly`.")
+    return L
 
 
 def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = None) -> str:
@@ -520,7 +595,7 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
           *([f"- configuration: {md(c['config'])}"] if c.get("config") else []),
           f"- push: {push['status']}" + (f" ({md(push['detail'])})" if push.get("detail") else ""),
           f"- remote visibility: {status['visibility']}", "", "## Scheduler", ""]
-    L += _scheduler_lines(scheduler) + ["", "## Assessment", "",
+    L += _scheduler_lines(scheduler, now) +["", "## Assessment", "",
          f"- last assessment: {status.get('last_assessment') or 'none'}",
          f"- proposal waiting: {status.get('assessment_proposal') or 'none'}", "", "## Pending hand edits", ""]
     L += [f"- {md(p)}" for p in c["pending_hand_edits"]] or ["None."]
