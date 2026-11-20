@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -239,6 +240,48 @@ class ManifestTests(unittest.TestCase):
     def test_installable_plugin_holds_no_tests_or_evals(self):
         for name in ("tests", "evals", ".github", "tools", "docs"):
             self.assertFalse((PLUGIN / name).exists(), name)
+
+
+class EvalScaffold(unittest.TestCase):
+    """evals/fixtures/scaffold.sh finds the repository root from evals/ and from the copy under plugin/evals/."""
+
+    @staticmethod
+    def checkout(base: Path, evals_under_plugin: bool) -> Path:
+        """A minimal checkout: plugin/, the test helpers the secrets mode imports, and evals/ at either place."""
+        skip = shutil.ignore_patterns("__pycache__", "*.pyc", "results")
+        repo = base / "repo"
+        shutil.copytree(PLUGIN, repo / "plugin", ignore=skip)
+        (repo / "tests").mkdir()
+        for name in ("__init__.py", "helpers.py", "secrets_fixture.py"):
+            shutil.copy2(ROOT / "tests" / name, repo / "tests" / name)
+        shutil.copytree(ROOT / "evals", repo / ("plugin/evals" if evals_under_plugin else "evals"), ignore=skip)
+        return repo
+
+    def scaffold(self, script: Path, mode: str, workspace: Path) -> subprocess.CompletedProcess:
+        workspace.mkdir()
+        # output is not shown in any message: the secrets mode handles planted values
+        return subprocess.run(["bash", str(script), mode], cwd=workspace, capture_output=True, text=True,
+                              timeout=300)
+
+    @unittest.skipUnless(shutil.which("gitleaks") and shutil.which("git"), "gitleaks or git not installed")
+    def test_secrets_mode_from_both_locations(self):
+        for under_plugin in (False, True):
+            with self.subTest(evals_under_plugin=under_plugin), tempfile.TemporaryDirectory() as tmp:
+                repo = self.checkout(Path(tmp), under_plugin)
+                evals = repo / "plugin" / "evals" if under_plugin else repo / "evals"
+                proc = self.scaffold(evals / "fixtures" / "scaffold.sh", "secrets", Path(tmp) / "ws")
+                self.assertEqual(proc.returncode, 0, "scaffold.sh secrets failed")
+                self.assertTrue((Path(tmp) / "ws" / "security" / "SECRETS.md").is_file(), "SECRETS.md missing")
+
+    def test_no_root_found_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixtures = Path(tmp) / "loose" / "fixtures"
+            fixtures.mkdir(parents=True)
+            shutil.copy2(ROOT / "evals" / "fixtures" / "scaffold.sh", fixtures / "scaffold.sh")
+            proc = self.scaffold(fixtures / "scaffold.sh", "hosts", Path(tmp) / "ws")
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("no plugin/.claude-plugin/plugin.json above", proc.stderr)
+            self.assertFalse((Path(tmp) / "ws" / "security").exists())
 
 
 # fixture -> (substring of systemMessage, additionalContext offers the assessment)
