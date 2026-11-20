@@ -203,7 +203,7 @@ class ManifestTests(unittest.TestCase):
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())["plugins"][0]["version"]
         init = (PLUGIN / "scripts" / "sbomaudit" / "__init__.py").read_text()
         package = re.search(r'__version__ = "([^"]+)"', init).group(1)
-        self.assertEqual((plugin, market, package), ("1.2.1", "1.2.1", "1.2.1"))
+        self.assertEqual((plugin, market, package), ("1.3.0", "1.3.0", "1.3.0"))
 
     def test_every_eval_case_has_prompt_and_graders(self):
         evals = ROOT / "evals"
