@@ -201,8 +201,8 @@ def branch_ref(repo: Path, branch: str) -> tuple[str, str, int]:
 
 def last_change(repo: Path, commit: str, path: str) -> str | None:
     """Full sha of the last commit reachable from `commit` that changed the file `path` (a literal path),
-    or None. Read from git objects only; repository config cannot make it prompt or run anything (no
-    fsmonitor, hooks, external diff or textconv)."""
+    or None. Read from git objects only, without a prompt, with fsmonitor, hooks, the external diff
+    command and textconv switched off (`git_env` plus the flags below); no diff is generated."""
     if not commit or commit.startswith("-"):
         return None
     try:
