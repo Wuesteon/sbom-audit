@@ -23,6 +23,12 @@ import sbomaudit
 from sbomaudit import gitio, scheduler
 from sbomaudit.secrets import store
 
+
+def _git(repo: Path, *args: str) -> str:
+    """The guard reads and edits the repository's own hook setup (`core.hooksPath`, `--git-path hooks`), so
+    it runs git without `gitio.git_env`'s hardening, which would report `core.hooksPath=/dev/null`."""
+    return gitio.git(repo, *args, harden=False)
+
 MARKER = "# sbom-audit-guard v1"
 GUARD_ID = "sbom-audit-guard"
 GUARD_NAME = "guard.py"
@@ -109,7 +115,7 @@ def _config(repo: Path, git, *args: str) -> str:
         return ""
 
 
-def detect(repo: Path, git=gitio.git) -> Detection:
+def detect(repo: Path, git=_git) -> Detection:
     repo = Path(repo).resolve()
     git_dir = _resolve(repo, git(repo, "rev-parse", "--git-common-dir").strip())
     local_value, hooks_path = (_config(repo, git, *scope, "core.hooksPath") for scope in (("--local",), ()))
@@ -307,7 +313,7 @@ def _add(addition: str, where: str) -> str:
     return f"add  {addition}  {where}"
 
 
-def install(repo: Path, cfg_dir: Path, tracked_ok: bool, git=gitio.git, plugin_root: Path | None = None) -> str:
+def install(repo: Path, cfg_dir: Path, tracked_ok: bool, git=_git, plugin_root: Path | None = None) -> str:
     """Install the guard in `repo`; a summary (its first line is the status; a YAML block may follow).
     Tracked hook files only with `tracked_ok`; a global or system `core.hooksPath` never."""
     repo = Path(repo).resolve()
@@ -345,7 +351,7 @@ def _with_note(summary: str, note: str) -> str:
     return first + note + sep + rest
 
 
-def uninstall(repo: Path, git=gitio.git) -> str:
+def uninstall(repo: Path, git=_git) -> str:
     """Remove a guard hook from the git dir and restore `pre-commit.local`; tracked files are left to the user."""
     repo = Path(repo).resolve()
     det = detect(repo, git)

@@ -246,6 +246,16 @@ class SecretsScopeTests(unittest.TestCase):
             self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
             self.assertEqual(env["GIT_SSH_COMMAND"], "ssh -oBatchMode=yes")
 
+    def test_sync_every_git_command_gets_the_hardening_config(self):
+        entries = [{"nameWithOwner": "acme/one", "sshUrl": "git@example.invalid:acme/one.git"}]
+        envs: list = []
+        discovery.sync(self.out, entries, git=_recording_git([], envs))
+        discovery.sync(self.out, entries, git=_recording_git([], envs))
+        self.assertTrue(envs)
+        for args, env in envs:
+            self.assertIsNotNone(env, args)
+            self.assertEqual(env.get("GIT_CONFIG_KEY_1"), "core.hooksPath", args)
+
     def test_sync_with_fetch_false_keeps_existing_clones_and_clones_missing_ones(self):
         a = make_repo(self.remotes, "a", {"a": "1"})
         b = make_repo(self.remotes, "b", {"b": "1"})

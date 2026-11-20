@@ -12,7 +12,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import __version__, coverage, gaps, sbomimport, sbomquality
+from . import __version__, coverage, gaps, gitio, sbomimport, sbomquality
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import DECLARED_FLOORS, fixed_in
@@ -907,7 +907,8 @@ def _inventory_project(cfg: Config, project: str, invs: list[BranchInventory]) -
         n_images = sum(1 for c in inv.components if c.kind == "image")
         n_runtimes = sum(1 for c in inv.components if c.kind == "runtime")
         sync = f"{inv.behind} behind origin" if inv.behind else "in sync with origin"
-        ref = f", read `{inv.ref}`" if inv.ref != inv.branch else ""
+        shown = gitio.short_ref(inv.ref)
+        ref = f", read `{shown}`" if shown != inv.branch else ""
         eco = ", ".join(f"{e} {n}" for e, n in sorted(by_eco.items())) or "none"
         rows_note = f" in {n_rows} manifest rows" if n_rows != len(groups) else ""
         L.append(f"- **`{inv.branch}`** {inv.commit[:7]} ({sync}{ref}): {len(groups)} distinct packages{rows_note} "

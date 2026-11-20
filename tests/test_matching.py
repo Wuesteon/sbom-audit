@@ -6,6 +6,7 @@ on the Task 6 SBOM of tests/fixtures/npm-lock; the run exited 1 (vulnerabilities
 """
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -173,6 +174,22 @@ class MatchAllTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_OSV, "osv-scanner not installed")
+class OsvScannerTimeoutTests(unittest.TestCase):
+    def test_timeout_is_a_tool_error_never_a_clean_result(self):
+        seen = []
+
+        def run(args, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(matching.subprocess, "run", run):
+                with self.assertRaises(ToolError) as ctx:
+                    matching.run_osv_scanner(Path(tmp) / "x.cdx.json", Path(tmp) / "osv.json")
+        self.assertEqual(seen, [matching.OSV_TIMEOUT])
+        self.assertIn("timed out", str(ctx.exception))
+
+
 class OsvScannerRunTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

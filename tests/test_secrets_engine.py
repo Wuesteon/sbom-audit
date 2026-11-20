@@ -8,9 +8,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -36,8 +39,8 @@ def _version_run(versions: dict[str, str]):
     return run
 
 
-def _report_path(argv: list[str]) -> Path:
-    return Path(argv[argv.index("-r") + 1])
+def _report_target(argv: list[str]) -> str:
+    return argv[argv.index("-r") + 1]
 
 
 class FindEngineTests(unittest.TestCase):
@@ -130,7 +133,7 @@ class ScanRepoTests(unittest.TestCase):
 
     def _assert_argv(self, argv, kwargs, ignore_file=None):
         for part in ("git", "--no-banner", "--no-color", "-c", str(eng.RULES_PATH), "-f", "json", "-r",
-                     "--exit-code", "1", "--log-opts", "--all", str(self.repo)):
+                     "--exit-code", "1", "--log-opts", str(self.repo)):
             self.assertIn(part, argv)
         self.assertEqual(argv[0], "/x/gitleaks")
         self.assertEqual(argv[argv.index("-f") + 1], "json")
@@ -142,6 +145,9 @@ class ScanRepoTests(unittest.TestCase):
             self.assertNotIn("-i", argv)
         else:
             self.assertEqual(argv[argv.index("-i") + 1], str(ignore_file))
+        # no textconv or external diff driver from the repository runs inside gitleaks' `git log -p`
+        self.assertEqual(argv[argv.index("--log-opts") + 1], "--no-textconv --no-ext-diff --all")
+        self.assertEqual(kwargs["env"].get("GIT_CONFIG_KEY_1"), "core.hooksPath")
         self.assertEqual(Path(kwargs["cwd"]), self.raw_dir)
         self.assertTrue(kwargs.get("capture_output"))
         self.assertEqual(kwargs.get("umask"), 0o077)
@@ -154,7 +160,6 @@ class ScanRepoTests(unittest.TestCase):
 
         def run(argv, **kwargs):
             calls.append((argv, kwargs))
-            _report_path(argv).unlink(missing_ok=True)
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
 
         with self.assertRaises(EngineError) as ctx:
@@ -182,7 +187,7 @@ class ScanRepoTests(unittest.TestCase):
         self.assertEqual(self._scan(clean), [])
         self._assert_raw_dir_empty()
 
-        def left_empty(argv, **kwargs):  # gitleaks' log.Fatal path: the pre-created file stays empty
+        def left_empty(argv, **kwargs):  # gitleaks' log.Fatal path: nothing on stdout
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
 
         with self.assertRaises(EngineError) as ctx:
@@ -193,8 +198,7 @@ class ScanRepoTests(unittest.TestCase):
         for code in (0, 1):
             with self.subTest(exit=code):
                 def empty_array(argv, **kwargs):
-                    _report_path(argv).write_text("[]")
-                    return subprocess.CompletedProcess(argv, code, stdout="", stderr="")
+                    return subprocess.CompletedProcess(argv, code, stdout="[]", stderr="")
 
                 self.assertEqual(self._scan(empty_array), [])
                 self._assert_raw_dir_empty()
@@ -212,8 +216,7 @@ class ScanRepoTests(unittest.TestCase):
                   "10:08PM ERR error=\"stderr is not empty\"\n10:08PM INF 0 commits scanned.\n")
 
         def swallowed(argv, **kwargs):
-            _report_path(argv).write_text("[]")
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr=stderr)
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr=stderr)
 
         with self.assertRaises(EngineError) as ctx:
             self._scan(swallowed)
@@ -267,10 +270,10 @@ class ScanRepoTests(unittest.TestCase):
         argv, kwargs = calls[0]
         self.assertEqual(argv[-1], str(self.repo))
         self.assertEqual(argv[argv.index("-i") + 1], str(self.tmp / "ignore"))
-        self.assertEqual(_report_path(argv).parent, self.raw_dir)
+        self.assertEqual(_report_target(argv), "-")
         self.assertEqual(Path(kwargs["cwd"]), self.raw_dir)
 
-    def test_raw_report_is_0600_and_removed(self):
+    def test_raw_report_never_touches_disk(self):
         rows = [{"RuleID": "fixture-rule", "Commit": "abc", "File": "a.env", "StartLine": 1}]
         calls = []
         ignore = self.tmp / "ignore"
@@ -278,12 +281,9 @@ class ScanRepoTests(unittest.TestCase):
 
         def run(argv, **kwargs):
             calls.append((argv, kwargs))
-            path = _report_path(argv)
-            self.assertEqual(path.parent, self.raw_dir)
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
-            path.write_text(json.dumps(rows))
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
-            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+            self.assertEqual(_report_target(argv), "-")           # the report goes to the pipe
+            self.assertEqual(list(self.raw_dir.iterdir()), [])     # no file next to gitleaks
+            return subprocess.CompletedProcess(argv, 1, stdout=json.dumps(rows), stderr="")
 
         self.assertEqual(self._scan(run, ignore_file=ignore), rows)
         self._assert_argv(*calls[0], ignore_file=ignore)
@@ -291,12 +291,105 @@ class ScanRepoTests(unittest.TestCase):
         self.assertEqual(list(self.raw_dir.iterdir()), [])
 
         def failing(argv, **kwargs):
-            _report_path(argv).write_text(json.dumps(rows))
-            return subprocess.CompletedProcess(argv, 2, stdout="", stderr="")
+            return subprocess.CompletedProcess(argv, 2, stdout=json.dumps(rows), stderr="")
 
         with self.assertRaises(EngineError):
             self._scan(failing)
         self.assertEqual(list(self.raw_dir.iterdir()), [])
+
+    def test_stale_raw_reports_are_deleted_before_a_scan(self):
+        self.raw_dir.mkdir(parents=True)
+        stale = self.raw_dir / "tmpleftover.json"           # a report left by a killed older version
+        stale.write_text('[{"Secret": "FAKE-NOT-A-SECRET"}]')
+        (self.raw_dir / "sub").mkdir()
+        (self.raw_dir / "sub" / "x.json").write_text("[]")
+        seen = []
+
+        def run(argv, **kwargs):
+            seen.append(sorted(p.name for p in self.raw_dir.iterdir()))
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+        self.assertEqual(self._scan(run), [])
+        self.assertEqual(seen, [[]])
+        self.assertEqual(list(self.raw_dir.iterdir()), [])
+
+    def test_gitleaks_gets_its_own_timeout(self):
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+        self._scan(run)
+        argv, kwargs = calls[0]
+        self.assertEqual(argv[argv.index("--timeout") + 1], str(eng.SCAN_TIMEOUT))
+        self.assertEqual(kwargs["timeout"], eng.SCAN_TIMEOUT + eng.KILL_GRACE)
+
+
+class ProcessGroupTests(unittest.TestCase):
+    """The engine runs in its own process group; a timeout, an exception or SIGTERM kills the whole group."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name).resolve()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _wait_for(self, path: Path, seconds: float = 10) -> None:
+        deadline = time.monotonic() + seconds
+        while not (path.exists() and path.read_text().strip()):
+            if time.monotonic() > deadline:
+                self.fail(f"{path.name} never appeared")
+            time.sleep(0.05)
+
+    def _alive(self, pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def _gone(self, pid: int, seconds: float = 5) -> bool:
+        deadline = time.monotonic() + seconds
+        while self._alive(pid):
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def test_timeout_kills_the_grandchild_too(self):
+        pidfile = self.tmp / "pid"
+        script = f"sleep 30 & echo $! > {pidfile}; wait"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            eng.run_engine(["sh", "-c", script], capture_output=True, text=True, timeout=1)
+        pid = int(pidfile.read_text())
+        self.assertTrue(self._gone(pid), "the engine's child survived the timeout")
+
+    def test_sigterm_kills_the_engine_group_and_leaves_no_raw_file(self):
+        pidfile = self.tmp / "pid"
+        fake = self.tmp / "fakeleaks.sh"
+        fake.write_text("#!/bin/sh\n"
+                        "echo '[{\"Secret\":\"FAKE-NOT-A-SECRET\"}]'\n"
+                        f"sleep 30 & echo $! > {pidfile}; wait\n")
+        fake.chmod(0o700)
+        raw_dir = self.tmp / "raw"
+        code = ("import sys; from pathlib import Path; from sbomaudit.secrets import engine as e; "
+                f"e.scan_repo(e.Engine({str(fake)!r}, 'gitleaks', '8.30.1'), Path({str(self.tmp)!r}), "
+                f"log_opts='--all', ignore_file=None, raw_dir=Path({str(raw_dir)!r}))")
+        scripts = str(Path(eng.__file__).resolve().parents[2])
+        child = subprocess.Popen([sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": scripts},
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self._wait_for(pidfile)
+            child.send_signal(signal.SIGTERM)
+            child.wait(timeout=10)
+        finally:
+            if child.poll() is None:
+                child.kill()
+        self.assertNotEqual(child.returncode, 0)
+        self.assertTrue(self._gone(int(pidfile.read_text())), "the engine's child survived SIGTERM")
+        self.assertEqual(list(raw_dir.iterdir()), [])
 
     def test_log_opts_forms(self):
         self.assertEqual(eng.log_opts_full(), "--all")
@@ -332,9 +425,10 @@ class RealGitleaksTests(unittest.TestCase):
     def test_real_gitleaks_finds_every_planted_value(self):
         modes = []
 
-        def checking_run(argv, **kwargs):  # the report's mode as gitleaks left it, before our own chmod
+        def checking_run(argv, **kwargs):  # the report comes through the pipe, never a file
+            self.assertEqual(_report_target(argv), "-")
             proc = subprocess.run(argv, **kwargs)
-            modes.append(stat.S_IMODE(os.stat(_report_path(argv)).st_mode))
+            modes.append(list(self.raw_dir.iterdir()))
             return proc
 
         self.assertEqual(set(fx.REPOS), {"alpha-app", "beta-api", "ignored-archive"})
@@ -354,7 +448,20 @@ class RealGitleaksTests(unittest.TestCase):
                     self.assertEqual([row["File"] for row in rows if row["File"] == fx.PLACEHOLDER_FILE], [])
         self.assertIn(fx.BRANCH_ONLY, fx.REPOS["beta-api"])
         self.assertIn("supabase-jwt-secret-example-name", fx.REPOS["beta-api"])  # ...but a key name does not hide
-        self.assertEqual(modes, [0o600] * len(fx.REPOS))
+        self.assertEqual(modes, [[]] * len(fx.REPOS))
+
+    def test_real_gitleaks_runs_no_diff_driver_from_repository_config(self):
+        repo = self.root / "alpha-app"
+        baseline = self._scan(repo, eng.log_opts_full())
+        self.assertTrue(baseline)
+        marker = Path(self._tmp.name) / "DRIVER_RAN"
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "attributes").write_text("* diff=evil\n")
+        _git(repo, "config", "diff.evil.textconv", f"sh -c 'touch {marker}; true' --")
+        _git(repo, "config", "diff.external", f"sh -c 'touch {marker}; true' --")
+        rows = self._scan(repo, eng.log_opts_full())
+        self.assertFalse(marker.exists(), "a repository diff driver ran")
+        self.assertEqual(len(rows), len(baseline))
 
     def test_real_gitleaks_vanished_tip_is_failure_not_clean(self):
         with self.assertRaises(EngineError) as ctx:

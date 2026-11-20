@@ -336,6 +336,12 @@ def scan(cfg: Config, only: list[str] | None = None, fetch: bool | None = None,
         for branch in branches:
             say(f"{project.name}@{branch} …")
             try:
+                if gitio.tag_shadows_branch(project.path, branch):
+                    say(f"  warning: a tag named {branch!r} exists; reading the branch "
+                        f"(refs/heads or refs/remotes/origin), not the tag")
+            except gitio.GitError:
+                pass
+            try:
                 inv = scan_branch(cfg, project, branch)
             except gitio.GitError as exc:
                 inv = BranchInventory(project=project.name, branch=branch, ref=branch,

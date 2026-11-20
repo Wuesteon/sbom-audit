@@ -581,7 +581,10 @@ from the working tree is still a finding.
 
 No value is ever stored, printed, logged or committed: findings carry a fingerprint, file,
 line, branches, whether the value is still in the working tree, its age and a keyed
-`value_id`. The raw engine report is a `0600` file deleted after reading. The results are
+`value_id`. The raw engine report is read from the engine's stdout (`-r -`) and never written
+to disk; the engine runs in its own process group with its own `--timeout`, and a timeout,
+an interrupt or SIGTERM kills that group (files an older version left in
+`.cache/secrets/raw/` are deleted at the start of every scan). The results are
 `secrets.json` and `SECRETS.md` (with rotation hints per provider and the other projects
 that use the same credential); decisions live in `secrets-decisions.toml` with the statuses
 `open`, `rotated`, `false_positive`, `test_fixture` and `accepted`. Each `run` scans new
@@ -701,9 +704,11 @@ python3 plugin/scripts/sbom_audit_cli.py code files shop main src
 ```
 
 Only configured projects and existing branches (local or `origin/`, chosen like the scan does); paths
-must be repository-relative, `security/.cache/` is never read, repository textconv drivers and hooks
-never run, and output is capped at 400 lines. It writes nothing, so the headless assessment may call it
-too. Three outcomes, never confused:
+must be repository-relative, `security/.cache/` is never read, and output is capped at 400 lines. It
+uses only git plumbing that reads objects (`grep` on a tree, `cat-file`, `ls-tree`, no textconv), with
+fsmonitor, hooks and the external diff command switched off by command-line config (see
+[Hostile repositories](#hostile-repositories)). It writes nothing, so the headless assessment may call
+it too. Three outcomes, never confused:
 
 | Exit | Meaning | Message |
 |---|---|---|
@@ -1374,8 +1379,8 @@ machine per mode, is [Limitations](limitations.md); the plain-CLI sequence is
 - An advisory that no source rates reads "not rated"; it ranks with CRITICAL/HIGH in production
   (issues priority 3) rather than below LOW, and someone has to read it to know how bad it is.
 - No reachability analysis: a vulnerable package in the lockfile counts as a finding until
-  a VEX statement says otherwise. The verifier in `assess` reads code; it runs nothing, and a
-  `holds` verdict is a second opinion, not a proof.
+  a VEX statement says otherwise. The verifier in `assess` reads code through `code`; it never builds,
+  installs or executes the project, and a `holds` verdict is a second opinion, not a proof.
 - `deno.lock` packages pulled through a CDN (esm.sh, unpkg, jsDelivr, Skypack) are listed;
   `deno.land` modules are not, because OSV has no ecosystem for them.
 - `run --only <project>` replaces the inventory and report with those projects only; run
@@ -1385,6 +1390,21 @@ machine per mode, is [Limitations](limitations.md); the plain-CLI sequence is
 - `git archive` honours `export-ignore` in a scanned repository's `.gitattributes`: a manifest
   or lockfile marked that way is missing from the SBOM. The secrets scan reads the history
   directly and is not affected.
+- <a id="hostile-repositories"></a>**Hostile repositories.** Every git process the plugin starts,
+  directly or through gitleaks, gets command-line-scope config (`GIT_CONFIG_COUNT`) that overrides the
+  repository's own `.git/config`: `core.fsmonitor=false`, `core.hooksPath=/dev/null`, an empty
+  `diff.external`, `log.showSignature=false` and `protocol.ext.allow=never`. gitleaks' `git log` runs
+  with `--no-textconv --no-ext-diff`; the tree export empties every filter driver (`smudge`, `clean`,
+  `process`) the repository configures, so `git archive` runs none; branches are read by full ref
+  (`refs/heads/…`, `refs/remotes/origin/…`), so a tag with a branch's name changes nothing (the run
+  prints a warning). Readers follow a committed symlink only to a regular file inside the exported
+  tree. Not covered: `git fetch` still uses the repository's transport settings (`core.sshCommand`,
+  `credential.helper`, `core.askPass`, proxies), which a fetch of a private remote needs; use
+  `--no-fetch` (or `fetch = false`) for a repository you do not trust. The git binary, syft,
+  osv-scanner and gitleaks themselves parse the repository's files; a bug in one of them is outside
+  what the plugin can rule out. Each external command has a timeout (git 10 min, a tree export
+  30 min, syft and osv-scanner 30 min, gitleaks 10 min plus 30 s); a timeout is a failed source,
+  never a clean one.
 - Host mode covers Debian and Ubuntu servers with apt only; other distributions are reported as unsupported. A Lynis run takes several minutes per host, so a check of many servers takes a while (hosts run in parallel, 4 by default). Hosts reached only through ProxyJump or ProxyCommand are not supported. `patch` installs only the confirmed list and may refuse an upgrade that needs a new package (see [Hosts](#hosts)).
 - The scheduler covers macOS and Linux; elsewhere use the GitHub Actions template.
 - Release scanning reads local tags only, and only the newest `keep` of them; a release outside that
