@@ -55,6 +55,12 @@ STRINGS: dict[str, dict] = {
         "s_evidence": "5. Evidence mapping (EU Cyber Resilience Act)",
         "verdict_action": "Action needed now.",
         "verdict_clear": "No finding in this run requires immediate action.",
+        "verdict_clear_gaps": "No finding among the checked packages requires immediate action; not checked: {what} "
+                              "(see Limits).",
+        "verdict_gap_projects": ["{n} project", "{n} projects"],
+        "verdict_gap_branches": ["the code in {n} branch (submodules, C/C++ or firmware)",
+                                 "the code in {n} branches (submodules, C/C++ or firmware)"],
+        "verdict_gap_unmatched": ["{n} package OSV cannot match", "{n} packages OSV cannot match"],
         "verdict_incomplete": "No urgent finding in the data that is available, but this run is incomplete: "
                               "the gaps below may hide findings.",
         "verdict_none": "There is no audit data to report on.",
@@ -364,6 +370,12 @@ STRINGS: dict[str, dict] = {
         "s_evidence": "5. Nachweiszuordnung (EU Cyber Resilience Act)",
         "verdict_action": "Handlungsbedarf jetzt.",
         "verdict_clear": "Kein Befund dieses Laufs erfordert sofortiges Handeln.",
+        "verdict_clear_gaps": "Kein Befund unter den geprüften Paketen erfordert sofortiges Handeln; nicht geprüft: "
+                              "{what} (siehe Grenzen).",
+        "verdict_gap_projects": ["{n} Projekt", "{n} Projekte"],
+        "verdict_gap_branches": ["der Code in {n} Branch (Submodule, C/C++ oder Firmware)",
+                                 "der Code in {n} Branches (Submodule, C/C++ oder Firmware)"],
+        "verdict_gap_unmatched": ["{n} Paket, das OSV nicht zuordnen kann", "{n} Pakete, die OSV nicht zuordnen kann"],
         "verdict_incomplete": "In den verfügbaren Daten gibt es keinen dringenden Befund, aber dieser Lauf ist "
                               "unvollständig: Die unten genannten Lücken können Befunde verdecken.",
         "verdict_none": "Es liegen keine Prüfdaten vor.",
@@ -1064,6 +1076,18 @@ def _header(data: dict, S: dict, organisation: str | None) -> str:
             f"<dt>{S['tool']}</dt><dd>{tool}</dd></dl></header>")
 
 
+def _unchecked(audit: dict, S: dict) -> list[str]:
+    """Skipped projects, branches with coverage gaps and packages OSV cannot match, as verdict phrases."""
+    st = (audit or {}).get("stats") or {}
+    out = []
+    for key, stat in (("verdict_gap_projects", "projects_not_scanned"), ("verdict_gap_branches", "coverage_gaps"),
+                      ("verdict_gap_unmatched", "packages_unmatched")):
+        n = st.get(stat)
+        if isinstance(n, int) and n > 0:
+            out.append(S[key][0 if n == 1 else 1].format(n=n))
+    return out
+
+
 def _overall(data: dict, S: dict, metrics: list[dict]) -> str:
     by = {m["key"]: m for m in metrics}
     L = [f"<section><h2>{S['s_overall']}</h2>"]
@@ -1078,7 +1102,11 @@ def _overall(data: dict, S: dict, metrics: list[dict]) -> str:
     gaps = [m for m in metrics if m["value"] is None or m["incomplete"]]
     if data["audit"] is not None:
         verdict = "verdict_action" if facts else ("verdict_incomplete" if gaps else "verdict_clear")
-        L.append(f'<p class="verdict">{S[verdict]}</p>')
+        unchecked = _unchecked(data["audit"], S)
+        if verdict == "verdict_clear" and unchecked:      # clear only for what was checked: say what was not
+            L.append(f'<p class="verdict">{e(S["verdict_clear_gaps"].format(what=", ".join(unchecked)))}</p>')
+        else:
+            L.append(f'<p class="verdict">{S[verdict]}</p>')
     if facts:
         L.append("<ul>" + "".join(f"<li>{f}</li>" for f in facts) + "</ul>")
     short = {"kev": "m_short_kev", "crit": "m_short_crit", "eol": "m_short_eol", "hosts": "m_short_hosts"}

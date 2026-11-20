@@ -305,6 +305,35 @@ class TestFullRun(ManagementTestCase):
         self.assertIn("No finding in this run requires immediate action.", text)
         self.assertIn("Nothing open at priority 1 to 3.", text)
 
+    def test_clear_run_with_coverage_gaps_qualifies_the_verdict(self):
+        out = full_folder(self.tmp / "security")
+        (out / "issues.json").unlink()
+        audit = json.loads((out / "audit.json").read_text())
+        audit["vulnerabilities"], audit["runtimes"] = [], []
+        audit["stats"] = {"projects_not_scanned": 1, "coverage_gaps": 2, "packages_unmatched": 3}
+        write_json(out / "audit.json", audit)
+        status = json.loads((out / "status.json").read_text())
+        status["counts"]["secrets"] = {"A": 0, "B": 0, "C": 0}
+        write_json(out / "status.json", status)
+        sec = json.loads((out / "secrets.json").read_text())
+        sec["findings"] = []
+        write_json(out / "secrets.json", sec)
+        en = text_of(management.render(management.load(out)))
+        self.assertNotIn("No finding in this run requires immediate action.", en)
+        self.assertIn("No finding among the checked packages requires immediate action; not checked: 1 project, "
+                      "the code in 2 branches (submodules, C/C++ or firmware), 3 packages OSV cannot match "
+                      "(see Limits).", en)
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertNotIn("Kein Befund dieses Laufs erfordert sofortiges Handeln.", de)
+        self.assertIn("Kein Befund unter den geprüften Paketen erfordert sofortiges Handeln; nicht geprüft: "
+                      "1 Projekt, der Code in 2 Branches (Submodule, C/C++ oder Firmware), 3 Pakete, die OSV "
+                      "nicht zuordnen kann (siehe Grenzen).", de)
+        audit["stats"] = {"projects_not_scanned": 0, "coverage_gaps": 1, "packages_unmatched": 0}
+        write_json(out / "audit.json", audit)
+        en = text_of(management.render(management.load(out)))
+        self.assertIn("immediate action; not checked: the code in 1 branch (submodules, C/C++ or firmware) "
+                      "(see Limits).", en)
+
 
 class TestSkippedIsNotClean(ManagementTestCase):
     def test_skipped_secrets_scan_is_never_zero_or_clean(self):

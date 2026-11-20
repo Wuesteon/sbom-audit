@@ -1360,6 +1360,9 @@ machine per mode, is [Limitations](limitations.md); the plain-CLI sequence is
   `vcpkg`, `bitbucket`, `gitlab`), typically from an imported C/C++ build SBOM, are inventoried but not
   checked: `stats.packages_unmatched`, the `AUDIT.md` summary row "Packages OSV cannot match" and a Note
   per branch. CPEs are not used for matching.
+- While any of the three above is non-zero, `REPORT.html` section 1 never says plainly that no finding
+  needs immediate action: it says "No finding among the checked packages requires immediate action;
+  not checked: …" with the counts, pointing to the Limits.
 - A project with none of the configured branches is not scanned: `setup` warns, the run lists it in
   `AUDIT.md` Notes, `skipped_projects` and `stats.projects_not_scanned` in `audit.json`, and `STATUS.md`
   Sources and Counts. The exit code does not change (2 means a source failed); instead `run`, `scan` and
