@@ -26,6 +26,7 @@ A failed source means its section below is empty, not clean.
 | Vulnerable direct dependencies | 1 |
 | Runtimes / images past end-of-life | 0 |
 | Runtimes / images reaching EOL within 90 days | 0 |
+| Allowed but unsupported: declared minimum allows an end-of-life version (not counted as EOL) | 0 |
 | Floating container images (unique) | 0 |
 | Direct deps ≥1 major behind latest | 0 |
 | Suppressed by VEX | 0 |

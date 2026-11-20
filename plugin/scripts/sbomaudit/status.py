@@ -8,7 +8,8 @@ from pathlib import Path
 
 from . import __version__
 from .cache import atomic_write
-from .report import ACTIONABLE, _actionable, _sev_label, counts_as_production, md, unrated_in_production
+from .report import (ACTIONABLE, _actionable, _sev_label, allowed_unsupported, counts_as_production, md,
+                     unrated_in_production)
 
 STATUS_FILE = "STATUS.md"
 STATUS_JSON = "status.json"
@@ -224,7 +225,9 @@ def _counts(rep: dict, now_open: dict, secrets: dict | None, hosts: dict | None 
               "critical_high_production": sum(1 for v in vulns if _actionable(v) and _in_production(v, production)),
               "unrated_production": sum(1 for v in vulns if unrated_in_production(v, production)),
               "unresolved_versions": stats.get("unresolved_versions", 0),
-              "eol": len(now_open["eol"]), "floating_tags": len(rep.get("unpinned_images", [])),
+              "eol": len(now_open["eol"]),
+              "allowed_unsupported": sum(1 for r in rep.get("runtimes", []) if allowed_unsupported(r)),
+              "floating_tags": len(rep.get("unpinned_images", [])),
               "suppressed": len(rep.get("suppressed", [])),
               "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
               "hosts": _hosts_counts(hosts)}
@@ -490,6 +493,8 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
     n = status["counts"]
     L += [f"Counts: {n['vulnerable']} vulnerable package versions, {n['kev']} KEV, "
           f"{n['critical_high_production']} CRITICAL/HIGH in production, {n['eol']} EOL, "
+          + (f"{n['allowed_unsupported']} allowed but unsupported (declared minimum, not counted as EOL), "
+             if n.get("allowed_unsupported") else "") +
           f"{n['floating_tags']} floating tags, {n['suppressed']} suppressed by VEX.", ""]
     gaps = []                                # coverage gaps; absent in a status.json written before they existed
     if n.get("unrated_production"):

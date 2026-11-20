@@ -610,7 +610,7 @@ class RunTests(unittest.TestCase):
             if "endoflife.date" in url:
                 raise OSError("timeout")
             return {}
-        node = runtime_component("nodejs", "18", "package.json", "engines.node >=18")
+        node = runtime_component("nodejs", "18", ".nvmrc", ".nvmrc = 18")
         with tempfile.TemporaryDirectory() as tmp:
             rc, cfg = self.run_with(Path(tmp), {"return_value": {"results": []}},
                                     invs=[inventory(components=(LODASH, node))], http=flaky)

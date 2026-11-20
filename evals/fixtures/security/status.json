@@ -15,6 +15,7 @@
   "unrated_production": 0,
   "unresolved_versions": 0,
   "eol": 0,
+  "allowed_unsupported": 0,
   "floating_tags": 0,
   "suppressed": 0,
   "secrets": {

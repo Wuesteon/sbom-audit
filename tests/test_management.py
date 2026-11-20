@@ -170,6 +170,7 @@ class TestFullRun(ManagementTestCase):
         self.assertIn("1 new, 0 resolved", text)
         self.assertIn("0 new, 1 resolved", text)
         self.assertIn("1 more reach end of life soon", text)
+        self.assertNotIn("allowed but unsupported", text)
         self.assertIn("P1", text)
         self.assertIn("Rotate the credential at the provider", text)
         self.assertIn("branches: main, dev, a +1 more", text)
@@ -187,6 +188,26 @@ class TestFullRun(ManagementTestCase):
         self.assertIn("old-thing (archived)", text)
         self.assertIn("full scan with gitleaks 8.21.0 over 1 repositories", text)
         self.assertIn("2026-11-10T09:59:00Z", text)
+
+    def test_declared_minimum_is_not_counted_as_eol_but_noted(self):
+        out = full_folder(self.tmp / "security")
+        audit = json.loads((out / "audit.json").read_text())
+        audit["runtimes"].append({"product": "python", "cycle": "3.8", "status": "minimum",
+                                  "basis": "requires-python", "cycle_status": "EOL", "eol_date": "2024-10-07",
+                                  "locations": []})
+        write_json(out / "audit.json", audit)
+        doc = json.loads((out / "issues.json").read_text())
+        doc["issues"].append({"id": "m1", "kind": "eol", "priority": 6, "reason": "eol_minimum",
+                              "title": "requires-python >=3.8 allows Python 3.8", "where": {"project": "shop"},
+                              "fix": {"action": "raise_minimum", "target": None}})
+        write_json(out / "issues.json", doc)
+        metrics = {m["key"]: m for m in management._metrics(management.load(out), management.STRINGS["en"])}
+        self.assertEqual(metrics["eol"]["value"], 1)
+        text = text_of(management.render(management.load(out)))
+        self.assertIn("1 more reach end of life soon; 1 allowed but unsupported", text)
+        self.assertIn("1 × Declared minimum allows an end-of-life version", text)
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertIn("1 erlaubt, aber ohne Support", de)
 
     def test_direct_and_transitive_are_counted_and_direct_listed_first(self):
         out = full_folder(self.tmp / "security")

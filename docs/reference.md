@@ -215,9 +215,12 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
 - `priority`: 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production
   project or a supported release (reason `critical_high_production`), an advisory there that is not
   rated (`unrated_production`), and class B secrets · 4 end of life, and secrets ranked lower by their
-  path context (`secret_context`, see [Secrets](#secrets)) · 5 floating tag · 6 everything else.
-- `fix.action`: `upgrade`, `no_fix_released`, `rotate`, `upgrade_runtime`, `pin`, `apt_upgrade`,
-  `reboot`, `no_fix_installable`, `review`.
+  path context (`secret_context`, see [Secrets](#secrets)) · 5 floating tag · 6 everything else,
+  among them a declared minimum (`engines.node`, `requires-python`) that allows an end-of-life
+  version (`eol_minimum`, see [What is read per ecosystem](#what-is-read-per-ecosystem); what
+  runs is not stated or has its own row).
+- `fix.action`: `upgrade`, `no_fix_released`, `rotate`, `upgrade_runtime`, `raise_minimum`, `pin`,
+  `apt_upgrade`, `reboot`, `no_fix_installable`, `review`.
 - Only open issues: findings suppressed by a VEX statement, decided secrets, accepted host findings and
   informational host output are not in it. An id is stable from run to run and the entry disappears
   when the issue does.
@@ -312,8 +315,8 @@ from `[releases]`. Unknown keys are refused.
   announced end) or `(version unknown)` (no version to look up). An empty `eol_before_support_end`
   therefore never hides a runtime without a date; `RELEASES.md` has an "EOL unknown" column, and
   `REPORT.html` and `CRA.md` name them per release. Both lists are empty when the release has no
-  support period to compare with. A go.mod build minimum (status `minimum`, see "The Go runtime is a
-  minimum" below) is in neither list.
+  support period to compare with. A build minimum (status `minimum`: a go.mod line, `engines.node` or
+  `requires-python`, see "The Go runtime is a minimum" below) is in neither list.
 - **Remediation evidence.** For each release, `fixed_since_previous` lists the advisories that matched
   a package in the SBOM of the previous kept release and match none in the SBOM of this one, with
   `first_seen` (the earliest kept release of the unbroken run that held it;
@@ -996,6 +999,24 @@ it is not a dependency.
   `STATUS.md` or `MANAGEMENT.md`, and is in neither release list. A `golang` image of the same cycle
   on the same branch is what builds or runs the code, so that cycle stays a normal runtime row with
   its real status. The rule lives in `enrich.build_minimum` and `enrich.eol`.
+- **`engines.node` and `requires-python` are minimums too.** They say which versions the code
+  allows, not which one runs. When every source of a Node.js or Python cycle on a branch is such a
+  declaration (the lowest version the range allows), the row has status `minimum`, `basis`
+  `"engines.node"` or `"requires-python"`, the cycle's own status in `cycle_status` (with `eol_date`),
+  `declared` (the declarations, e.g. `"requires-python >=3.8"`) and `pinned`: the real runtime sources
+  of the same product on the same project and branch (`.nvmrc`, `.node-version`, `.python-version`,
+  an image), each as `{"cycle", "source"}`. It is not counted as end of life, not in the exit code and
+  in neither release list; the pinned runtime has its own row and decides the end-of-life status. When
+  `cycle_status` is `EOL`, the row is counted apart as **allowed but unsupported**: `audit.json`
+  `stats.allowed_unsupported`, `status.json` `counts.allowed_unsupported`, a row in the `AUDIT.md`
+  summary, the `STATUS.md` counts line and a note next to the end-of-life figure in `REPORT.html`.
+  `AUDIT.md` lists the row as `build minimum (cycle EOL)` and explains each location, e.g. "build
+  minimum: `requires-python >=3.8` allows Python 3.8, which reached end of life on 2024-10-07. The
+  runtime actually used is not stated in this repository. Add `.python-version`, a Dockerfile image or
+  a build SBOM to confirm it." With a pin, the last two sentences become "Pinned runtime: Node.js 22
+  (Dockerfile); its own row gives the end-of-life status." In `issues.json` it is an `eol` issue with
+  priority 6, reason `eol_minimum` and fix `raise_minimum` (raise the floor to a supported cycle).
+  Go minimums keep the behaviour above and are not counted here.
 - **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
   repository yet.
 

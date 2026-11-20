@@ -246,6 +246,7 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
     kev = sum(1 for v in vulns if v["kev"])
     crit_high = sum(1 for v in vulns if v["max_severity"] in ("CRITICAL", "HIGH"))
     eol = sum(1 for r in rep["runtimes"] if r["status"] == "EOL")
+    allowed = sum(1 for r in rep["runtimes"] if report.allowed_unsupported(r))
     rel = f", {s['releases']} releases" if s.get("releases") else ""
     unrated = sum(1 for v in vulns if report.unrated_in_production(v, set(rep.get("production_projects") or [])))
     gaps = (f", {unrated} not rated in production" if unrated else "") + (
@@ -253,6 +254,7 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
         if s.get("unresolved_versions") else "")
     return (f"{s['projects']} projects, {s['branches']} branches{rel}: {len(vulns)} vulnerable package versions "
             f"({kev} KEV, {crit_high} critical/high), {eol} EOL runtimes/images, "
+            + (f"{allowed} allowed but unsupported (declared minimum), " if allowed else "") +
             f"{len(rep['suppressed'])} suppressed by VEX{gaps} — {cfg.out / report.AUDIT_FILE} "
             f"({time.monotonic() - started:.1f}s)")
 

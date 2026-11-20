@@ -119,7 +119,7 @@ class EolTests(unittest.TestCase):
     def test_eol_status_from_fixture(self):
         data = json.loads((FIXTURES / "eol-nodejs-18.json").read_text())
         fetch = stub_fetch({"https://endoflife.date/api/nodejs/18.json": data})
-        inv = inventory([runtime_component("nodejs", "18", "package.json", detail="engines.node >=18")])
+        inv = inventory([runtime_component("nodejs", "18", ".nvmrc", detail=".nvmrc = 18")])
         with tempfile.TemporaryDirectory() as tmp:
             rows, _ = enrich.eol([inv], cache_mod.Cache(Path(tmp)), fetch=fetch)
         self.assertEqual(len(rows), 1)
@@ -129,7 +129,7 @@ class EolTests(unittest.TestCase):
         self.assertEqual(row["status"], "EOL")
         self.assertEqual(row["eol_date"], "2025-04-30")
         self.assertEqual(row["latest"], "18.20.8")
-        self.assertIn("package.json", row["source"])
+        self.assertIn(".nvmrc", row["source"])
 
     def test_eol_soon_within_90_days(self):
         today = dt.date.today()
@@ -219,6 +219,19 @@ class EolTests(unittest.TestCase):
         self.assertEqual(by["img"]["status"], "EOL")              # the image is a real runtime
         self.assertNotIn("basis", by["img"])
 
+    def test_go_rows_carry_no_declared_floor_fields(self):
+        from sbomaudit.readers import go_runtime
+        inv = inventory([go_runtime("module x\n\ngo 1.20\n", "go.mod"),
+                         runtime_component("go", "1.22", "Dockerfile", detail="image golang:1.22")])
+        fetch = stub_fetch({"https://endoflife.date/api/go/1.20.json": {"eol": "2024-02-06", "latest": "1.20.14"},
+                            "https://endoflife.date/api/go/1.22.json": {"eol": "2025-02-11", "latest": "1.22.12"}})
+        with tempfile.TemporaryDirectory() as tmp:
+            rows, _ = enrich.eol([inv], cache_mod.Cache(Path(tmp)), fetch=fetch, today=dt.date(2026, 11, 18))
+        mod = next(r for r in rows if r["cycle"] == "1.20")
+        self.assertEqual((mod["status"], mod["basis"], mod["cycle_status"]), ("minimum", "go.mod", "EOL"))
+        self.assertNotIn("declared", mod)
+        self.assertNotIn("pinned", mod)
+
     def test_eol_dedupes_same_runtime_and_maps_alpine_slug(self):
         fetch = stub_fetch({"https://endoflife.date/api/alpine-linux/3.19.json": {"eol": "2025-11-01", "latest": "3.19.9"}})
         inv = inventory([
@@ -293,3 +306,68 @@ class FixedInTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PY38 = {"https://endoflife.date/api/python/3.8.json": {"eol": "2024-10-07", "latest": "3.8.20"}}
+PY312 = {"https://endoflife.date/api/python/3.12.json": {"eol": "2028-10-31", "latest": "3.12.12"}}
+NODE18 = {"https://endoflife.date/api/nodejs/18.json": {"eol": "2025-04-30", "latest": "18.20.8"}}
+NODE22 = {"https://endoflife.date/api/nodejs/22.json": {"eol": "2027-04-30", "latest": "22.21.1"}}
+TODAY = dt.date(2026, 11, 21)
+
+
+class DeclaredFloorTests(unittest.TestCase):
+    """`engines.node` and `requires-python` give the lowest version a manifest allows, not what runs: status
+    `minimum` like a go.mod line, never counted as end of life; the cycle's own status stays in `cycle_status`."""
+
+    def rows(self, *invs, table):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows, failed = enrich.eol(list(invs), cache_mod.Cache(Path(tmp)), fetch=stub_fetch(table), today=TODAY)
+        self.assertEqual(failed, [])
+        return rows
+
+    def test_floor_only_is_a_minimum_with_the_eol_cycle_kept(self):
+        inv = inventory([runtime_component("python", "3.8", "pyproject.toml", detail="requires-python >=3.8"),
+                         runtime_component("nodejs", "18", "web/package.json", detail="engines.node >=18")])
+        rows = self.rows(inv, table={**PY38, **NODE18})
+        by = {r["product"]: r for r in rows}
+        self.assertEqual({k: by["python"][k] for k in ("status", "basis", "cycle_status", "eol_date", "declared",
+                                                       "pinned")},
+                         {"status": "minimum", "basis": "requires-python", "cycle_status": "EOL",
+                          "eol_date": "2024-10-07", "declared": ["requires-python >=3.8"], "pinned": []})
+        self.assertEqual((by["nodejs"]["status"], by["nodejs"]["basis"], by["nodejs"]["cycle_status"]),
+                         ("minimum", "engines.node", "EOL"))
+        self.assertFalse(any(r["status"] == "EOL" for r in rows))
+
+    def test_floor_eol_with_a_pinned_runtime_names_the_pin(self):
+        inv = inventory([runtime_component("nodejs", "18", "package.json", detail="engines.node >=18"),
+                         runtime_component("nodejs", "22", "Dockerfile", detail="image node:22-alpine",
+                                           image="node:22-alpine")])
+        other = inventory([runtime_component("nodejs", "22", "Dockerfile", detail="image node:22-alpine")],
+                          project="other")                  # another project's pin is not this project's
+        rows = self.rows(inv, other, table={**NODE18, **NODE22})
+        floor = next(r for r in rows if r["project"] == "app" and r["cycle"] == "18")
+        self.assertEqual((floor["status"], floor["cycle_status"]), ("minimum", "EOL"))
+        self.assertEqual(floor["pinned"], [{"cycle": "22", "source": "Dockerfile: image node:22-alpine"}])
+        pin = next(r for r in rows if r["project"] == "app" and r["cycle"] == "22")
+        self.assertEqual(pin["status"], "supported")             # the pinned row decides end of life
+        self.assertNotIn("basis", pin)
+
+    def test_floor_and_version_file_of_the_same_cycle_is_a_runtime(self):
+        inv = inventory([runtime_component("python", "3.8", "pyproject.toml", detail="requires-python >=3.8"),
+                         runtime_component("python", "3.8", ".python-version", detail=".python-version = 3.8")])
+        rows = self.rows(inv, table=PY38)
+        self.assertEqual([(r["status"], r.get("basis")) for r in rows], [("EOL", None)])
+
+    def test_supported_floor_is_a_minimum_too(self):
+        inv = inventory([runtime_component("python", "3.12", "pyproject.toml", detail="requires-python >=3.12")])
+        rows = self.rows(inv, table=PY312)
+        self.assertEqual((rows[0]["status"], rows[0]["cycle_status"], rows[0]["eol_date"]),
+                         ("minimum", "supported", "2028-10-31"))
+
+    def test_declared_floor_detection(self):
+        floor = runtime_component("python", "3.8", "pyproject.toml", detail="requires-python >=3.8")
+        nvmrc = runtime_component("nodejs", "20", ".nvmrc", detail=".nvmrc = 20")
+        image = runtime_component("python", "3.8", "Dockerfile", detail="image python:3.8-slim")
+        self.assertEqual(enrich.declared_floor(floor), "requires-python")
+        self.assertIsNone(enrich.declared_floor(nvmrc))
+        self.assertIsNone(enrich.declared_floor(image))
