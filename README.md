@@ -6,6 +6,15 @@
 **Portfolio-wide SBOMs, vulnerability audit and secrets scan for every repository you own, as a
 Claude Code plugin.**
 
+```bash
+claude plugin install sbom-audit --marketplace Wuesteon/sbom-audit
+```
+
+This adds the marketplace `wuesteon-plugins` and installs the plugin in one step. The two-step form,
+`claude plugin marketplace add Wuesteon/sbom-audit`, then
+`claude plugin install sbom-audit@wuesteon-plugins`, does the same. Requirements and a first run are
+in [Quickstart](#quickstart).
+
 Point it at a folder of git repositories. It builds one CycloneDX SBOM per project and branch,
 audits them all at once against OSV, CISA KEV and endoflife.date, scans every repository's history
 for leaked credentials, optionally checks your Linux servers, and then helps Claude write an
