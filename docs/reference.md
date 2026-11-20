@@ -646,8 +646,18 @@ python3 plugin/scripts/sbom_audit_cli.py code files shop main src
 
 Only configured projects and existing branches (local or `origin/`, chosen like the scan does); paths
 must be repository-relative, `security/.cache/` is never read, repository textconv drivers and hooks
-never run, and output is capped at 400 lines. Exit 1 means no match, 2 a refused request. It writes
-nothing, so the headless assessment may call it too.
+never run, and output is capped at 400 lines. It writes nothing, so the headless assessment may call it
+too. Three outcomes, never confused:
+
+| Exit | Meaning | Message |
+|---|---|---|
+| 0 / 1 | output (for `grep`: a match) / no match | `no match in <project>@<branch>` |
+| 2 | refused request, or the repository or ref could not be read | `code: repository or ref unreadable: <project>@<branch>: <first line of git's error>` |
+| 4 | git itself could not run: not found, not executable, or failing before it reads any repository | `code: git could not run: <first line of git's stderr or the OS error>; hint: git not usable (macOS xcrun shim or sandbox?)` |
+
+After a failed git call, `code` runs `git --version` once to tell 2 from 4; it does not look for another
+git binary. Exit 2 and 4 read nothing and say nothing about the code. The assessment's verifiers record
+them in the finding as `code not read: <message line>` instead of a bare "under investigation".
 
 ## The `security/` folder
 
