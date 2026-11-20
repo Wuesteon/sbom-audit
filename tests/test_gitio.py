@@ -32,7 +32,7 @@ class GitioTests(unittest.TestCase):
         _git(self.tmp, "clone", "-q", "--branch", "main", str(origin), str(clone))
         self.assertEqual(gitio.pick_branches(clone, ["main", "dev"]), ["main", "dev"])
         ref, sha, behind = gitio.branch_ref(clone, "dev")
-        self.assertEqual(ref, "origin/dev")
+        self.assertEqual(ref, "refs/remotes/origin/dev")
         self.assertEqual(len(sha), 40)
         self.assertEqual(behind, 0)
 
@@ -45,11 +45,40 @@ class GitioTests(unittest.TestCase):
         _git(origin, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "second")
         self.assertIsNone(gitio.fetch_origin(clone))
         ref, sha, behind = gitio.branch_ref(clone, "main")
-        self.assertEqual(ref, "origin/main")
+        self.assertEqual(ref, "refs/remotes/origin/main")
         self.assertEqual(behind, 1)
         self.assertEqual(sha, _git(origin, "rev-parse", "main").strip())
         ref2, _, behind2 = gitio.branch_ref(origin, "main")
-        self.assertEqual((ref2, behind2), ("main", 0))
+        self.assertEqual((ref2, behind2), ("refs/heads/main", 0))
+
+    def test_tag_named_like_the_branch_does_not_shadow_it(self):
+        repo = make_repo(self.tmp, "r", {"a": "1"}, branches=["main", "dev"])
+        old = _git(repo, "rev-parse", "refs/heads/main").strip()
+        _git(repo, "tag", "dev", old)                     # refs/tags/dev at an older commit than the branch
+        _git(repo, "tag", "-a", "-m", "x", "main", old)   # annotated tag on the branch's own commit
+        (repo / "b").write_text("2")
+        _git(repo, "add", "b")
+        _git(repo, "commit", "-q", "-m", "second")
+        dev_tip = _git(repo, "rev-parse", "refs/heads/dev").strip()
+        main_tip = _git(repo, "rev-parse", "refs/heads/main").strip()
+        self.assertEqual(gitio.pick_branches(repo, ["main", "dev"]), ["main", "dev"])
+        self.assertEqual(gitio.branch_ref(repo, "dev"), ("refs/heads/dev", dev_tip, 0))
+        self.assertEqual(gitio.branch_ref(repo, "main"), ("refs/heads/main", main_tip, 0))
+        self.assertTrue(gitio.tag_shadows_branch(repo, "dev"))
+        self.assertTrue(gitio.tag_shadows_branch(repo, "main"))
+        dest = self.tmp / "export"
+        gitio.export_ref(repo, "refs/heads/main", dest)
+        self.assertTrue((dest / "b").exists())            # the branch, not the tag
+        self.assertFalse(gitio.tag_shadows_branch(make_repo(self.tmp, "clean", {"a": "1"}), "main"))
+
+    def test_tag_does_not_shadow_an_origin_only_branch(self):
+        origin = make_repo(self.tmp, "origin", {"a": "1"}, branches=["main", "dev"])
+        clone = self.tmp / "clone"
+        _git(self.tmp, "clone", "-q", "--branch", "main", str(origin), str(clone))
+        _git(clone, "tag", "dev", "refs/heads/main")
+        ref, sha, _ = gitio.branch_ref(clone, "dev")
+        self.assertEqual(ref, "refs/remotes/origin/dev")
+        self.assertEqual(sha, _git(origin, "rev-parse", "refs/heads/dev").strip())
 
     def test_fetch_origin_reports_error_without_remote(self):
         repo = make_repo(self.tmp, "r", {"a": "1"})

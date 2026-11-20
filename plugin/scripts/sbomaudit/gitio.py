@@ -124,13 +124,38 @@ def fetch_origin(repo: Path) -> str | None:
         return text.splitlines()[0] if text else "fetch failed"
 
 
+LOCAL = "refs/heads/"
+REMOTE = "refs/remotes/origin/"
+
+
+def _refs_under(repo: Path, prefix: str) -> set[str]:
+    """Names below `prefix`, read as full refnames: `%(refname:short)` turns `refs/heads/main` into
+    `heads/main` when a tag `main` exists, and a bare name would resolve to the tag."""
+    out = git(repo, "for-each-ref", "--format=%(refname)", prefix.rstrip("/")).splitlines()
+    return {r[len(prefix):] for r in out if r.startswith(prefix)}
+
+
 def _local_branches(repo: Path) -> set[str]:
-    return set(git(repo, "branch", "--format=%(refname:short)").split())
+    return _refs_under(repo, LOCAL)
 
 
 def _remote_branches(repo: Path) -> set[str]:
-    out = git(repo, "branch", "-r", "--format=%(refname:short)").split()
-    return {b[len("origin/"):] for b in out if b.startswith("origin/") and b != "origin/HEAD"}
+    return _refs_under(repo, REMOTE) - {"HEAD"}
+
+
+def short_ref(ref: str) -> str:
+    """`refs/heads/main` -> `main`, `refs/remotes/origin/main` -> `origin/main` (for display only)."""
+    if ref.startswith(LOCAL):
+        return ref[len(LOCAL):]
+    if ref.startswith("refs/remotes/"):
+        return ref[len("refs/remotes/"):]
+    return ref
+
+
+def tag_shadows_branch(repo: Path, branch: str) -> bool:
+    """True when a tag has the same name as `branch`: a bare `branch` would name the tag, not the branch.
+    The scan reads full refs (`refs/heads/...`), so it is not misled; this is only reported."""
+    return bool(git(repo, "for-each-ref", "--format=%(refname)", f"refs/tags/{branch}").strip())
 
 
 def pick_branches(repo: Path, requested: list[str]) -> list[str]:
@@ -146,22 +171,23 @@ def pick_branches(repo: Path, requested: list[str]) -> list[str]:
 def branch_ref(repo: Path, branch: str) -> tuple[str, str, int]:
     """Decide which ref to read for `branch`.
 
-    Returns (ref, full commit sha, commits the local branch is behind origin).
+    Returns (full ref, full commit sha, commits the local branch is behind origin). The ref is always
+    `refs/heads/<branch>` or `refs/remotes/origin/<branch>`, never a bare name a tag could shadow.
     origin/<branch> wins when the local branch is strictly behind or does not
     exist locally; a diverged branch is read locally and reported as behind N.
     """
-    local = branch in _local_branches(repo)
+    local, remote = f"{LOCAL}{branch}", f"{REMOTE}{branch}"
+    is_local = branch in _local_branches(repo)
     has_remote = branch in _remote_branches(repo)
-    ref, behind = branch, 0
-    if not local and has_remote:
-        ref = f"origin/{branch}"
-    elif local and has_remote:
-        counts = git(repo, "rev-list", "--left-right", "--count",
-                     f"{branch}...origin/{branch}").split()
+    ref, behind = local, 0
+    if not is_local and has_remote:
+        ref = remote
+    elif is_local and has_remote:
+        counts = git(repo, "rev-list", "--left-right", "--count", f"{local}...{remote}", "--").split()
         ahead, behind = int(counts[0]), int(counts[1])
         if behind > 0 and ahead == 0:
-            ref = f"origin/{branch}"
-    sha = git(repo, "rev-parse", ref).strip()
+            ref = remote
+    sha = git(repo, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}").strip()
     return ref, sha, behind
 
 

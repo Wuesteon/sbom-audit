@@ -175,6 +175,21 @@ class ScanTests(unittest.TestCase):
         self.assertIn(("image", "node"), {(c.kind, c.name) for c in inv.components})
         self.assertTrue(scan.sbom_path(self.out, "app", "main").exists())
 
+    def test_tag_named_like_a_branch_is_warned_about_and_not_read(self):
+        repo = make_repo(self.root, "app", {"Dockerfile": "FROM node:20-alpine\n"})
+        git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
+        git("tag", "main")                                   # the tag holds the old Dockerfile
+        (repo / "Dockerfile").write_text("FROM python:3.12-slim\n")
+        git("commit", "-q", "-am", "python")
+        lines = []
+        with mock.patch.object(scan.syft, "inventory", side_effect=ToolError("syft", 1, "boom")):
+            result = scan.scan(config.load(self.out), only=["app"], fetch=False, log=lines.append)
+        inv = result.inventories[0]
+        self.assertEqual(inv.ref, "refs/heads/main")
+        self.assertIn(("image", "python"), {(c.kind, c.name) for c in inv.components})
+        self.assertNotIn(("image", "node"), {(c.kind, c.name) for c in inv.components})
+        self.assertTrue(any("tag named 'main'" in line for line in lines), lines)
+
     def test_reader_packages_already_catalogued_by_syft_are_not_duplicated(self):
         """If a future Syft lists esm.sh packages itself, the deno.lock reader must not add a second copy."""
         lock = '{"version": "4", "remote": {"https://esm.sh/inngest@3.52.7": "h"}}'
