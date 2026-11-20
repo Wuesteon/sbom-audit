@@ -525,7 +525,10 @@ from the working tree is still a finding.
 
 No value is ever stored, printed, logged or committed: findings carry a fingerprint, file,
 line, branches, whether the value is still in the working tree, its age and a keyed
-`value_id`. The raw engine report is a `0600` file deleted after reading. The results are
+`value_id`. The raw engine report is read from the engine's stdout (`-r -`) and never written
+to disk; the engine runs in its own process group with its own `--timeout`, and a timeout,
+an interrupt or SIGTERM kills that group (files an older version left in
+`.cache/secrets/raw/` are deleted at the start of every scan). The results are
 `secrets.json` and `SECRETS.md` (with rotation hints per provider and the other projects
 that use the same credential); decisions live in `secrets-decisions.toml` with the statuses
 `open`, `rotated`, `false_positive`, `test_fixture` and `accepted`. Each `run` scans new

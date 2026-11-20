@@ -1,7 +1,7 @@
 """Run the secrets engine (gitleaks 8, or betterleaks 1.x) over one repository's history.
 
 gitleaks' own stdout/stderr are captured and never re-printed. Its raw report holds secret values, so it
-lives only in a 0600 file under `raw_dir` and is unlinked in a `finally`.
+is read from gitleaks' stdout (`-r -`) and exists only in this process's memory, never on disk.
 """
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
-import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,7 +22,8 @@ RULES_PATH = Path(__file__).resolve().parents[3] / "secrets" / "gitleaks.toml"  
 BETTERLEAKS_ENV = {"BETTERLEAKS_VALIDATE": "false", "BETTERLEAKS_ANALYZE": "false"}
 CANDIDATES = (("gitleaks", "8."), ("betterleaks", "1."), ("betterleaks-v1", "1."))
 VERSION_TIMEOUT = 30
-SCAN_TIMEOUT = 600
+SCAN_TIMEOUT = 600   # passed to the engine as --timeout too
+KILL_GRACE = 30      # after that, the engine's process group is killed
 # always in front of the caller's log options: no textconv or external diff driver from the repository
 SAFE_LOG_OPTS = "--no-textconv --no-ext-diff"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -94,59 +96,114 @@ def _error_line(stderr: str | None) -> str | None:
     return None
 
 
-def _read_rows(path: Path) -> list[dict] | None:
+def _parse_rows(text: str | None) -> list[dict] | None:
     try:
-        rows = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, ValueError):
+        rows = json.loads(text or "")
+    except ValueError:
         return None
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         return None
     return rows
 
 
+def _read_rows(path: Path) -> list[dict] | None:
+    try:
+        return _parse_rows(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+
+
+def _clear_raw_dir(raw_dir: Path) -> None:
+    """Delete everything under `raw_dir`: reports an older version left behind when it was killed."""
+    for child in raw_dir.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    proc.kill()
+
+
+def run_engine(argv: list[str], *, timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
+    """`subprocess.run` for the engine, in its own process group (session): a timeout, an exception or
+    a signal turned into one (see `scan_repo`) kills the engine and every `git` it started."""
+    capture = kwargs.pop("capture_output", False)
+    if capture:
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    with subprocess.Popen(argv, start_new_session=True, **kwargs) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except BaseException:          # TimeoutExpired, KeyboardInterrupt, the SIGTERM SystemExit
+            _kill_group(proc)
+            proc.communicate()
+            raise
+        # the engine exited; anything it left running in its group goes too
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
+def _terminate(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 def scan_repo(engine: Engine, repo: Path, *, log_opts: str, ignore_file: Path | None, raw_dir: Path,
-              run=subprocess.run) -> list[dict]:
-    """Scan `repo`'s git history; return gitleaks' report rows (raw `Secret` included, in memory only)."""
+              run=run_engine) -> list[dict]:
+    """Scan `repo`'s git history; return gitleaks' report rows (raw `Secret` included, in memory only).
+
+    The report comes through a pipe (`-r -`), never a file. `raw_dir` is only the engine's working
+    directory; whatever an older version left in it is deleted first. SIGTERM during the scan becomes
+    SystemExit, so the engine's process group is killed before this process exits; the engine also
+    gets `--timeout`, so it stops by itself even when this process is killed with SIGKILL."""
     # gitleaks runs under cwd=raw_dir: every path it sees must be absolute
     repo, raw_dir = Path(repo).resolve(), Path(raw_dir).resolve()
     ignore_file = Path(ignore_file).resolve() if ignore_file is not None else None
     raw_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     raw_dir.chmod(0o700)
-    with tempfile.NamedTemporaryFile(dir=raw_dir, delete=False, suffix=".json") as handle:
-        raw = Path(handle.name).resolve()
+    _clear_raw_dir(raw_dir)
+    argv = [engine.binary, "git", "--no-banner", "--no-color", "-c", str(RULES_PATH),
+            "-f", "json", "-r", "-", "--exit-code", "1", "--timeout", str(SCAN_TIMEOUT),
+            "--log-opts", f"{SAFE_LOG_OPTS} {log_opts}"]
+    if ignore_file is not None:
+        argv += ["-i", str(ignore_file)]
+    argv.append(str(repo))
+    # gitleaks' own `git log` inherits the hardening config (no fsmonitor, hooks, external diff)
+    env = gitio.git_env({**os.environ, **engine.env})
+    previous = None
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, _terminate)
     try:
-        os.chmod(raw, 0o600)
-        argv = [engine.binary, "git", "--no-banner", "--no-color", "-c", str(RULES_PATH),
-                "-f", "json", "-r", str(raw), "--exit-code", "1", "--log-opts", f"{SAFE_LOG_OPTS} {log_opts}"]
-        if ignore_file is not None:
-            argv += ["-i", str(ignore_file)]
-        argv.append(str(repo))
-        # gitleaks' own `git log` inherits the hardening config (no fsmonitor, hooks, external diff)
-        env = gitio.git_env({**os.environ, **engine.env})
-        try:
-            # cwd=raw_dir: gitleaks' `-i` default "." must never resolve to an audited repo's ignore file.
-            # umask 077: gitleaks replaces the report file, which would otherwise come out 0644.
-            proc = run(argv, capture_output=True, text=True, errors="replace", cwd=raw_dir, env=env,
-                       umask=0o077, timeout=SCAN_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            raise EngineError("timed out") from None
-        except OSError as exc:
-            raise EngineError(f"{engine.name} could not start: {exc.strerror or type(exc).__name__}") from None
-        if raw.exists():
-            os.chmod(raw, 0o600)
-        if proc.returncode == 0:
-            # gitleaks swallows `git log` failures (a vanished tip, a missing repo) and exits 0
-            error = _error_line(proc.stderr)
-            if error is not None:
-                raise EngineError(error)
-            return []
-        if proc.returncode == 1:
-            rows = _read_rows(raw)
-            if rows is None:
-                raise EngineError(f"{engine.name} exit 1 without a parsable report")
-            return rows
-        first = _error_line(proc.stderr) or next(iter(_stderr_lines(proc.stderr)), "")
-        detail = f"{engine.name} exit {proc.returncode}"
-        raise EngineError(f"{detail}: {first}" if first else detail)
+        # cwd=raw_dir: gitleaks' `-i` default "." must never resolve to an audited repo's ignore file.
+        # umask 077: anything gitleaks might write there stays private.
+        proc = run(argv, capture_output=True, text=True, errors="replace", cwd=raw_dir, env=env,
+                   umask=0o077, timeout=SCAN_TIMEOUT + KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        raise EngineError("timed out") from None
+    except OSError as exc:
+        raise EngineError(f"{engine.name} could not start: {exc.strerror or type(exc).__name__}") from None
     finally:
-        raw.unlink(missing_ok=True)
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+        _clear_raw_dir(raw_dir)
+    if proc.returncode == 0:
+        # gitleaks swallows `git log` failures (a vanished tip, a missing repo) and exits 0
+        error = _error_line(proc.stderr)
+        if error is not None:
+            raise EngineError(error)
+        return []
+    if proc.returncode == 1:
+        rows = _parse_rows(proc.stdout)
+        if rows is None:
+            raise EngineError(f"{engine.name} exit 1 without a parsable report")
+        return rows
+    first = _error_line(proc.stderr) or next(iter(_stderr_lines(proc.stderr)), "")
+    detail = f"{engine.name} exit {proc.returncode}"
+    raise EngineError(f"{detail}: {first}" if first else detail)
