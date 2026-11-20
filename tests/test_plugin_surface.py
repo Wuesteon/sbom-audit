@@ -341,6 +341,16 @@ def derived_cases() -> dict[str, tuple[dict, dict | None]]:
     cases["not-assessed"] = (doc, None)
     doc, _ = fixture_doc("clear")
     cases["never-fired"] = (doc, {"installed": True, "installed_at": now_iso(20), "last_fired": None})
+    doc, _ = fixture_doc("clear")
+    cases["scheduler-failed"] = (doc, {"installed": True, "installed_at": now_iso(20), "last_fired": now_iso(2),
+                                       "last_exit": 127, "last_error": "plugin install path not found"})
+    doc, _ = fixture_doc("clear")
+    cases["scheduler-unfinished"] = (doc, {"installed": True, "last_fired": now_iso(3), "last_exit": None})
+    doc, _ = fixture_doc("clear")
+    doc["generated_at"] = now_iso(10)
+    doc["last_assessment"] = doc["generated_at"][:10]
+    cases["overdue-and-missed"] = (doc, {"installed": True, "installed_at": now_iso(30), "last_fired": now_iso(12),
+                                         "last_exit": 1})
     doc, _ = fixture_doc("class-a")
     doc["secrets_scan"]["oldest_open_days"] = None
     cases["class-a-age-unknown"] = (doc, None)
@@ -395,6 +405,9 @@ class SessionHookTests(unittest.TestCase):
     def test_hook_derived_cases_hit_their_rule(self):
         needles = {"overdue": "10 days ago", "new-critical": "new CRITICAL/HIGH", "not-assessed": "not assessed yet",
                    "never-fired": "scheduler did not run since", "class-a-age-unknown": "oldest age unknown",
+                   "scheduler-failed": "failed (exit 127); see STATUS.md",
+                   "scheduler-unfinished": "did not finish; see STATUS.md",
+                   "overdue-and-missed": "last run 10 days ago, scheduler did not run since",
                    "hosts-critical": "2 critical host findings open (box-a, web-1); see HOSTS.md",
                    "hosts-stale": "hosts not checked since 2026-01-02",
                    "hosts-failed": "1 host(s) failed the last check (box-a); see HOSTS.md",

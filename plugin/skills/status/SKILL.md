@@ -15,7 +15,7 @@ Print the output as is. Then read its first line, the status line (`🛡️ sbom
 
 - `no status.json yet: run /sbom-audit:setup, then /sbom-audit:run` → nothing has run here; offer `/sbom-audit:setup`.
 - `last run FAILED (exit …)` → show the failed sources from `STATUS.md`; a failed source is empty, not clean. Suggest `/sbom-audit:run` after the cause is fixed.
-- `last run N days ago` or `scheduler did not run since …` → the evidence is stale; suggest `/sbom-audit:run` (and `/sbom-audit:schedule` if no timer is installed).
+- `last run N days ago` or `scheduler did not run since …` → the evidence is stale; suggest `/sbom-audit:run` (and `/sbom-audit:schedule` if no timer is installed). With `scheduler did not run since …` or `scheduled run of … failed|did not finish`, show the `## Scheduler` lines (last fire, exit, error, the command that shows the timer) and suggest `/sbom-audit:schedule weekly` to reinstall it.
 - `N class A, M B secrets open` → point at `security/SECRETS.md` and `/sbom-audit:secrets`; class A is rotated before anything else.
 - `N new KEV since last run` or `N new CRITICAL/HIGH in production since last run`, or `findings not assessed yet; run /sbom-audit:assess` → offer `/sbom-audit:assess`.
 - `nothing new since <date>` → say so; nothing to do.
