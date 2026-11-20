@@ -861,7 +861,10 @@ of `INVENTORY.md` reads "N distinct packages", adding "in M manifest rows" when 
 Direct dependencies table shows one line, "same coordinate, 2 manifests: `pom.xml`, `build.gradle`";
 the releases table counts distinct packages; `audit.json` `stats.unique_package_versions` and
 `stats.direct_dependencies` (per project and branch) count coordinates, and `stats.occurrences` counts
-the rows (declarations) on purpose. Different resolved versions stay separate lines. Manifests are
+the rows (declarations) on purpose; `stats.unique_package_versions_unchecked` counts the coordinates no
+vulnerability check covers (a type OSV cannot match, a GitHub Action, a version not resolved), shown in
+`AUDIT.md` as "… of these not checked for vulnerabilities" under "Distinct package versions". Different
+resolved versions stay separate lines. Manifests are
 named by path; the inventory does not keep line numbers.
 
 Portfolio mode: the parent of `security/` is a plain folder whose direct subfolders with a

@@ -319,6 +319,12 @@ def is_unmatched(c) -> bool:
             and c.ecosystem.lower() in UNMATCHED_ECOSYSTEMS)
 
 
+def not_checked(c) -> bool:
+    """A package row no vulnerability check covers: a type OSV cannot match, a GitHub Action, an unresolved
+    version."""
+    return is_unmatched(c) or is_github_action(c) or coverage.version_unresolved(c.version)
+
+
 def unmatched_packages(inventories: list[BranchInventory]) -> int:
     return sum(1 for inv in inventories if not inv.release for c in inv.components if is_unmatched(c))
 
@@ -388,6 +394,8 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         "branches": sum(1 for i in inventories if not i.release),
         # distinct coordinates (coverage.coordinate): one package declared in two manifests counts once
         "unique_package_versions": len({coverage.coordinate(c) for c in packages}),
+        # of those, the ones no vulnerability check covers: a type OSV cannot match, a GitHub Action, no version
+        "unique_package_versions_unchecked": len({coverage.coordinate(c) for c in packages if not_checked(c)}),
         "occurrences": len(packages),        # inventory rows (declarations) over all branches, deliberately
         "direct_dependencies": len({(inv.project, inv.branch, *coverage.coordinate(c)) for inv in inventories
                                     for c in inv.components if c.kind == "package" and c.direct}),
@@ -482,6 +490,11 @@ def _summary(rep: dict) -> list[str]:
     rows: list[tuple[str, object]] = [
         ("Projects / branches scanned", scanned),
         ("Distinct package versions (ecosystem, name, version)", st["unique_package_versions"]),
+    ]
+    if st.get("unique_package_versions_unchecked"):
+        rows.append(("… of these not checked for vulnerabilities (OSV cannot match the type, GitHub Actions, "
+                     "version not resolved)", st["unique_package_versions_unchecked"]))
+    rows += [
         ("Vulnerable package versions", len(vulns)),
         ("… in CISA KEV (actively exploited)", sum(1 for v in vulns if v["kev"])),
     ]

@@ -491,6 +491,24 @@ class SameCoordinateTwoManifestsTests(unittest.TestCase):
         self.assertEqual(rep["unresolved_versions"][0]["packages"][0]["manifests"], ["pom.xml", "build.gradle"])
         self.assertIn("| Distinct package versions (ecosystem, name, version) | 1 |", audit)
 
+    def test_distinct_package_versions_say_how_many_were_not_checked(self):
+        action = Component(kind="package", ecosystem="github", name="actions/checkout", version="v4",
+                           purl="pkg:github/actions/checkout@v4", scope="required", locations=[".github/x.yml"])
+        components = [pkg("lodash", "4.17.21"), pkg("zlib", "1.3", ecosystem="generic", manifest="bom.json"),
+                      pkg("fmt", "10.0", ecosystem="vcpkg", manifest="bom.json"), action, self.POM]
+        rep, _, audit = self.build([inv("jvm", "main", components), inv("jvm", "dev", components)])
+        st = rep["stats"]
+        self.assertEqual(st["unique_package_versions"], 5)
+        self.assertEqual(st["unique_package_versions_unchecked"], 4)   # generic, vcpkg, action, unresolved
+        self.assertIn("| Distinct package versions (ecosystem, name, version) | 5 |", audit)
+        self.assertIn("| … of these not checked for vulnerabilities (OSV cannot match the type, GitHub Actions, "
+                      "version not resolved) | 4 |", audit)
+
+    def test_no_unchecked_row_when_every_version_was_checked(self):
+        rep, _, audit = self.build([inv("jvm", "main", [maven("1.0", "pom.xml")])])
+        self.assertEqual(rep["stats"]["unique_package_versions_unchecked"], 0)
+        self.assertNotIn("of these not checked", audit)
+
     def test_status_counts_are_not_inflated(self):
         from sbomaudit import status
         resolved_pom, resolved_gradle = maven("1.0", "pom.xml"), maven("1.0", "build.gradle")

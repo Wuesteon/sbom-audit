@@ -59,6 +59,7 @@
   "projects": 3,
   "branches": 3,
   "unique_package_versions": 3,
+  "unique_package_versions_unchecked": 0,
   "occurrences": 3,
   "direct_dependencies": 3,
   "images": 2,
