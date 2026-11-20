@@ -1,5 +1,75 @@
 # Changelog
 
+## 1.3.1 — 2026-11-21
+
+Hardening after an independent review and field tests on C/C++, firmware and Maven repositories. No
+new commands; several reports now say plainly what was not checked.
+
+### Security
+- A scanned repository's own config no longer runs anything during a scan: every git process (including
+  the git that gitleaks starts) gets command-line config that disables fsmonitor, hooks, the external
+  diff command and signature checks, and blocks the `ext::` transport. gitleaks reads history with
+  `--no-textconv --no-ext-diff`, and the tree export empties all repository filter drivers. Before, a
+  textconv driver could run a program and hide the history from the secrets scan. `git fetch` still
+  uses the repository's transport config; see "Hostile repositories" in `docs/reference.md`.
+- The clear-text gitleaks report is read from a pipe and never written to disk. gitleaks runs in its own
+  process group with its own timeout; a timeout, an error or SIGTERM kills it and the git processes it
+  started. Files an older version left in `.cache/secrets/raw/` are deleted.
+- Branches are read by full ref (`refs/heads/…`, `refs/remotes/origin/…`). A tag with a branch's name
+  can no longer swap in another tree; the run prints a warning when such a tag exists.
+- Maven pom resolution reads only regular files inside the exported tree: no symlink out of it, no FIFO.
+- Incremental secrets scans accept only full 40- or 64-hex commit ids from `secrets.json`.
+- git, the tree export, syft and osv-scanner have timeouts; a timeout is a failed source, never a clean
+  one.
+- `code grep`/`show`/`files` withhold dotenv, key and credential files (one list shared with the
+  assessment's deny rules) and lines recorded in `secrets.json`, and say how many were withheld without
+  showing content. User paths are literal, and `files` no longer lists `security/.cache`.
+- Headless assessment: reads only the evidence folder, denies secret and cache paths everywhere, fetches
+  only from a fixed list of advisory hosts, and has no web search.
+
+### Fixed
+- `incident` and `lookup` answer "unknown" instead of "absent" when the inventory cannot support
+  "absent": ecosystems the scan does not resolve, Swift and other purl types mapped to their OSV names,
+  Go `stdlib` and `toolchain` advisories. The rules are in `docs/reference.md`.
+- `incident --vex` records "not affected" per examined branch (`<purl>@<branch>`), no longer for the
+  whole project, and prints `not recorded: …` for what it refused.
+- A minimum such as `requires-python >=3.8` or `engines.node` is reported as "allows a version that is
+  end of life" (status `minimum`, count `allowed_unsupported`, issue reason `eol_minimum`, priority 6),
+  no longer as an end-of-life runtime. A pinned runtime in the same project takes precedence.
+- The same package declared in two manifests is one line in `INVENTORY.md` naming both files; counts in
+  reports are distinct packages (`stats.unique_package_versions`, `direct_dependencies`).
+- `code` separates three outcomes: no match (exit 1), repository or ref unreadable (exit 2), git could
+  not run (exit 4, with a hint for the macOS git shim). `grep` has a timeout.
+- C/C++ and firmware: submodules, west, ESP-IDF, PlatformIO, `conanfile.py`, vcpkg and CMake
+  FetchContent are detected and reported as coverage gaps (`coverage_gaps` in `inventory.json`; counts
+  in AUDIT.md, STATUS.md and REPORT.html; the CRA SBOM row reads INCOMPLETE). The tool does not
+  inventory or check these dependencies; see `docs/limitations.md`.
+- Packages no vulnerability source covers are counted as not checked (`packages_unmatched`,
+  `stats.unique_package_versions_unchecked`); REPORT.html qualifies "No finding requires immediate
+  action" (EN/DE) when projects were skipped, gaps exist or packages were not checked.
+- Skipped projects (none of the configured branches exist) end `run`, `scan` and `audit` with a WARNING
+  line (`projects_not_scanned`); the exit code is unchanged. `setup` warns about them.
+- An imported `pkg:github` component is no longer treated as a GitHub Action; the project's own
+  `vcpkg.json` is no longer its own dependency.
+- `vex add` and `incident --vex` refuse without `--author` or a git identity.
+- Messages that name a `/sbom-audit:` command also give the CLI form; evidence folder templates v6.
+- `inventory.json` stores full refs in `ref` (`refs/heads/main`); reports show the short form.
+- Scheduler status: `last fired` is shown in local time (the raw UTC stamp made a Saturday 03:00 fire
+  east of UTC read as Friday) and `next fire` is computed, no longer frozen at its install-time value.
+  A missed weekly fire is reported as `scheduler did not run since <day> (weekly run N days overdue)`;
+  new lines report a scheduled run that failed or did not finish, and STATUS.md shows the last exit
+  code, last error and plugin used. The weekly wrapper falls back to the newest cached plugin version
+  when its recorded install directory is gone.
+
+### Added
+- Opt-in systemd container test for the Linux timer (`SBOM_AUDIT_DOCKER_TESTS=1`) and
+  `docs/testing-linux-timer.md`. The test has not yet been run on a Linux machine.
+
+### Documentation
+- New `docs/limitations.md` and `docs/without-claude-code.md`.
+- `CONTRIBUTING.md`: how to run the evals from a checkout, the rule for shipping with a case below 0.8
+  and the list of recorded exceptions, a 14-day rule for tool pins. README install line corrected.
+
 ## 1.3.0 — 2026-11-21
 
 Evidence you can hand to an auditor: every run records how it was produced and can be verified later,
@@ -57,6 +127,10 @@ their own reports, and a build SBOM fills what a repository scan cannot resolve.
 - Fix: the GitHub Actions template runs the CLI at `plugin/scripts/sbom_audit_cli.py`; in 1.2.1 it
   called a path that does not exist in the tag.
 - Fix: `sbom check --project` and `--branch` cannot name a path outside the `sbom/` folder.
+
+Eval exception (recorded afterwards, see `CONTRIBUTING.md`): the `assess` case scored 0.33 with the
+plugin because the eval sandbox on macOS blocks Apple's git shim, so `code grep` could not read the
+fixture repository. The same command works outside the sandbox.
 
 ## 1.2.1 — 2026-11-16
 
