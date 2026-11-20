@@ -76,30 +76,51 @@ class AssessTests(unittest.TestCase):
         cmd = assess.command(cfg, cli_path, "PROMPT")
         self.assertEqual(cmd[:3], ["claude", "-p", "PROMPT"])
         tools = cmd[cmd.index("--allowedTools") + 1]
-        root, out = cfg.root.resolve().as_posix(), cfg.out.resolve().as_posix()
-        reads = f"Read(/{root}/**)," + (f"Read(/{out}/**)," if out != root else "")
-        fetches = "".join(f"WebFetch(domain:{d})," for d in assess.FETCH_DOMAINS)
+        out = cfg.out.resolve().as_posix()
         self.assertNotIn("Read,", tools)
         self.assertNotIn("WebFetch,", tools)
-        self.assertEqual(tools, reads + "WebSearch," + fetches +
-                                "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py lookup:*),"
-                                'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" lookup:*),'
-                                "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py incident:*),"
-                                'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" incident:*),'
-                                "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py status:*),"
-                                'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" status:*),'
-                                "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py code:*),"
-                                'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" code:*)')
+        self.assertNotIn("WebSearch", tools)
+        self.assertEqual(tools.split(","), [
+            f"Read(/{out}/**)",                       # the evidence folder only, never the portfolio root
+            "WebFetch(domain:osv.dev)", "WebFetch(domain:api.osv.dev)", "WebFetch(domain:api.github.com)",
+            "WebFetch(domain:nvd.nist.gov)", "WebFetch(domain:services.nvd.nist.gov)",
+            "WebFetch(domain:www.cisa.gov)", "WebFetch(domain:endoflife.date)",
+            "WebFetch(domain:security-tracker.debian.org)", "WebFetch(domain:ubuntu.com)",
+            "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py lookup:*)",
+            'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" lookup:*)',
+            "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py incident:*)",
+            'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" incident:*)',
+            "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py status:*)",
+            'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" status:*)',
+            "Bash(python3 /abs/plugin/scripts/sbom_audit_cli.py code:*)",
+            'Bash(python3 "/abs/plugin/scripts/sbom_audit_cli.py" code:*)'])
+        self.assertNotIn(f"Read(/{cfg.root.resolve().as_posix()}/**)", tools)
         self.assertEqual(cmd[cmd.index("--max-budget-usd") + 1], "2.5")
         self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
         self.assertNotIn("--max-turns", cmd)
         self.assert_hard_limits(cmd)
-        self.assertEqual(cmd[cmd.index("--disallowedTools") + 1], "Read(./.cache/**)")
         self.assertEqual(cmd.count("--disallowedTools"), 1)
+        self.assertEqual(cmd[cmd.index("--disallowedTools") + 1].split(","), [
+            "Read(./.cache/**)", "Read(//**/.cache/**)", "Read(//**/.env*)", "Read(//**/*.pem)",
+            "Read(//**/*.key)", "Read(//**/id_*)", "Read(//**/*.p12)", "Read(//**/*.pfx)", "Read(//**/.npmrc)",
+            "Read(//**/.pypirc)", "Read(//**/.netrc)", "Read(//**/.git-credentials)", "Read(//**/credentials*)",
+            "Read(//**/.ssh/**)", "Read(//**/.aws/**)", "Read(//**/.docker/config.json)"])
+
+    def test_documented_permissions_match_the_code(self):
+        """The skill text and docs/reference.md name exactly the hosts and deny rules the child gets."""
+        repo = Path(__file__).resolve().parent.parent
+        skill = (repo / "plugin" / "skills" / "assess" / "SKILL.md").read_text(encoding="utf-8")
+        reference = (repo / "docs" / "reference.md").read_text(encoding="utf-8")
+        for text in (skill, reference):
+            for host in assess.HEADLESS_FETCH_DOMAINS:
+                self.assertIn(f"`{host}`", text, host)
+        for rule in assess.DENY_RULES:
+            self.assertIn(f"`{rule}`", reference, rule)
+        self.assertIn("no WebSearch", skill)
 
     def assert_hard_limits(self, cmd):
         tools = cmd[cmd.index("--tools") + 1].split(",")
-        self.assertEqual(tools, ["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Bash"])
+        self.assertEqual(tools, ["Read", "Grep", "Glob", "WebFetch", "Bash"])
         for banned in ("Write", "Edit", "NotebookEdit"):
             self.assertNotIn(banned, tools)
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "dontAsk")
