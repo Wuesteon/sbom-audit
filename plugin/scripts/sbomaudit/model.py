@@ -91,11 +91,14 @@ class BranchInventory:
     package_source: dict | None = None
     # structural check and data-field coverage of the written SBOM (sbomquality.summary); None: no SBOM written
     sbom_quality: dict | None = None
+    # OSV ecosystem -> manifest and lockfile paths found on the ref (readers.manifest_files); None: an
+    # inventory.json written before this was recorded
+    manifests: dict | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["components"] = [c.to_dict() for c in self.components]
-        for key in ("release", "package_source", "sbom_quality"):   # absent: the inventory.json entry stays as before
+        for key in ("release", "package_source", "sbom_quality", "manifests"):   # absent: the inventory.json entry stays as before
             if d[key] is None:
                 del d[key]
         return d

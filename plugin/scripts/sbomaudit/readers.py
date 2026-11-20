@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import unquote
 
-from . import goread, gradleread
+from . import ecosystems, goread, gradleread
 from .model import Component
 from .versions import min_version_from_range, norm_py, runtime_cycle
 
@@ -89,6 +89,19 @@ def walk(src: Path, ignore: list[str]):
             path = Path(dirpath) / name
             if _inside_file(root, path) is not None:
                 yield rel, path
+
+
+def manifest_files(src: Path, ignore: list[str]) -> dict[str, list[str]]:
+    """OSV ecosystem -> repo-relative manifest and lockfile paths (`ecosystems.MANIFEST_GLOBS`), walked like
+    the readers walk (build, vendored and ignored folders left out), at most MANIFESTS_PER_ECOSYSTEM each.
+    `incident` uses it to tell a branch without an ecosystem from one whose manifests yielded no package."""
+    found: dict[str, list[str]] = {}
+    for rel, path in walk(src, ignore):
+        for eco in ecosystems.manifest_ecosystems(path.name):
+            paths = found.setdefault(eco, [])
+            if len(paths) < ecosystems.MANIFESTS_PER_ECOSYSTEM:
+                paths.append(rel)
+    return {eco: sorted(paths) for eco, paths in found.items()}
 
 
 def _read(path: Path) -> str:
