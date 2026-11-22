@@ -67,7 +67,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_changelog_has_1_3_1_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
-        self.assertRegex(text, r"^# Changelog\n\n## 1\.3\.1 — 2026-11-21\n")
+        self.assertRegex(text, r"^# Changelog\n\n## 1\.3\.1 — 2026-11-23\n")
         section = text.split("## 1.3.1", 1)[1].split("\n## ", 1)[0]
         for needle in ("### Security", "--no-textconv", "refs/heads/", "allowed_unsupported", "coverage_gaps",
                        "docs/limitations.md", "not recorded", "withhold", "--author"):

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.1 — 2026-11-21
+## 1.3.1 — 2026-11-23
 
 Hardening after an independent review and field tests on C/C++, firmware and Maven repositories. No
 new commands; several reports now say plainly what was not checked.

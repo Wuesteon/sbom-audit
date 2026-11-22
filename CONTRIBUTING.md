@@ -125,6 +125,10 @@ these hold:
   **Closed in 1.3.1:** the CLI now starts the real git behind the shim (`gitio.use_real_git`); rerun
   2026-11-23: `assess` 1.00 with the plugin (3 of 3 runs) on the same host.
 
+Results for 1.3.1, 2026-11-23 (three runs per arm), with/without the plugin: `assess` 1.00/0.83,
+`hosts` 1.00/0.33, `incident` 1.00/0.75, `lookup` 1.00/0.56, `run` 1.00/0.00, `secrets` 0.96/0.50,
+`setup` 1.00/0.33. No exception.
+
 Results for 1.2.0, 2026-11-16 (three runs per arm), with/without the plugin: `assess` 1.00/0.83,
 `hosts` 1.00/0.33, `incident` 1.00/0.75, `lookup` 0.89/0.67, `run` 1.00/0.00, `secrets` 0.88/0.50,
 `setup` 1.00/0.33 (mean Δ +0.48); every case met the threshold then. The `hosts` case is single-turn,
