@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, config
+from . import __version__, config, gitio
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
@@ -421,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     args.out = args.out or find_out(Path.cwd())
+    gitio.use_real_git()      # macOS: the real git behind Apple's shim, which a sandbox can block
     if config.read_only() and _writes(args):
         print(f"read-only mode: {args.command} writes nothing", file=sys.stderr)
         return EXIT_READ_ONLY

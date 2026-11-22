@@ -12,11 +12,15 @@ from the repository's config: the transport settings of `git fetch` (`core.sshCo
 helpers, `core.askPass`, proxies), which a fetch needs to work.
 """
 from __future__ import annotations
+import atexit
 
 import fnmatch
 import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -43,6 +47,63 @@ HARDENING = (
     ("protocol.ext.allow", "never"),
 )
 _FILTER_KEYS = ("smudge", "clean", "process")
+
+
+APPLE_GIT_SHIM = "/usr/bin/git"
+_XCODE_SELECT_LINK = "/var/db/xcode_select_link"
+_COMMAND_LINE_TOOLS = "/Library/Developer/CommandLineTools"
+
+
+def _first_git(path: str | None) -> str | None:
+    """The first executable `git` on `path` (default: this process's PATH)."""
+    for directory in (os.environ.get("PATH", "") if path is None else path).split(os.pathsep):
+        candidate = os.path.join(directory or ".", "git")
+        if os.access(candidate, os.X_OK) and not os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def real_git(path: str | None = None, platform: str = sys.platform) -> str | None:
+    """On macOS, when `git` on `path` is Apple's shim: the git binary the shim would start (in the selected
+    developer directory, else the Command Line Tools), or None. The shim asks `xcrun`, which writes a cache
+    file under the per-user temp directory; a sandbox that forbids that write (Claude Code's sandbox, an eval
+    sandbox) makes every git call fail before git starts. The real binary needs no cache. Only these system
+    locations are considered, never anything a repository can influence."""
+    if platform != "darwin" or _first_git(path) != APPLE_GIT_SHIM:
+        return None
+    candidates = []
+    developer = os.environ.get("DEVELOPER_DIR")
+    if developer:
+        candidates.append(developer)
+    try:
+        candidates.append(os.path.realpath(_XCODE_SELECT_LINK, strict=True))
+    except OSError:
+        pass
+    candidates.append(_COMMAND_LINE_TOOLS)
+    for base in candidates:
+        binary = os.path.join(base, "usr", "bin", "git")
+        if os.access(binary, os.X_OK):      # not isfile(): a sandbox can refuse stat() and still let it run
+            return binary
+    return None
+
+
+def use_real_git() -> str | None:
+    """Put the real git before Apple's shim on this process's PATH (see `real_git`), so every child process,
+    gitleaks and syft included, finds it. Only git: the entry is a private temporary folder holding one
+    symlink, because the developer folder itself also holds an old python3 and a hundred other tools that
+    must not shadow the user's. The folder is removed at exit. Returns the folder, or None when nothing was
+    changed (not macOS, git is not the shim, no real binary, or no writable temp folder)."""
+    binary = real_git()
+    if not binary:
+        return None
+    try:
+        folder = tempfile.mkdtemp(prefix="sbom-audit-git-")
+        os.symlink(binary, os.path.join(folder, "git"))
+    except OSError:
+        return None
+    atexit.register(shutil.rmtree, folder, True)
+    os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
+    return folder
 
 
 def git_env(env: Mapping[str, str] | None = None,

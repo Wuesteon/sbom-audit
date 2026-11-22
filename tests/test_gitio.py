@@ -1,3 +1,5 @@
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -244,6 +246,70 @@ class GitioTests(unittest.TestCase):
         with self.assertRaises(gitio.GitError):
             gitio.git(repo, "rev-parse", "--verify", "nope")
 
+
+class RealGitBehindAppleShim(unittest.TestCase):
+    """Apple's /usr/bin/git asks xcrun, which a sandbox can block; the real binary is used directly."""
+
+    def _fake_tools(self, tmp):
+        tools = Path(tmp) / "Developer"
+        (tools / "usr" / "bin").mkdir(parents=True)
+        binary = tools / "usr" / "bin" / "git"
+        binary.write_text("#!/bin/sh\necho real-git\n")
+        binary.chmod(0o755)
+        (tools / "usr" / "bin" / "python3").write_text("#!/bin/sh\n")
+        (tools / "usr" / "bin" / "python3").chmod(0o755)
+        return tools
+
+    def _no_developer_dir(self):
+        patcher = mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"})
+        env = patcher.start()
+        self.addCleanup(patcher.stop)
+        env.pop("DEVELOPER_DIR", None)
+
+    def test_shim_resolves_to_the_selected_developer_directory(self):
+        self._no_developer_dir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._fake_tools(tmp)
+            with mock.patch.object(gitio, "_first_git", return_value=gitio.APPLE_GIT_SHIM), \
+                    mock.patch.object(gitio, "_XCODE_SELECT_LINK", str(tools)):
+                self.assertEqual(gitio.real_git(platform="darwin"), str(tools.resolve() / "usr" / "bin" / "git"))
+
+    def test_path_gains_a_folder_holding_only_git(self):
+        self._no_developer_dir()
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._fake_tools(tmp)
+            with mock.patch.object(gitio, "real_git", return_value=str(tools / "usr" / "bin" / "git")):
+                folder = gitio.use_real_git()
+            self.addCleanup(shutil.rmtree, folder, True)
+            self.assertEqual(os.listdir(folder), ["git"])          # the developer folder's python3 does not come along
+            self.assertEqual(os.environ["PATH"], folder + os.pathsep + "/usr/bin:/bin")
+            out = subprocess.run(["git"], capture_output=True, text=True).stdout
+            self.assertEqual(out, "real-git\n")
+
+    def test_another_git_or_another_platform_is_left_alone(self):
+        with mock.patch.object(gitio, "_first_git", return_value="/opt/homebrew/bin/git"):
+            self.assertIsNone(gitio.real_git(platform="darwin"))
+        with mock.patch.object(gitio, "_first_git", return_value=gitio.APPLE_GIT_SHIM):
+            self.assertIsNone(gitio.real_git(platform="linux"))
+
+    def test_no_real_binary_or_no_temp_folder_keeps_the_path(self):
+        self._no_developer_dir()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gitio, "_first_git", return_value=gitio.APPLE_GIT_SHIM), \
+                mock.patch.object(gitio, "_XCODE_SELECT_LINK", str(Path(tmp) / "missing")), \
+                mock.patch.object(gitio, "_COMMAND_LINE_TOOLS", str(Path(tmp) / "none")), \
+                mock.patch.object(gitio.sys, "platform", "darwin"):
+            self.assertIsNone(gitio.real_git(platform="darwin"))
+        with mock.patch.object(gitio, "real_git", return_value="/somewhere/git"), \
+                mock.patch.object(gitio.tempfile, "mkdtemp", side_effect=PermissionError("sandbox")):
+            self.assertIsNone(gitio.use_real_git())
+        self.assertEqual(os.environ["PATH"], "/usr/bin:/bin")
+
+    def test_first_git_walks_the_path_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._fake_tools(tmp)
+            found = gitio._first_git(os.pathsep.join([str(Path(tmp) / "empty"), str(tools / "usr" / "bin"), "/usr/bin"]))
+            self.assertEqual(found, str(tools / "usr" / "bin" / "git"))
 
 if __name__ == "__main__":
     unittest.main()

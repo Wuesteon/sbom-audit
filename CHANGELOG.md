@@ -28,6 +28,13 @@ new commands; several reports now say plainly what was not checked.
   only from a fixed list of advisory hosts, and has no web search.
 
 ### Fixed
+- git on macOS inside a sandbox: when `git` on `PATH` is Apple's `/usr/bin/git` shim, every command now
+  puts the real git (selected Xcode, else the Command Line Tools) first on `PATH`, through a temporary
+  folder that holds only a `git` symlink, so nothing else is shadowed. The shim asks `xcrun`,
+  which writes a cache file under `/var/folders`; Claude Code's sandbox and the eval sandbox forbid that
+  write, so every git call failed (`couldn't create cache file ... xcrun_db`) and `code grep`, `scan` and
+  the verifier could read nothing. The `assess` eval case, 0.33 for 1.3.0 for this reason, scores 1.00
+  again (3 of 3 runs, 2026-11-23); no eval exception is recorded for 1.3.1.
 - `incident` and `lookup` answer "unknown" instead of "absent" when the inventory cannot support
   "absent": ecosystems the scan does not resolve, Swift and other purl types mapped to their OSV names,
   Go `stdlib` and `toolchain` advisories. The rules are in `docs/reference.md`.

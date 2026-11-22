@@ -122,6 +122,8 @@ these hold:
   `code grep` command works outside the sandbox. Rerun on the next release, preferably on a
   host where `git` on `PATH` is not the shim. The other cases: `hosts`, `incident`, `lookup`, `run`,
   `setup` 1.00; `secrets` passed on a rerun.
+  **Closed in 1.3.1:** the CLI now starts the real git behind the shim (`gitio.use_real_git`); rerun
+  2026-11-23: `assess` 1.00 with the plugin (3 of 3 runs) on the same host.
 
 Results for 1.2.0, 2026-11-16 (three runs per arm), with/without the plugin: `assess` 1.00/0.83,
 `hosts` 1.00/0.33, `incident` 1.00/0.75, `lookup` 0.89/0.67, `run` 1.00/0.00, `secrets` 0.88/0.50,
@@ -141,7 +143,8 @@ also finds the call site but starts no verifier agent.
   No case reads a real repo.
 - `--no-publish` keeps the HTML report local (`evals/results/`, git-ignored). Without it, the report
   is published to claude.ai.
-- git inside the eval sandbox: on macOS, `/usr/bin/git` is Apple's `xcrun` shim. The sandbox
+- git inside the eval sandbox (before 1.3.1; from 1.3.1 the CLI bypasses the shim, so this applies only
+  to bare `git` calls a session makes itself): on macOS, `/usr/bin/git` is Apple's `xcrun` shim. The sandbox
   forbids the shim's cache write under `/var/folders` and reads of the Xcode or Command Line
   Tools folders, so git fails ("Failed to locate 'git'"). Neither `xcrun_nocache=1` nor
   `xcrun_db=…` helps, because the operator's environment does not reach the sandboxed session (case
