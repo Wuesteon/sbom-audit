@@ -67,7 +67,6 @@ class ComponentsFromBomTests(unittest.TestCase):
         self.assertFalse(any(c.name.startswith("/") for c in syft.components(self.BOM)))
 
 
-@unittest.skipUnless(HAVE_SYFT, "syft not installed")
 class SyftTimeoutTests(unittest.TestCase):
     def test_timeout_is_a_tool_error_never_an_empty_sbom(self):
         seen = []
@@ -78,6 +77,7 @@ class SyftTimeoutTests(unittest.TestCase):
         self.assertIn("timed out", str(ctx.exception))
 
 
+@unittest.skipUnless(HAVE_SYFT, "syft not installed")
 class SyftRunTests(unittest.TestCase):
     def test_lock_components_have_purl_and_location(self):
         bom = syft.run(FIXTURES / "npm-lock", include_dev=False)

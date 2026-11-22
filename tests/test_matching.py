@@ -173,7 +173,6 @@ class MatchAllTests(unittest.TestCase):
         self.assertEqual((found, sources["osv-scanner"]["scanned"]), ([], 0))
 
 
-@unittest.skipUnless(HAVE_OSV, "osv-scanner not installed")
 class OsvScannerTimeoutTests(unittest.TestCase):
     def test_timeout_is_a_tool_error_never_a_clean_result(self):
         seen = []
@@ -190,6 +189,7 @@ class OsvScannerTimeoutTests(unittest.TestCase):
         self.assertIn("timed out", str(ctx.exception))
 
 
+@unittest.skipUnless(HAVE_OSV, "osv-scanner not installed")
 class OsvScannerRunTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
