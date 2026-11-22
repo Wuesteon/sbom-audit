@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cyclonedx, gitio, matching, pomresolve, preflight, readers, sbomimport, sbomquality, syft
+from . import config, cyclonedx, gaps, gitio, matching, pomresolve, preflight, readers, sbomimport, sbomquality, syft
 from .config import Config, Project
 from .errors import ToolError
 from .model import BranchInventory, Component
@@ -225,7 +225,9 @@ def scan_branch(cfg: Config, project: Project, branch: str, release: dict | None
         dev_only = readers.dev_only_deps(src, project.ignore)
         gradle_unknown = readers.gradle_unknown_direct(src, project.ignore)
         extra = readers.read_tree(src, project.ignore, remote=project.remote)
+        inv.manifests = readers.manifest_files(src, project.ignore)
         imported = _read_import(cfg, project, branch, src, inv)
+        inv.coverage_gaps = gaps.detect(src)       # submodules, unread C/C++/firmware manifests, C sources
     for image in [c for c in extra if c.kind == "image"]:
         runtime = readers.runtime_from_image(image)
         if runtime is not None:
@@ -334,6 +336,12 @@ def scan(cfg: Config, only: list[str] | None = None, fetch: bool | None = None,
         for branch in branches:
             say(f"{project.name}@{branch} …")
             try:
+                if gitio.tag_shadows_branch(project.path, branch):
+                    say(f"  warning: a tag named {branch!r} exists; reading the branch "
+                        f"(refs/heads or refs/remotes/origin), not the tag")
+            except gitio.GitError:
+                pass
+            try:
                 inv = scan_branch(cfg, project, branch)
             except gitio.GitError as exc:
                 inv = BranchInventory(project=project.name, branch=branch, ref=branch,
@@ -387,4 +395,7 @@ def cli(args) -> int:
     for s in result.skipped:
         print(f"skipped {s['project']}: {s['reason']}")
     print(f"{len(result.inventories)} SBOMs under {cfg.out / 'sbom'}; inventory: {cfg.out / INVENTORY_FILE}")
+    if result.skipped:
+        from .pipeline import skipped_warning      # pipeline imports scan
+        print(skipped_warning(result.skipped))
     return 2 if failed else 0

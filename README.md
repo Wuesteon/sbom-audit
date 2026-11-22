@@ -6,6 +6,15 @@
 **Portfolio-wide SBOMs, vulnerability audit and secrets scan for every repository you own, as a
 Claude Code plugin.**
 
+```bash
+claude plugin install sbom-audit --marketplace Wuesteon/sbom-audit
+```
+
+This adds the marketplace `wuesteon-plugins` and installs the plugin in one step. The two-step form,
+`claude plugin marketplace add Wuesteon/sbom-audit`, then
+`claude plugin install sbom-audit@wuesteon-plugins`, does the same. Requirements and a first run are
+in [Quickstart](#quickstart).
+
 Point it at a folder of git repositories. It builds one CycloneDX SBOM per project and branch,
 audits them all at once against OSV, CISA KEV and endoflife.date, scans every repository's history
 for leaked credentials, optionally checks your Linux servers, and then helps Claude write an
@@ -49,6 +58,9 @@ Then, in Claude Code, from the folder that holds your repositories (or from insi
 /sbom-audit:setup     # discover repositories, write security/sbom-audit.toml
 /sbom-audit:run       # SBOMs, audit, secrets scan, reports, then an assessment
 ```
+
+Without Claude Code: `python3 <plugin>/scripts/sbom_audit_cli.py setup`, then `… run` (see
+[Without Claude Code](#without-claude-code)).
 
 A portfolio of about ten repositories takes a few minutes. Without gitleaks the secrets scan reports
 `skipped`, never "clean"; everything else works. Update with
@@ -201,13 +213,18 @@ For a written assessment without Claude, point `[assess]` at any OpenAI-compatib
 `python3 $CLI assess draft`. It writes `reports/<date>-assessment-proposal.md` and records nothing: every
 decision in it is an unverified proposal for you to check and then record with `vex add` or
 `secrets resolve`. Setup and providers: [Assessment drafts](docs/reference.md#assessment-drafts-without-claude-code-assess-draft).
-Instructions for coding agents: [AGENTS.md](AGENTS.md).
+Instructions for coding agents: [AGENTS.md](AGENTS.md). The full tested command sequence, and which
+features need a model: [Using sbom-audit without Claude Code](docs/without-claude-code.md).
 
 ## Documentation
 
 - **[Reference](docs/reference.md)**: configuration, the full pipeline, `issues.json`, scheduler,
   secrets, hosts, the `security/` folder, the EU Cyber Resilience Act (what is covered, what is checked, what stays
   with the manufacturer), limitations.
+- **[Limitations](docs/limitations.md)**: what the scan does not see (C/C++ and firmware, submodules,
+  vendored code), what is not tested yet (scheduler on a Linux server, CI other than GitHub Actions)
+  and what data leaves the machine in each mode. Read it before trusting a clean report.
+- **[Without Claude Code](docs/without-claude-code.md)**: the plain-CLI command sequence.
 - **[CHANGELOG](CHANGELOG.md)**: release notes.
 - **[CONTRIBUTING](CONTRIBUTING.md)**: layout, tests, plugin validation, evals and the release steps.
 

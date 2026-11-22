@@ -251,11 +251,62 @@ class AuditMdTests(unittest.TestCase):
         self.assertEqual(sorted((r["status"], r.get("basis")) for r in rep["runtimes"]),
                          [("EOL", None), ("minimum", "go.mod")])
         self.assertIn("| Runtimes / images past end-of-life | 1 |", section(text, "Summary"))
+        self.assertEqual(rep["stats"]["allowed_unsupported"], 0)     # Go is unchanged: not counted
         sec = section(text, "Runtimes and base images")
         self.assertIn("| build minimum (cycle EOL) | go | 1.20 | 2024-02-06 |", sec)
+        self.assertNotIn("Pinned runtime", sec)
         self.assertIn("zeta@main", sec)
         self.assertIn("not the Go that runs", sec)
         self.assertLess(sec.index("🔴 EOL"), sec.index("build minimum"))
+
+    def test_declared_floor_is_a_minimum_counted_as_allowed_but_unsupported(self):
+        """`requires-python` / `engines.node`: status `minimum`, not counted as EOL; an end-of-life lowest cycle is
+        counted as allowed but unsupported, and the row says "allows", never "runs"."""
+        eol = [{"project": "zeta", "branch": "main", "product": "python", "cycle": "3.8", "status": "minimum",
+                "basis": "requires-python", "cycle_status": "EOL", "eol_date": "2024-10-07", "latest": "3.8.20",
+                "source": "pyproject.toml: requires-python >=3.8", "declared": ["requires-python >=3.8"],
+                "pinned": []},
+               {"project": "alpha", "branch": "main", "product": "nodejs", "cycle": "18", "status": "minimum",
+                "basis": "engines.node", "cycle_status": "EOL", "eol_date": "2025-04-30", "latest": "18.20.8",
+                "source": "package.json: engines.node >=18", "declared": ["engines.node >=18"],
+                "pinned": [{"cycle": "22", "source": "Dockerfile: image node:22-alpine"}]},
+               {"project": "alpha", "branch": "main", "product": "nodejs", "cycle": "22", "status": "supported",
+                "eol_date": "2027-04-30", "latest": "22.21.1", "source": "Dockerfile: image node:22-alpine"},
+               {"project": "alpha", "branch": "main", "product": "python", "cycle": "3.12", "status": "minimum",
+                "basis": "requires-python", "cycle_status": "supported", "eol_date": "2028-10-31", "latest": "",
+                "source": "api/pyproject.toml: requires-python >=3.12", "declared": ["requires-python >=3.12"],
+                "pinned": []}]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            rep = report.build(cfg, [inv("zeta", "main", [LODASH]), inv("alpha", "main", [LODASH])], [], [], eol,
+                               [], SOURCES_OK)
+            text = self.write(Path(tmp), [], eol=eol)
+        self.assertEqual(rep["stats"]["allowed_unsupported"], 2)
+        self.assertEqual(sum(1 for r in rep["runtimes"] if r["status"] == "EOL"), 0)
+        floor = next(r for r in rep["runtimes"] if r["product"] == "nodejs" and r["cycle"] == "18")
+        self.assertEqual(floor["locations"][0]["pinned"], [{"cycle": "22", "source": "Dockerfile: image node:22-alpine"}])
+        summary = section(text, "Summary")
+        self.assertIn("| Runtimes / images past end-of-life | 0 |", summary)
+        self.assertIn("| Allowed but unsupported: declared minimum allows an end-of-life version (not counted as EOL) "
+                      "| 2 |", summary)
+        sec = section(text, "Runtimes and base images")
+        self.assertIn("| build minimum (cycle EOL) | python | 3.8 | 2024-10-07 |", sec)
+        self.assertIn("- zeta@main (pyproject.toml): build minimum: `requires-python >=3.8` allows Python 3.8, which "
+                      "reached end of life on 2024-10-07. The runtime actually used is not stated in this repository. "
+                      "Add `.python-version`, a Dockerfile image or a build SBOM to confirm it.", sec)
+        self.assertIn("- alpha@main (package.json): build minimum: `engines.node >=18` allows Node.js 18, which "
+                      "reached end of life on 2025-04-30. Pinned runtime: Node.js 22 (Dockerfile); its own row "
+                      "gives the end-of-life status.", sec)
+        self.assertIn("allows Python 3.12, which is supported until 2028-10-31. The runtime actually used", sec)
+        self.assertNotIn(" runs Python", sec)
+        self.assertNotIn("not the Go that runs", sec)            # the Go note only with a go.mod row
+
+    def test_allowed_unsupported_counts_no_go_minimum(self):
+        go = {"status": "minimum", "basis": "go.mod", "cycle_status": "EOL"}
+        self.assertFalse(report.allowed_unsupported(go))
+        self.assertTrue(report.allowed_unsupported({**go, "basis": "engines.node"}))
+        self.assertFalse(report.allowed_unsupported({**go, "basis": "engines.node", "cycle_status": "EOL soon"}))
+        self.assertFalse(report.allowed_unsupported({"status": "EOL", "basis": None}))
 
     def test_runtime_and_floating_sections(self):
         eol = [{"project": "zeta", "branch": "main", "product": "nodejs", "cycle": "18", "status": "EOL",
@@ -376,6 +427,121 @@ def assert_tables_well_formed(case: unittest.TestCase, text: str) -> None:
             cells = header.strip().strip("|").split(" | ")
             case.assertEqual(line, "|" + "---|" * len(cells), f"delimiter under {header!r}")
 
+
+def maven(version, manifest, purl_version=True):
+    """org.a:core as one manifest declares it; an unresolved Gradle declaration has no version in the purl."""
+    purl = "pkg:maven/org.a/core" + (f"@{version}" if version and purl_version else "")
+    return Component(kind="package", ecosystem="Maven", name="core", version=version, purl=purl,
+                     scope="required", locations=[manifest], direct=True)
+
+
+class SameCoordinateTwoManifestsTests(unittest.TestCase):
+    """One package declared in a pom.xml and a build.gradle: two inventory rows (evidence), one package in
+    every count of distinct packages, one INVENTORY.md line naming both manifests."""
+    POM = maven("${core.version}", "pom.xml")
+    GRADLE = maven("", "build.gradle")
+
+    def build(self, invs, findings=()):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp), production=("jvm",))
+            rep = report.build(cfg, invs, list(findings), [], [], [], SOURCES_OK)
+            cfg.out.mkdir(parents=True)
+            inventory = report.write_inventory_md(cfg, invs, cfg.out).read_text(encoding="utf-8")
+            audit = report.write_audit_md(rep, cfg.out).read_text(encoding="utf-8")
+        return rep, inventory, audit
+
+    def test_inventory_md_shows_one_line_naming_both_manifests(self):
+        invs = [inv("jvm", "main", [self.POM, self.GRADLE])]
+        self.assertEqual(len(invs[0].components), 2)                       # both rows stay
+        _, text, _ = self.build(invs)
+        lines = [l for l in text.splitlines() if l.startswith("| org.a:core")]
+        self.assertEqual(lines, ["| org.a:core | Maven | same coordinate, 2 manifests: `pom.xml`, `build.gradle` "
+                                 "| unresolved | required |"])
+        self.assertIn("**Direct dependencies** (1;", text)
+        assert_tables_well_formed(self, text)
+
+    def test_different_resolved_versions_stay_separate_lines(self):
+        _, text, _ = self.build([inv("jvm", "main", [maven("1.0", "pom.xml"), maven("2.0", "build.gradle")])])
+        lines = [l for l in text.splitlines() if l.startswith("| org.a:core")]
+        self.assertEqual(lines, ["| org.a:core | Maven | `build.gradle` | 2.0 | required |",
+                                 "| org.a:core | Maven | `pom.xml` | 1.0 | required |"])
+        self.assertIn("2 distinct packages (Maven 2; 2 direct, 0 dev-only)", text)
+
+    def test_branch_package_total_counts_the_coordinate_once(self):
+        _, text, _ = self.build([inv("jvm", "main", [self.POM, self.GRADLE, pkg("lodash", "4.17.21")])])
+        self.assertIn("2 distinct packages in 3 manifest rows (Maven 1, npm 1; 2 direct, 0 dev-only)", text)
+
+    def test_branch_line_uses_the_singular_for_one(self):
+        _, text, _ = self.build([inv("jvm", "main", [self.POM, self.GRADLE])])
+        self.assertIn("1 distinct package in 2 manifest rows (Maven 1;", text)
+        self.assertNotIn("1 distinct packages", text)
+        self.assertIn("0 images, 0 runtime pins", text)
+
+    def test_release_package_total_counts_the_coordinate_once(self):
+        rel = BranchInventory(project="jvm", branch="tags/v1", ref="refs/tags/v1", commit="abc1234def",
+                              components=[self.POM, self.GRADLE], release={"tag": "v1", "date": "2026-01-01",
+                                                                           "index": 0})
+        _, text, _ = self.build([inv("jvm", "main", [self.POM]), rel])
+        self.assertIn("| Distinct packages |", text)
+        self.assertIn("| jvm | `v1` | abc1234 | 2026-01-01 | 1 | 0 | 0 | – |", text)
+
+    def test_audit_json_stats_distinct_versus_declarations(self):
+        rep, _, audit = self.build([inv("jvm", "main", [self.POM, self.GRADLE]),
+                                    inv("jvm", "dev", [self.POM, self.GRADLE])])
+        st = rep["stats"]
+        self.assertEqual(st["unique_package_versions"], 1)       # distinct over the portfolio
+        self.assertEqual(st["occurrences"], 4)                   # inventory rows, deliberately
+        self.assertEqual(st["direct_dependencies"], 2)           # distinct per project and branch
+        self.assertEqual(st["unresolved_versions"], 2)           # one per branch
+        self.assertEqual([r["count"] for r in rep["unresolved_versions"]], [1, 1])
+        self.assertEqual(rep["unresolved_versions"][0]["packages"][0]["manifests"], ["pom.xml", "build.gradle"])
+        self.assertIn("| Distinct package versions (ecosystem, name, version) | 1 |", audit)
+
+    def test_distinct_package_versions_say_how_many_were_not_checked(self):
+        action = Component(kind="package", ecosystem="github", name="actions/checkout", version="v4",
+                           purl="pkg:github/actions/checkout@v4", scope="required", locations=[".github/x.yml"])
+        components = [pkg("lodash", "4.17.21"), pkg("zlib", "1.3", ecosystem="generic", manifest="bom.json"),
+                      pkg("fmt", "10.0", ecosystem="vcpkg", manifest="bom.json"), action, self.POM]
+        rep, _, audit = self.build([inv("jvm", "main", components), inv("jvm", "dev", components)])
+        st = rep["stats"]
+        self.assertEqual(st["unique_package_versions"], 5)
+        self.assertEqual(st["unique_package_versions_unchecked"], 4)   # generic, vcpkg, action, unresolved
+        self.assertIn("| Distinct package versions (ecosystem, name, version) | 5 |", audit)
+        self.assertIn("| … of these not checked for vulnerabilities (OSV cannot match the type, GitHub Actions, "
+                      "version not resolved) | 4 |", audit)
+
+    def test_no_unchecked_row_when_every_version_was_checked(self):
+        rep, _, audit = self.build([inv("jvm", "main", [maven("1.0", "pom.xml")])])
+        self.assertEqual(rep["stats"]["unique_package_versions_unchecked"], 0)
+        self.assertNotIn("of these not checked", audit)
+
+    def test_status_counts_are_not_inflated(self):
+        from sbomaudit import status
+        resolved_pom, resolved_gradle = maven("1.0", "pom.xml"), maven("1.0", "build.gradle")
+        advisory = [vuln("GHSA-core", "HIGH", 7.5, ["1.1"])]
+        rep, _, audit = self.build(
+            [inv("jvm", "main", [self.POM, self.GRADLE]), inv("jvm", "dev", [resolved_pom, resolved_gradle])],
+            [Finding("jvm", "dev", resolved_pom, advisory), Finding("jvm", "dev", resolved_gradle, advisory)])
+        self.assertEqual(len(rep["vulnerabilities"]), 1)
+        self.assertEqual(sorted(l["manifest"] for l in rep["vulnerabilities"][0]["locations"]),
+                         ["build.gradle", "pom.xml"])
+        counts = status.build(rep, secrets=None, previous=None, duration_s=1.0, exit_code=1, run_host="h",
+                              mode="full")["counts"]
+        self.assertEqual((counts["vulnerable"], counts["critical_high_production"], counts["unresolved_versions"]),
+                         (1, 1, 1))
+        self.assertIn("| Vulnerable package versions | 1 |", audit)
+
+    def test_sbom_check_counts_component_entries_and_says_so(self):
+        from sbomaudit import sbomquality
+        entries = [{"bom-ref": "a", "type": "library", "name": "core", "version": "${core.version}",
+                    "purl": "pkg:maven/org.a/core@${core.version}"},
+                   {"bom-ref": "b", "type": "library", "name": "core", "purl": "pkg:maven/org.a/core"}]
+        result = sbomquality.check({"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+                                    "components": entries})
+        self.assertEqual((result["coverage"]["components"], result["coverage"]["version"]), (2, 1))
+        self.assertIn("  data fields of 2 component entries:", sbomquality.render("x.cdx.json", result))
+        text = sbomquality.cra_note(sbomquality.summary(result))         # CRA.md's SBOM evidence note
+        self.assertIn("2 component entries: version 50%", text)
 
 
 class MdEscapeTests(unittest.TestCase):

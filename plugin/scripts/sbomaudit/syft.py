@@ -39,6 +39,7 @@ ECOSYSTEM_BY_PURL_TYPE = {
     "deno": "deno",
 }
 SCOPE_PROPERTY = "sbom-audit:scope"
+SYFT_TIMEOUT = 1800   # seconds, one syft run over one exported branch
 
 
 def purl_type(purl: str) -> str:
@@ -55,9 +56,11 @@ def run(src: Path, include_dev: bool, exclude: list[str] | None = None) -> dict:
     for pattern in exclude or []:
         cmd += ["--exclude", pattern]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=SYFT_TIMEOUT)
     except FileNotFoundError as exc:
         raise ToolError("syft", None, "syft is not installed") from exc
+    except subprocess.TimeoutExpired:
+        raise ToolError("syft", None, f"timed out after {SYFT_TIMEOUT}s") from None
     if proc.returncode != 0:
         detail = (proc.stderr.strip().splitlines() or ["no output"])[-1]
         raise ToolError("syft", proc.returncode, detail)

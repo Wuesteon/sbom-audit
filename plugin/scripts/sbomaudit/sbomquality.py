@@ -406,11 +406,11 @@ def share(part: int, whole: int) -> str:
 
 
 def coverage_text(s: dict) -> str:
-    """One line for evidence notes: '412 components: version 100%, purl 98%, ...; dependency graph: yes'."""
+    """One line for evidence notes: '412 component entries: version 100%, purl 98%, ...; dependency graph: yes'."""
     n = s.get("components", 0)
     parts = [f"{LABELS[k]} {share(s.get(k, 0), n)}" for k in ("version", "purl", "licence", "hash", "supplier",
                                                                 "in_graph")]
-    head = f"{n} components" + (f" (+{s['files']} files)" if s.get("files") else "")
+    head = f"{n} component entries" + (f" (+{s['files']} files)" if s.get("files") else "")
     flags = ", ".join(f"{label} {'yes' if s.get(key) else 'no'}"
                       for key, label in (("graph", "dependency graph"), ("timestamp", "timestamp"),
                                          ("author", "author/tool"), ("subject", "subject with version")))
@@ -428,10 +428,11 @@ def inventory_section(inventories) -> list[str]:
         return []
     L = ["## SBOM quality", "",
          "Structural check and data-field coverage of each SBOM written by this run (`sbom check` for details). "
-         "Shares are of the components that are not plain files; a gap means the source data does not carry the "
+         "Shares are of the component entries that are not plain files (a package declared in two manifests can be "
+         "two entries); a gap means the source data does not carry the "
          "field, nothing is filled in. Which NTIA and BSI TR-03183-2 data fields the columns correspond to: "
          "docs/reference.md, \"SBOM quality\".", "",
-         "| Project | Branch | Valid | Components | Version | purl | Licence | Hash | Supplier | In graph |",
+         "| Project | Branch | Valid | Component entries | Version | purl | Licence | Hash | Supplier | In graph |",
          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for inv in rows:
         q = inv.sbom_quality
@@ -486,7 +487,7 @@ def render(name: str, result: dict) -> list[str]:
         cov = result["coverage"]
         n = cov["components"]
         files = cov["files"]
-        L.append(f"  data fields of {n} components"
+        L.append(f"  data fields of {n} component entries"
                  + (f" (plus {files} file {'entry' if files == 1 else 'entries'}, not counted)" if files else "")
                  + ":")
         for k in FIELDS:

@@ -73,8 +73,9 @@ def resolve_install_path(installed_json: Path, plugin_id: str) -> Path | None:
 
 
 def next_fire(now: dt.datetime) -> str:
-    """The coming Saturday 03:00 in local time (today when it is Saturday before 03:00)."""
-    now = now.astimezone()
+    """The coming Saturday 03:00 in the zone of `now` (local for a naive `now`; today when it is Saturday
+    before 03:00)."""
+    now = now if now.tzinfo else now.astimezone()
     days = (FIRE_WEEKDAY - now.weekday()) % 7
     fire = (now + dt.timedelta(days=days)).replace(hour=FIRE_HOUR, minute=0, second=0, microsecond=0)
     if fire <= now:
@@ -104,7 +105,7 @@ def missed_fire(state: dict | None, now: dt.datetime) -> str | None:
     since = state.get("last_fired") or state.get("installed_at")
     when = status._parse(since)
     if when is None or status._elapsed(when, now) > dt.timedelta(days=status.SCHEDULER_MISSED_DAYS):
-        return (since or "install")[:10]
+        return status._scheduler_day(since, now) or (since or "install")[:10]     # local day, not the UTC text
     return None
 
 
@@ -151,18 +152,36 @@ def update_state(**fields):
         raise
 
 
+def _version_key(name):
+    try:
+        return tuple(int(part) for part in name.split("."))
+    except ValueError:
+        return ()
+
+
 def install_path():
+    candidates = []
     if PLUGIN_ID:
         try:
             with open(os.path.expanduser("~/.claude/plugins/installed_plugins.json"), encoding="utf-8") as fh:
                 entries = json.load(fh)["plugins"][PLUGIN_ID]
             entries = [e for e in entries if isinstance(e, dict) and e.get("installPath")]
-            path = max(entries, key=lambda e: str(e.get("lastUpdated") or ""))["installPath"]
-            if os.path.isfile(os.path.join(path, CLI)):
-                return path
+            candidates.append(max(entries, key=lambda e: str(e.get("lastUpdated") or ""))["installPath"])
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
-    return FALLBACK_ROOT if os.path.isfile(os.path.join(FALLBACK_ROOT, CLI)) else None
+        # FALLBACK_ROOT is the version directory of the install that wrote this file: a plugin update or a
+        # cache cleanup can remove it, so the newest version directory next to it comes first
+        parent = os.path.dirname(FALLBACK_ROOT.rstrip(os.sep))
+        try:
+            siblings = sorted(os.listdir(parent), key=_version_key, reverse=True)
+        except OSError:
+            siblings = []
+        candidates += [os.path.join(parent, name) for name in siblings if _version_key(name)]
+    candidates.append(FALLBACK_ROOT)
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, CLI)):
+            return path
+    return None
 
 
 def python(env):
@@ -203,6 +222,7 @@ def run_once():
             return 127
         log.write("plugin install: " + install + "\\n")
         log.flush()
+        update_state(plugin_install=install)
         code = subprocess.call([py, os.path.join(install, CLI), "run", "--out", OUT],
                                stdout=log, stderr=subprocess.STDOUT, cwd=OUT, env=env)
         log.write("== exit " + str(code) + " ==\\n")

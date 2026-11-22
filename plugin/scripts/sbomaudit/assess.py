@@ -17,7 +17,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import scheduler
+from . import scheduler, sensitive
 from .config import Config
 from .secrets.findings import KEY_FILE
 
@@ -27,6 +27,10 @@ SKILL_PROMPT = "/sbom-audit:assess --headless"
 # `.cache/` holds the fingerprint key (KEY_FILE) and raw caches: denied as a tool rule, said in the prompt, and
 # a proposal that still carries key material is dropped (three layers, R95).
 CACHE_DENY_RULE = "Read(./.cache/**)"
+# Denied everywhere, whatever an allow rule says (deny wins in Claude Code): caches, dotenv files, private keys
+# and credential stores. `Read(//**/...)` is an absolute pattern; Read rules also govern Grep and Glob.
+# The secret-bearing paths are one list with `code` (sensitive.py), which never searches or prints them.
+DENY_RULES = (CACHE_DENY_RULE, "Read(//**/.cache/**)", *sensitive.deny_rules())
 CACHE_SENTENCE = "Never read, search or list anything under .cache/."
 CACHE_MATERIAL_REASON = "proposal contained cache material"
 _MIN_MATERIAL_CHARS = 16
@@ -36,12 +40,19 @@ PROBE_TIMEOUT = 120
 PROBE_BUDGET_USD = "0.50"
 # Hard limits for every child (R75): `--allowedTools` only adds allow rules, so the tool set, the permission
 # mode, the prompts and the user's MCP servers are pinned too. Never `--restricted` (it drops plugin skills).
-CHILD_TOOLS = "Read,Grep,Glob,WebSearch,WebFetch,Bash"
+CHILD_TOOLS = "Read,Grep,Glob,WebFetch,Bash"
 LIMIT_FLAGS = ["--tools", CHILD_TOOLS, "--permission-mode", "dontAsk", "--permission-prompts", "none",
                "--strict-mcp-config"]
-# Reads and fetches are scoped (R75): `Read(//<abs>/**)` also covers Grep and Glob, and anything outside the
-# portfolio root and the evidence folder is denied, so injected report or page text can't make the child read
-# `~/.ssh` and send it on. WebFetch reaches only the advisory sources below; WebSearch stays unscoped.
+# Reads and fetches are scoped (R75): `Read(//<abs>/**)` also covers Grep and Glob. The headless child reads
+# only the evidence folder; project code it sees through the read-only `code` subcommands (tracked files of the
+# audited refs, `.cache/` and secrets left to that command). So injected report or page text can't make it read
+# `~/.ssh` or a checkout's `.env` and send it on. WebFetch reaches only HEADLESS_FETCH_DOMAINS: the advisory
+# databases the assess steps cite, `api.github.com` (GHSA records) rather than `github.com` (whose pages anyone
+# can write to). No WebSearch: a search hands the child arbitrary pages and carries text out in the query; the
+# 30-day advisory sweep stays in the interactive /sbom-audit:assess.
+HEADLESS_FETCH_DOMAINS = ("osv.dev", "api.osv.dev", "api.github.com", "nvd.nist.gov", "services.nvd.nist.gov",
+                          "www.cisa.gov", "endoflife.date", "security-tracker.debian.org", "ubuntu.com")
+# The interactive autonomous mode (integration.py) keeps the wider list, with a user watching.
 FETCH_DOMAINS = ("osv.dev", "api.osv.dev", "github.com", "nvd.nist.gov", "www.cisa.gov", "endoflife.date",
                  "security-tracker.debian.org", "ubuntu.com", "www.npmjs.com", "pypi.org", "jsr.io")
 STATE_KEY = "print_mode_skills"
@@ -52,15 +63,16 @@ _FRONTMATTER = re.compile(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", re.DOTALL)
 
 
 def command(cfg: Config, cli_path: Path, prompt: str) -> list[str]:
-    """The child's argv. Reads are limited to the portfolio root and the evidence folder, fetches to
-    FETCH_DOMAINS. Each read-only subcommand is allowed with the CLI path unquoted (the fallback prompt's
-    form) and double-quoted (the form a skill body expands to when `${CLAUDE_PLUGIN_ROOT}` is substituted)."""
+    """The child's argv. Reads are limited to the evidence folder (DENY_RULES denied everywhere), fetches to
+    HEADLESS_FETCH_DOMAINS, no WebSearch. Each read-only subcommand is allowed with the CLI path unquoted (the
+    fallback prompt's form) and double-quoted (the form a skill body expands to when `${CLAUDE_PLUGIN_ROOT}` is
+    substituted)."""
     cli = Path(cli_path).as_posix()
     rules = [f"Bash(python3 {path} {sub}:*)" for sub in READ_ONLY_SUBCOMMANDS for path in (cli, f'"{cli}"')]
-    reads = [f"Read(/{p.as_posix()}/**)" for p in dict.fromkeys(Path(d).resolve() for d in (cfg.root, cfg.out))]
-    fetches = [f"WebFetch(domain:{d})" for d in FETCH_DOMAINS]
-    tools = ",".join([*reads, "WebSearch", *fetches, *rules])
-    return ["claude", "-p", prompt, "--allowedTools", tools, "--disallowedTools", CACHE_DENY_RULE,
+    reads = [f"Read(/{Path(cfg.out).resolve().as_posix()}/**)"]
+    fetches = [f"WebFetch(domain:{d})" for d in HEADLESS_FETCH_DOMAINS]
+    tools = ",".join([*reads, *fetches, *rules])
+    return ["claude", "-p", prompt, "--allowedTools", tools, "--disallowedTools", ",".join(DENY_RULES),
             "--max-budget-usd", str(cfg.schedule.assess_budget_usd), "--output-format", "json", *LIMIT_FLAGS]
 
 

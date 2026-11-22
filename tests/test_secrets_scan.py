@@ -207,6 +207,22 @@ class ScanStateTests(unittest.TestCase):
         self.assertEqual(again["repos"]["alpha-app"]["tips"], first["repos"]["alpha-app"]["tips"])
         self.assertEqual(len(again["findings"]), len(first["findings"]))
 
+    def test_stored_tip_that_is_not_a_full_object_id_is_ignored(self):
+        first = run_scan(self.cfg, full=False)
+        doc = store.read(self.cfg.out)
+        real = doc["repos"]["alpha-app"]["tips"]
+        # `^HEAD` would hide the whole history; the others are option or revision injection into --log-opts
+        forged = ["HEAD", "main", real[0][:12], real[0].upper(), "--output=/tmp/x", f"{real[0]} --all",
+                  f"{real[0]}^", "", 7]
+        doc["repos"]["alpha-app"]["tips"] = forged
+        store.write(self.cfg.out, doc)
+        recorder = Recorder()
+        with mock.patch.object(eng, "scan_repo", recorder):
+            run_scan(self.cfg, full=False)
+        opts = recorder.opts("alpha-app")
+        self.assertEqual(opts.split(), ["--all"])
+        self.assertTrue(first["findings"], "fixture has findings")
+
     def test_rules_change_forces_full(self):
         run_scan(self.cfg, full=False)
         doc = store.read(self.cfg.out)

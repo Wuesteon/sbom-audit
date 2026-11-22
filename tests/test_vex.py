@@ -7,6 +7,7 @@ import io
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from sbomaudit import cli, vex
@@ -70,6 +71,23 @@ class AddTests(unittest.TestCase):
             self.assertEqual(vex.load_all(out)[0].status, "affected")
 
 
+    def test_no_author_and_no_git_identity_refuses(self):
+        """Never a made-up author such as "sbom-audit": the decision needs a person."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with unittest.mock.patch.object(vex, "default_author", return_value=None):
+                with self.assertRaisesRegex(ValueError, "--author"):
+                    vex.add(out, "app", PURL, "CVE-2021-23337", "fixed")
+                self.assertFalse((out / "vex").exists())
+                vex.add(out, "app", PURL, "CVE-2021-23337", "fixed", author="alice@example.invalid")
+            self.assertEqual(json.loads(vex.path(out, "app").read_text())["author"], "alice@example.invalid")
+
+    def test_default_author_is_none_without_git_identity(self):
+        empty = unittest.mock.Mock(stdout="")
+        with unittest.mock.patch.object(vex.subprocess, "run", return_value=empty):
+            self.assertIsNone(vex.default_author())
+
+
 class LoadTests(unittest.TestCase):
     def test_malformed_vex_file_aborts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,6 +137,19 @@ class ApplyTests(unittest.TestCase):
         kept, suppressed = vex.apply([on_main, on_dev], statements)
         self.assertEqual([f.branch for f in kept], ["main"])
         self.assertEqual([s.finding.branch for s in suppressed], ["dev"])
+
+    def test_apply_branch_suffix_with_slash_is_percent_encoded(self):
+        """A branch or release label with "/" (`tags/v1`, `feature/x`) is written percent-encoded after `@`."""
+        self.assertEqual(vex.split_product(f"{PURL}@tags%2Fv1.0"), (PURL, "tags/v1.0"))
+        self.assertEqual(vex.product_for_branch(PURL, "feature/x"), f"{PURL}@feature%2Fx")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            vex.add(out, "app", vex.product_for_branch(PURL, "tags/v1"), "CVE-2021-23337", "fixed")
+            statements = vex.load_all(out)
+        kept, suppressed = vex.apply([finding("CVE-2021-23337", branch="main"),
+                                      finding("CVE-2021-23337", branch="tags/v1")], statements)
+        self.assertEqual([f.branch for f in kept], ["main"])
+        self.assertEqual([s.finding.branch for s in suppressed], ["tags/v1"])
 
     def test_apply_subcomponent_matches_with_or_without_version(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,6 +201,19 @@ class ApplyTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_vex_add_command_without_author_or_git_identity_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "PROJECTS"
+            make_repo(root, "app", {"README.md": "hi\n"}, remote="git@github.com:Example-Org/App.git")
+            out = root / "security"
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                 unittest.mock.patch.object(vex, "default_author", return_value=None):
+                rc = cli.main(["vex", "add", "app", "CVE-2021-23337", "fixed", "--out", str(out)])
+            self.assertEqual(rc, 2)
+            self.assertIn("--author", buf.getvalue())
+            self.assertFalse((out / "vex").exists())
+
     def test_vex_add_command_resolves_project_purl(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve() / "PROJECTS"

@@ -186,6 +186,21 @@ class RunTests(unittest.TestCase):
             shutil.rmtree(cfg_dir)
         self.assertEqual(snapshot(real), before, "the run touched the real ~/.config/sbom-audit")
 
+    def test_skipped_projects_keep_the_exit_code_and_end_with_a_warning(self):
+        result = scan.ScanResult(inventories=[inventory()], generated_at="2026-11-06T10:00:00Z",
+                                 skipped=[{"project": "legacy", "reason": "none of main, dev exist"},
+                                          {"project": "old", "reason": "none of main, dev exist"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(Path(tmp))
+            said: list[str] = []
+            with tools_present(), mock.patch.object(pipeline.scan, "scan", return_value=result), \
+                 mock.patch.object(pipeline.matching, "run_osv_scanner", return_value={"results": []}), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                rc = pipeline.run(cfg, http=offline, log=said.append)
+        self.assertEqual(rc, pipeline.EXIT_CLEAN)
+        self.assertEqual(said[-1], "WARNING: incomplete run: 2 projects not scanned (legacy, old; reasons above); "
+                                   "the exit code covers only the scanned projects")
+
     def test_run_writes_status_and_commits_written_files(self):
         def prepare(cfg):
             git_init(cfg.out)
@@ -535,6 +550,8 @@ class RunTests(unittest.TestCase):
                 rc = cli.main(["--out", str(out), "status"])
             self.assertEqual(rc, 2)
             self.assertIn("no status.json yet: run /sbom-audit:setup, then /sbom-audit:run", buf.getvalue())
+            self.assertIn("sbom_audit_cli.py setup, then run)", buf.getvalue())     # the CLI form too
+            self.assertIn("python3 ", buf.getvalue())
             self.assertEqual(list(out.iterdir()), [])
             doc = status.build(status.empty_report(), secrets=None, previous=None, duration_s=1.5, exit_code=0,
                                run_host="box", mode="portfolio")
@@ -555,7 +572,9 @@ class RunTests(unittest.TestCase):
                  contextlib.redirect_stdout(buf):
                 rc = cli.main(["--out", str(out), "status"])
             self.assertEqual(rc, 0)
-            self.assertIn(f"scheduler did not run since {fired[:10]}", buf.getvalue())
+            local_day = dt.datetime.fromisoformat(fired).astimezone().date().isoformat()    # not the UTC text
+            self.assertIn(f"scheduler did not run since {local_day} (weekly run 5 days overdue)", buf.getvalue())
+            self.assertIn("- OVERDUE OR FAILING: scheduler did not run since", buf.getvalue())
             (out / "status.json").write_text("{}")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -610,7 +629,7 @@ class RunTests(unittest.TestCase):
             if "endoflife.date" in url:
                 raise OSError("timeout")
             return {}
-        node = runtime_component("nodejs", "18", "package.json", "engines.node >=18")
+        node = runtime_component("nodejs", "18", ".nvmrc", ".nvmrc = 18")
         with tempfile.TemporaryDirectory() as tmp:
             rc, cfg = self.run_with(Path(tmp), {"return_value": {"results": []}},
                                     invs=[inventory(components=(LODASH, node))], http=flaky)

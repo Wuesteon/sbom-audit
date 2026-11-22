@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import unquote
 
-from . import goread, gradleread
+from . import ecosystems, goread, gradleread
 from .model import Component
 from .versions import min_version_from_range, norm_py, runtime_cycle
 
@@ -89,6 +89,19 @@ def walk(src: Path, ignore: list[str]):
             path = Path(dirpath) / name
             if _inside_file(root, path) is not None:
                 yield rel, path
+
+
+def manifest_files(src: Path, ignore: list[str]) -> dict[str, list[str]]:
+    """OSV ecosystem -> repo-relative manifest and lockfile paths (`ecosystems.MANIFEST_GLOBS`), walked like
+    the readers walk (build, vendored and ignored folders left out), at most MANIFESTS_PER_ECOSYSTEM each.
+    `incident` uses it to tell a branch without an ecosystem from one whose manifests yielded no package."""
+    found: dict[str, list[str]] = {}
+    for rel, path in walk(src, ignore):
+        for eco in ecosystems.manifest_ecosystems(path.name):
+            paths = found.setdefault(eco, [])
+            if len(paths) < ecosystems.MANIFESTS_PER_ECOSYSTEM:
+                paths.append(rel)
+    return {eco: sorted(paths) for eco, paths in found.items()}
 
 
 def _read(path: Path) -> str:
@@ -354,8 +367,9 @@ def _pyproject_name(d: dict) -> str | None:
 
 
 def self_packages(src: Path) -> set[tuple[str, str]]:
-    """(ecosystem, key) of every package the tree itself defines: npm and PyPI names, Go module paths and
-    Maven `groupId:artifactId` (the reactor modules); the key is `package_key`'s."""
+    """(ecosystem, key) of every package the tree itself defines: npm and PyPI names, Go module paths,
+    Maven `groupId:artifactId` (the reactor modules) and the `name` of each `vcpkg.json` (Syft's vcpkg
+    cataloger reports only that name and version, the project itself); the key is `package_key`'s."""
     out: set[tuple[str, str]] = set()
     for rel, path in walk(src, []):
         try:
@@ -371,6 +385,10 @@ def self_packages(src: Path) -> set[tuple[str, str]]:
                 module = parse_go_mod(_read(path))["module"]
                 if module:
                     out.add(("Go", module))
+            elif path.name == "vcpkg.json":
+                name = _load_json_lenient(_read(path)).get("name")
+                if isinstance(name, str) and name:
+                    out.add(("vcpkg", package_key("vcpkg", name)))
         except (ValueError, tomllib.TOMLDecodeError):
             continue
     poms = maven_poms(src, [])
@@ -489,6 +507,8 @@ def package_key(ecosystem: str, name: str, purl: str = "") -> str:
         return norm_py(name)
     if ecosystem == "Maven":
         return maven_ga(purl) or name
+    if ecosystem == "vcpkg":            # vcpkg port names are lower case; Syft may capitalise the name
+        return name.lower()
     return name
 
 

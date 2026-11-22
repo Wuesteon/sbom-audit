@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import __version__, sbomimport
 from .cra import MANUFACTURER, OBLIGATIONS
+from . import hint as cli_hint
 from .cache import atomic_write
 
 REPORT_FILE = "REPORT.html"
@@ -55,6 +56,12 @@ STRINGS: dict[str, dict] = {
         "s_evidence": "5. Evidence mapping (EU Cyber Resilience Act)",
         "verdict_action": "Action needed now.",
         "verdict_clear": "No finding in this run requires immediate action.",
+        "verdict_clear_gaps": "No finding among the checked packages requires immediate action; not checked: {what} "
+                              "(see Limits).",
+        "verdict_gap_projects": ["{n} project", "{n} projects"],
+        "verdict_gap_branches": ["the code in {n} branch (submodules, C/C++ or firmware)",
+                                 "the code in {n} branches (submodules, C/C++ or firmware)"],
+        "verdict_gap_unmatched": ["{n} package OSV cannot match", "{n} packages OSV cannot match"],
         "verdict_incomplete": "No urgent finding in the data that is available, but this run is incomplete: "
                               "the gaps below may hide findings.",
         "verdict_none": "There is no audit data to report on.",
@@ -75,6 +82,8 @@ STRINGS: dict[str, dict] = {
         "m_short_secrets": "leaked-credential findings",
         "m_short_hosts": "host findings",
         "eol_soon": "{n} more reach end of life soon",
+        "eol_allowed": ("{n} allowed but unsupported: a declared minimum (engines.node, requires-python) allows an "
+                        "end-of-life version; not counted here, what runs is not stated or has its own row"),
         "incomplete": "incomplete: {what}",
         "inc_osv": "{n} branch(es) could not be matched against OSV",
         "inc_eol": "{n} endoflife.date lookup(s) failed",
@@ -111,12 +120,13 @@ STRINGS: dict[str, dict] = {
         "reason": {"secret_a": "Leaked credential, class A", "kev": "Actively exploited (KEV)",
                    "host_critical": "Critical host finding", "critical_high_production": "CRITICAL/HIGH in production",
                    "secret_b": "Leaked credential, class B", "eol": "End of life", "floating_tag": "Floating image tag",
-                   "secret_context": "Possible credential in test, docs or vendored files", "other": "Other"},
+                   "secret_context": "Possible credential in test, docs or vendored files", "other": "Other",
+                   "eol_minimum": "Declared minimum allows an end-of-life version"},
         "fix": {"upgrade": "Upgrade to {target}", "no_fix_released": "No fix released yet; mitigate or decide",
                 "rotate": "Rotate the credential at the provider", "upgrade_runtime": "Move to a supported version",
                 "pin": "Pin the image to a version or digest", "apt_upgrade": "Install the update {target}",
                 "reboot": "Reboot (the fixed kernel is installed)", "no_fix_installable": "No installable fix yet",
-                "review": "Review and decide"},
+                "review": "Review and decide", "raise_minimum": "Raise the declared minimum to a supported version"},
         "fix_unfixed": "{n} advisory(ies) without a fix",
         "dep_direct": "direct dependency",
         "dep_transitive": "transitive dependency",
@@ -216,6 +226,11 @@ STRINGS: dict[str, dict] = {
         "limit_imports_off": "Not built from the scanned commit, or with no commit recorded ({n}): {which}.",
         "limit_actions": "GitHub Actions used in workflows are inventoried but not checked for vulnerabilities "
                          "(OSV does not match versions for this ecosystem): {n} in this run's branches.",
+        "limit_gaps": "Not seen by the repository scan: {what}. That code is not in the SBOMs and not checked for "
+                      "vulnerabilities; for C/C++ and firmware, import a build SBOM (see AUDIT.md Notes).",
+        "limit_gap_projects": "{n} projects not scanned (no configured branch)",
+        "limit_gap_branches": "{n} branches with git submodules, C/C++ code or firmware manifests",
+        "limit_gap_unmatched": "{n} packages of types OSV holds no advisories for (generic, GitHub, Conan, vcpkg)",
         "e_intro": "Where the artefacts of this folder serve the EU Cyber Resilience Act (Regulation (EU) "
                    "2024/2847).",
         "e_caveat": "Evidence tooling, not legal advice: the plugin produces the artefacts an assessment asks for; "
@@ -356,6 +371,12 @@ STRINGS: dict[str, dict] = {
         "s_evidence": "5. Nachweiszuordnung (EU Cyber Resilience Act)",
         "verdict_action": "Handlungsbedarf jetzt.",
         "verdict_clear": "Kein Befund dieses Laufs erfordert sofortiges Handeln.",
+        "verdict_clear_gaps": "Kein Befund unter den geprüften Paketen erfordert sofortiges Handeln; nicht geprüft: "
+                              "{what} (siehe Grenzen).",
+        "verdict_gap_projects": ["{n} Projekt", "{n} Projekte"],
+        "verdict_gap_branches": ["der Code in {n} Branch (Submodule, C/C++ oder Firmware)",
+                                 "der Code in {n} Branches (Submodule, C/C++ oder Firmware)"],
+        "verdict_gap_unmatched": ["{n} Paket, das OSV nicht zuordnen kann", "{n} Pakete, die OSV nicht zuordnen kann"],
         "verdict_incomplete": "In den verfügbaren Daten gibt es keinen dringenden Befund, aber dieser Lauf ist "
                               "unvollständig: Die unten genannten Lücken können Befunde verdecken.",
         "verdict_none": "Es liegen keine Prüfdaten vor.",
@@ -377,6 +398,9 @@ STRINGS: dict[str, dict] = {
         "m_short_secrets": "Befunde zu offengelegten Zugangsdaten",
         "m_short_hosts": "Server-Befunde",
         "eol_soon": "{n} weitere erreichen bald das Support-Ende",
+        "eol_allowed": ("{n} erlaubt, aber ohne Support: eine erklärte Mindestversion (engines.node, requires-python) "
+                        "erlaubt eine Version ohne Support; hier nicht mitgezählt, die tatsächlich laufende Version "
+                        "ist nicht angegeben oder hat eine eigene Zeile"),
         "incomplete": "unvollständig: {what}",
         "inc_osv": "{n} Branch(es) konnten nicht mit OSV abgeglichen werden",
         "inc_eol": "{n} Abfrage(n) bei endoflife.date fehlgeschlagen",
@@ -415,13 +439,15 @@ STRINGS: dict[str, dict] = {
                    "host_critical": "Kritischer Server-Befund", "critical_high_production": "CRITICAL/HIGH in Produktion",
                    "secret_b": "Offengelegte Zugangsdaten, Klasse B", "eol": "Support-Ende (End of Life)",
                    "floating_tag": "Nicht fixiertes Image-Tag",
-                   "secret_context": "Mögliche Zugangsdaten in Test-, Doku- oder Fremdcode", "other": "Sonstiges"},
+                   "secret_context": "Mögliche Zugangsdaten in Test-, Doku- oder Fremdcode", "other": "Sonstiges",
+                   "eol_minimum": "Erklärte Mindestversion erlaubt eine Version ohne Support"},
         "fix": {"upgrade": "Aktualisieren auf {target}",
                 "no_fix_released": "Noch kein Fix veröffentlicht; abmildern oder entscheiden",
                 "rotate": "Zugangsdaten beim Anbieter austauschen", "upgrade_runtime": "Auf eine unterstützte Version wechseln",
                 "pin": "Image auf Version oder Digest festlegen", "apt_upgrade": "Update {target} installieren",
                 "reboot": "Neustart (der korrigierte Kernel ist installiert)",
-                "no_fix_installable": "Noch kein installierbarer Fix", "review": "Prüfen und entscheiden"},
+                "no_fix_installable": "Noch kein installierbarer Fix", "review": "Prüfen und entscheiden",
+                "raise_minimum": "Erklärte Mindestversion auf eine unterstützte Version anheben"},
         "fix_unfixed": "{n} Advisory(s) ohne Fix",
         "dep_direct": "direkte Abhängigkeit",
         "dep_transitive": "transitive Abhängigkeit",
@@ -528,6 +554,13 @@ STRINGS: dict[str, dict] = {
         "limit_actions": "In Workflows verwendete GitHub Actions werden inventarisiert, aber nicht auf "
                          "Schwachstellen geprüft (OSV gleicht für dieses Ökosystem keine Versionen ab): {n} in den "
                          "Branches dieses Laufs.",
+        "limit_gaps": "Vom Repository-Scan nicht erfasst: {what}. Dieser Code steht in keiner SBOM und wird nicht auf "
+                      "Schwachstellen geprüft; für C/C++ und Firmware eine Build-SBOM importieren (siehe Notes in "
+                      "AUDIT.md).",
+        "limit_gap_projects": "{n} Projekte nicht gescannt (kein konfigurierter Branch)",
+        "limit_gap_branches": "{n} Branches mit Git-Submodulen, C/C++-Code oder Firmware-Manifesten",
+        "limit_gap_unmatched": "{n} Pakete von Typen, für die OSV keine Advisories führt (generic, GitHub, Conan, "
+                               "vcpkg)",
         "e_intro": "Wofür die Artefakte dieses Ordners im Sinne des EU Cyber Resilience Act (Verordnung (EU) "
                    "2024/2847) dienen.",
         "e_caveat": "Nachweiswerkzeug, keine Rechtsberatung: Das Plugin erzeugt die Artefakte, nach denen eine "
@@ -830,7 +863,7 @@ def _failed_count(info) -> int:
 
 def _metrics(data: dict, S: dict) -> list[dict]:
     """One row per measure: value (int) or None with a reason, an incomplete note, the delta key."""
-    from .report import _actionable
+    from .report import _actionable, allowed_unsupported
     from .status import _in_production
     audit, status = data["audit"], data["status"] or {}
     sources = (audit or {}).get("sources") or {}
@@ -873,9 +906,12 @@ def _metrics(data: dict, S: dict) -> list[dict]:
         runtimes = [r for r in audit.get("runtimes") or [] if isinstance(r, dict)]
         eol = {(r.get("product"), r.get("cycle")) for r in runtimes if r.get("status") == "EOL"}
         soon = {(r.get("product"), r.get("cycle")) for r in runtimes if r.get("status") == "EOL soon"}
+        allowed = {(r.get("product"), r.get("cycle")) for r in runtimes if allowed_unsupported(r)}
+        extra = "; ".join(x for x in (S["eol_soon"].format(n=len(soon)) if soon else "",
+                                      S["eol_allowed"].format(n=len(allowed)) if allowed else "") if x)
         row("eol", S["m_eol"], len(eol), delta="eol",
             incomplete=S["inc_eol"].format(n=_failed_count(eol_src)) if _failed_count(eol_src) else None,
-            extra=S["eol_soon"].format(n=len(soon)) if soon else None)
+            extra=extra or None)
     # leaked credentials, per class
     sec = _secrets_state(data)
     for cls in "ABC":
@@ -1041,6 +1077,18 @@ def _header(data: dict, S: dict, organisation: str | None) -> str:
             f"<dt>{S['tool']}</dt><dd>{tool}</dd></dl></header>")
 
 
+def _unchecked(audit: dict, S: dict) -> list[str]:
+    """Skipped projects, branches with coverage gaps and packages OSV cannot match, as verdict phrases."""
+    st = (audit or {}).get("stats") or {}
+    out = []
+    for key, stat in (("verdict_gap_projects", "projects_not_scanned"), ("verdict_gap_branches", "coverage_gaps"),
+                      ("verdict_gap_unmatched", "packages_unmatched")):
+        n = st.get(stat)
+        if isinstance(n, int) and n > 0:
+            out.append(S[key][0 if n == 1 else 1].format(n=n))
+    return out
+
+
 def _overall(data: dict, S: dict, metrics: list[dict]) -> str:
     by = {m["key"]: m for m in metrics}
     L = [f"<section><h2>{S['s_overall']}</h2>"]
@@ -1055,7 +1103,11 @@ def _overall(data: dict, S: dict, metrics: list[dict]) -> str:
     gaps = [m for m in metrics if m["value"] is None or m["incomplete"]]
     if data["audit"] is not None:
         verdict = "verdict_action" if facts else ("verdict_incomplete" if gaps else "verdict_clear")
-        L.append(f'<p class="verdict">{S[verdict]}</p>')
+        unchecked = _unchecked(data["audit"], S)
+        if verdict == "verdict_clear" and unchecked:      # clear only for what was checked: say what was not
+            L.append(f'<p class="verdict">{e(S["verdict_clear_gaps"].format(what=", ".join(unchecked)))}</p>')
+        else:
+            L.append(f'<p class="verdict">{S[verdict]}</p>')
     if facts:
         L.append("<ul>" + "".join(f"<li>{f}</li>" for f in facts) + "</ul>")
     short = {"kev": "m_short_kev", "crit": "m_short_crit", "eol": "m_short_eol", "hosts": "m_short_hosts"}
@@ -1379,6 +1431,12 @@ def _coverage(data: dict, S: dict) -> str:
     actions = (audit.get("stats") or {}).get("github_actions_unchecked")
     if actions:
         limits.insert(2, S["limit_actions"].format(n=actions))
+    st = audit.get("stats") or {}
+    what = [S[key].format(n=st[stat]) for key, stat in (("limit_gap_projects", "projects_not_scanned"),
+                                                         ("limit_gap_branches", "coverage_gaps"),
+                                                         ("limit_gap_unmatched", "packages_unmatched")) if st.get(stat)]
+    if what:
+        limits.insert(0, S["limit_gaps"].format(what="; ".join(what)))
     imports = [r for r in audit.get("imported_sboms") or [] if isinstance(r, dict)]
     if imports:
         text = S["limit_imports"].format(n=len(imports))
@@ -1655,7 +1713,7 @@ def cli(args) -> int:
     try:
         paths = write(out, lang=getattr(args, "lang", None))
     except FileNotFoundError:
-        print(f"no audit.json in {out}: run /sbom-audit:run first", file=sys.stderr)
+        print(f"no audit.json in {out}: run {cli_hint.slash('run')} first", file=sys.stderr)
         return 2
     for p in paths:
         print(p.relative_to(out) if p.is_relative_to(out) else p)

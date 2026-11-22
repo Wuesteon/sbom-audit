@@ -59,14 +59,22 @@ class ReleaseTests(unittest.TestCase):
 
     def test_changelog_has_1_3_0_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
-        self.assertRegex(text, r"^# Changelog\n\n## 1\.3\.0 — 2026-11-21\n")
+        self.assertLess(text.find("## 1.3.1"), text.find("## 1.3.0"), "newest entry first")
         section = text.split("## 1.3.0", 1)[1].split("\n## ", 1)[0]
         for needle in ("manifest.json", "`verify", "sbom check", "not_in_build_sbom", "[releases]", "cra check",
                        "REPORT.html", "assess draft", "Gradle", "group:artifact", "plugin/scripts/sbom_audit_cli.py"):
             self.assertIn(needle, section, needle)
-        self.assertEqual(VERSION, "1.3.0")
+
+    def test_changelog_has_1_3_1_section(self):
+        text = (ROOT / "CHANGELOG.md").read_text()
+        self.assertRegex(text, r"^# Changelog\n\n## 1\.3\.1 — 2026-11-23\n")
+        section = text.split("## 1.3.1", 1)[1].split("\n## ", 1)[0]
+        for needle in ("### Security", "--no-textconv", "refs/heads/", "allowed_unsupported", "coverage_gaps",
+                       "docs/limitations.md", "not recorded", "withhold", "--author"):
+            self.assertIn(needle, section, needle)
+        self.assertEqual(VERSION, "1.3.1")
         template = (ROOT / "plugin" / "templates" / "github-actions" / "sbom-audit.yml").read_text()
-        self.assertIn('SBOM_AUDIT_REF: "sbom-audit--v1.3.0"', template)
+        self.assertIn('SBOM_AUDIT_REF: "sbom-audit--v1.3.1"', template)
 
     def test_changelog_has_1_0_0_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()

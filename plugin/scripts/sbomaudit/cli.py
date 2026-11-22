@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, config
+from . import __version__, config, gitio
 from .errors import ConfigError
 
 COMMANDS = ("setup", "run", "scan", "audit", "lookup", "incident", "vex", "status", "issues", "secrets", "hosts", "code", "settings",
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     inc_p.add_argument("ident", metavar="ID", help="CVE-…, GHSA-…, PYSEC-…, or a package name")
     inc_p.add_argument("--vex", action="store_true",
                        help="record not_affected/component_not_present for every project without the component")
-    inc_p.add_argument("--author", default=None, help="OpenVEX author for --vex (default: git user.email)")
+    inc_p.add_argument("--author", default=None, help="OpenVEX author for --vex (default: git user.email or user.name; refused without either)")
     vex_p = sub.add_parser("vex", parents=[common], help="record an OpenVEX decision")
     add_vex_args(vex_p, common)
     sub.add_parser("status", parents=[common], help="print STATUS.md from the last run (writes nothing)")
@@ -229,7 +229,7 @@ def add_vex_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) ->
                             "vulnerable_code_cannot_be_controlled_by_adversary, inline_mitigations_already_exist")
     add_p.add_argument("--impact", default=None, help="free-text impact statement")
     add_p.add_argument("--subcomponent", default=None, help="package purl, with or without version")
-    add_p.add_argument("--author", default=None, help="document author (default: git user.email)")
+    add_p.add_argument("--author", default=None, help="document author (default: git user.email or user.name; refused without either)")
 
 
 def add_secrets_args(p: argparse.ArgumentParser, common: argparse.ArgumentParser) -> None:
@@ -421,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     args.out = args.out or find_out(Path.cwd())
+    gitio.use_real_git()      # macOS: the real git behind Apple's shim, which a sandbox can block
     if config.read_only() and _writes(args):
         print(f"read-only mode: {args.command} writes nothing", file=sys.stderr)
         return EXIT_READ_ONLY

@@ -615,6 +615,9 @@ def write_import(out: Path, project: str, branch: str, raw: bytes, commit: str |
     return path, prov
 
 
+SYFT_TIMEOUT = 3600   # seconds; an image artefact may have to be pulled first
+
+
 def syft_artifact(target: str) -> bytes:
     """`syft scan <target> -o cyclonedx-json`: a file or directory as such, anything else as an image ref."""
     if target.startswith("-"):
@@ -623,9 +626,11 @@ def syft_artifact(target: str) -> bytes:
     arg = f"file:{p}" if p.is_file() else f"dir:{p}" if p.is_dir() else target
     try:
         proc = subprocess.run(["syft", "scan", arg, "-o", "cyclonedx-json", "-q"], capture_output=True,
-                              env={**os.environ, "SYFT_CHECK_FOR_APP_UPDATE": "false"})
+                              env={**os.environ, "SYFT_CHECK_FOR_APP_UPDATE": "false"}, timeout=SYFT_TIMEOUT)
     except FileNotFoundError as exc:
         raise ToolError("syft", None, "syft is not installed") from exc
+    except subprocess.TimeoutExpired:
+        raise ToolError("syft", None, f"timed out after {SYFT_TIMEOUT}s") from None
     if proc.returncode != 0:
         detail = (proc.stderr.decode(errors="replace").strip().splitlines() or ["no output"])[-1]
         raise ToolError("syft", proc.returncode, detail)

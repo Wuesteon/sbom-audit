@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -203,7 +204,7 @@ class ManifestTests(unittest.TestCase):
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())["plugins"][0]["version"]
         init = (PLUGIN / "scripts" / "sbomaudit" / "__init__.py").read_text()
         package = re.search(r'__version__ = "([^"]+)"', init).group(1)
-        self.assertEqual((plugin, market, package), ("1.3.0", "1.3.0", "1.3.0"))
+        self.assertEqual((plugin, market, package), ("1.3.1", "1.3.1", "1.3.1"))
 
     def test_every_eval_case_has_prompt_and_graders(self):
         evals = ROOT / "evals"
@@ -239,6 +240,48 @@ class ManifestTests(unittest.TestCase):
     def test_installable_plugin_holds_no_tests_or_evals(self):
         for name in ("tests", "evals", ".github", "tools", "docs"):
             self.assertFalse((PLUGIN / name).exists(), name)
+
+
+class EvalScaffold(unittest.TestCase):
+    """evals/fixtures/scaffold.sh finds the repository root from evals/ and from the copy under plugin/evals/."""
+
+    @staticmethod
+    def checkout(base: Path, evals_under_plugin: bool) -> Path:
+        """A minimal checkout: plugin/, the test helpers the secrets mode imports, and evals/ at either place."""
+        skip = shutil.ignore_patterns("__pycache__", "*.pyc", "results")
+        repo = base / "repo"
+        shutil.copytree(PLUGIN, repo / "plugin", ignore=skip)
+        (repo / "tests").mkdir()
+        for name in ("__init__.py", "helpers.py", "secrets_fixture.py"):
+            shutil.copy2(ROOT / "tests" / name, repo / "tests" / name)
+        shutil.copytree(ROOT / "evals", repo / ("plugin/evals" if evals_under_plugin else "evals"), ignore=skip)
+        return repo
+
+    def scaffold(self, script: Path, mode: str, workspace: Path) -> subprocess.CompletedProcess:
+        workspace.mkdir()
+        # output is not shown in any message: the secrets mode handles planted values
+        return subprocess.run(["bash", str(script), mode], cwd=workspace, capture_output=True, text=True,
+                              timeout=300)
+
+    @unittest.skipUnless(shutil.which("gitleaks") and shutil.which("git"), "gitleaks or git not installed")
+    def test_secrets_mode_from_both_locations(self):
+        for under_plugin in (False, True):
+            with self.subTest(evals_under_plugin=under_plugin), tempfile.TemporaryDirectory() as tmp:
+                repo = self.checkout(Path(tmp), under_plugin)
+                evals = repo / "plugin" / "evals" if under_plugin else repo / "evals"
+                proc = self.scaffold(evals / "fixtures" / "scaffold.sh", "secrets", Path(tmp) / "ws")
+                self.assertEqual(proc.returncode, 0, "scaffold.sh secrets failed")
+                self.assertTrue((Path(tmp) / "ws" / "security" / "SECRETS.md").is_file(), "SECRETS.md missing")
+
+    def test_no_root_found_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixtures = Path(tmp) / "loose" / "fixtures"
+            fixtures.mkdir(parents=True)
+            shutil.copy2(ROOT / "evals" / "fixtures" / "scaffold.sh", fixtures / "scaffold.sh")
+            proc = self.scaffold(fixtures / "scaffold.sh", "hosts", Path(tmp) / "ws")
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("no plugin/.claude-plugin/plugin.json above", proc.stderr)
+            self.assertFalse((Path(tmp) / "ws" / "security").exists())
 
 
 # fixture -> (substring of systemMessage, additionalContext offers the assessment)
@@ -298,6 +341,16 @@ def derived_cases() -> dict[str, tuple[dict, dict | None]]:
     cases["not-assessed"] = (doc, None)
     doc, _ = fixture_doc("clear")
     cases["never-fired"] = (doc, {"installed": True, "installed_at": now_iso(20), "last_fired": None})
+    doc, _ = fixture_doc("clear")
+    cases["scheduler-failed"] = (doc, {"installed": True, "installed_at": now_iso(20), "last_fired": now_iso(2),
+                                       "last_exit": 127, "last_error": "plugin install path not found"})
+    doc, _ = fixture_doc("clear")
+    cases["scheduler-unfinished"] = (doc, {"installed": True, "last_fired": now_iso(3), "last_exit": None})
+    doc, _ = fixture_doc("clear")
+    doc["generated_at"] = now_iso(10)
+    doc["last_assessment"] = doc["generated_at"][:10]
+    cases["overdue-and-missed"] = (doc, {"installed": True, "installed_at": now_iso(30), "last_fired": now_iso(12),
+                                         "last_exit": 1})
     doc, _ = fixture_doc("class-a")
     doc["secrets_scan"]["oldest_open_days"] = None
     cases["class-a-age-unknown"] = (doc, None)
@@ -352,6 +405,9 @@ class SessionHookTests(unittest.TestCase):
     def test_hook_derived_cases_hit_their_rule(self):
         needles = {"overdue": "10 days ago", "new-critical": "new CRITICAL/HIGH", "not-assessed": "not assessed yet",
                    "never-fired": "scheduler did not run since", "class-a-age-unknown": "oldest age unknown",
+                   "scheduler-failed": "failed (exit 127); see STATUS.md",
+                   "scheduler-unfinished": "did not finish; see STATUS.md",
+                   "overdue-and-missed": "last run 10 days ago, scheduler did not run since",
                    "hosts-critical": "2 critical host findings open (box-a, web-1); see HOSTS.md",
                    "hosts-stale": "hosts not checked since 2026-01-02",
                    "hosts-failed": "1 host(s) failed the last check (box-a); see HOSTS.md",

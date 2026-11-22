@@ -11,6 +11,7 @@ from .model import BranchInventory, Component, Finding
 from .versions import norm_py, ver_key
 
 OSV_CACHE_DIR = Path(".cache") / "osv"
+OSV_TIMEOUT = 1800   # seconds, one osv-scanner run (network lookups included)
 
 
 def run_osv_scanner(sbom: Path, out_json: Path) -> dict:
@@ -22,9 +23,11 @@ def run_osv_scanner(sbom: Path, out_json: Path) -> dict:
     cmd = ["osv-scanner", "scan", "source", "-L", str(sbom), "--format", "json",
            "--output-file", str(out_json)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=OSV_TIMEOUT)
     except FileNotFoundError as exc:
         raise ToolError("osv-scanner", None, "osv-scanner is not installed") from exc
+    except subprocess.TimeoutExpired:
+        raise ToolError("osv-scanner", None, f"timed out after {OSV_TIMEOUT}s") from None
     if proc.returncode not in (0, 1):
         detail = (proc.stderr.strip().splitlines() or ["no output"])[-1]
         raise ToolError("osv-scanner", proc.returncode, detail)

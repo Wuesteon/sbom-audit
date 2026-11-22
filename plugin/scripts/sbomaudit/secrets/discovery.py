@@ -38,10 +38,10 @@ def _scrub(text: str) -> str:
 
 
 def _run(git, cmd: list[str], env: dict[str, str] | None = None) -> str | None:
-    """Run one git command; the credential-free first error line, or None on success."""
-    kwargs: dict = {"capture_output": True, "text": True, "errors": "replace", "timeout": 600}
-    if env is not None:
-        kwargs["env"] = env
+    """Run one git command under `gitio.git_env` (on top of `env` when given); the credential-free first
+    error line, or None on success."""
+    kwargs: dict = {"capture_output": True, "text": True, "errors": "replace", "timeout": 600,
+                    "env": gitio.git_env(env)}
     try:
         proc = git(cmd, **kwargs)
     except subprocess.TimeoutExpired:
@@ -56,7 +56,7 @@ def _run(git, cmd: list[str], env: dict[str, str] | None = None) -> str | None:
 def _is_bare(git, dest: Path) -> bool:
     try:
         proc = git(["git", "-C", str(dest), "rev-parse", "--is-bare-repository"],
-                   capture_output=True, text=True, errors="replace", timeout=600)
+                   capture_output=True, text=True, errors="replace", timeout=600, env=gitio.git_env())
     except (subprocess.TimeoutExpired, OSError):
         return False
     return proc.returncode == 0 and proc.stdout.strip() == "true"

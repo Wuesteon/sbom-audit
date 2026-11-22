@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import (assess, config, enrich, evidence, issues, manifest, matching, preflight, releases, report, sbomimport,
                scan, scheduler, status, vex)
+from . import hint as cli_hint
 from .cache import Cache
 from .config import Config, Project
 from .errors import VexError
@@ -26,7 +27,8 @@ from .model import BranchInventory
 
 ENRICH_CACHE_DIR = Path(".cache") / "enrich"
 EXIT_CLEAN, EXIT_FINDINGS, EXIT_SOURCE_FAILED, EXIT_VEX, EXIT_TOOL_MISSING = 0, 1, 2, 3, 4
-STATUS_HINT = "no status.json yet: run /sbom-audit:setup, then /sbom-audit:run"
+STATUS_HINT = (f"no status.json yet: run /sbom-audit:setup, then /sbom-audit:run "
+               f"(CLI: {cli_hint.command('setup')}, then run)")
 
 
 def secrets_step(cfg: Config, log) -> dict | None:
@@ -173,7 +175,8 @@ def finish_tools(cfg: Config) -> dict[str, str]:
 
 
 def audit(cfg: Config, inventories: list[BranchInventory], log=None,
-          http=None, extra_tools: dict | None = None) -> tuple[dict, list[Path]]:
+          http=None, extra_tools: dict | None = None,
+          skipped: list[dict] | None = None) -> tuple[dict, list[Path]]:
     """Match, enrich, apply VEX and write every report; returns the report and the paths written.
     `extra_tools`: tools later steps of the same run use (`finish_tools`), listed in the report's tool table.
 
@@ -212,7 +215,8 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
     sources["openvex"] = {"statements": len(statements), "suppressed": len(suppressed)}
 
     release_ctx = releases.context(cfg, inventories)
-    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx)
+    rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx,
+                       skipped=skipped)
     tools = {**manifest.tool_versions(), **(extra_tools or {})}
     rep["provenance"] = manifest.try_provenance(cfg, cache, since, sources=sources, eol_rows=eol_rows,
                                                 latest_keys=direct, generated_at=rep.get("generated_at"),
@@ -246,6 +250,7 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
     kev = sum(1 for v in vulns if v["kev"])
     crit_high = sum(1 for v in vulns if v["max_severity"] in ("CRITICAL", "HIGH"))
     eol = sum(1 for r in rep["runtimes"] if r["status"] == "EOL")
+    allowed = sum(1 for r in rep["runtimes"] if report.allowed_unsupported(r))
     rel = f", {s['releases']} releases" if s.get("releases") else ""
     unrated = sum(1 for v in vulns if report.unrated_in_production(v, set(rep.get("production_projects") or [])))
     gaps = (f", {unrated} not rated in production" if unrated else "") + (
@@ -253,6 +258,7 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
         if s.get("unresolved_versions") else "")
     return (f"{s['projects']} projects, {s['branches']} branches{rel}: {len(vulns)} vulnerable package versions "
             f"({kev} KEV, {crit_high} critical/high), {eol} EOL runtimes/images, "
+            + (f"{allowed} allowed but unsupported (declared minimum), " if allowed else "") +
             f"{len(rep['suppressed'])} suppressed by VEX{gaps} — {cfg.out / report.AUDIT_FILE} "
             f"({time.monotonic() - started:.1f}s)")
 
@@ -559,7 +565,8 @@ def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, l
         result = scan.scan(cfg, only=only, fetch=fetch, log=say)
         for s in result.skipped:
             say(f"skipped {s['project']}: {s['reason']}")
-        rep, written = audit(cfg, result.inventories, log=say, http=http, extra_tools=finish_tools(cfg))
+        rep, written = audit(cfg, result.inventories, log=say, http=http, extra_tools=finish_tools(cfg),
+                             skipped=result.skipped)
     except VexError as exc:
         say(f"OpenVEX: {exc}")
         return EXIT_VEX
@@ -573,7 +580,18 @@ def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, l
         code = finish(cfg, rep, result.inventories, written, code, started, say)["exit_code"]
     except Exception as exc:                    # the exit code is the audit's, whatever happens after it
         say(f"finish failed: {type(exc).__name__}")
+    if result.skipped:                          # not a failed source: the exit code stays, the last line says so
+        say(skipped_warning(result.skipped))
     return code
+
+
+def skipped_warning(skipped: list[dict]) -> str:
+    """The last line of `run`, `scan` and `audit` when projects were skipped. Skipped projects do not change the
+    exit code (2 means a source failed, not a project without the configured branches); this line says so."""
+    names = ", ".join(str(s.get("project")) for s in skipped)
+    n = len(skipped)
+    return (f"WARNING: incomplete run: {n} project{'' if n == 1 else 's'} not scanned ({names}; reasons above); "
+            "the exit code covers only the scanned projects")
 
 
 def cli_run(args) -> int:
@@ -598,7 +616,7 @@ def cli_status(args) -> int:
     try:
         text = status.render_md(doc, read_scheduler_state(out), dt.datetime.now().astimezone())
     except (KeyError, TypeError, ValueError, AttributeError):
-        print(f"{out / status.STATUS_JSON} unreadable: run /sbom-audit:run")
+        print(f"{out / status.STATUS_JSON} unreadable: run {cli_hint.slash('run')}")
         return EXIT_SOURCE_FAILED
     print(text, end="")
     return EXIT_CLEAN
@@ -610,14 +628,16 @@ def cli_audit(args) -> int:
     if tools_missing(preflight.AUDIT_TOOLS, print):
         return EXIT_TOOL_MISSING
     try:
-        inventories, _ = scan.read_inventory(cfg.out)
+        inventories, header = scan.read_inventory(cfg.out)
     except FileNotFoundError:
         print(f"{cfg.out / scan.INVENTORY_FILE} not found: run `scan` (or `run`) first.")
         return EXIT_SOURCE_FAILED
     try:
-        rep, _ = audit(cfg, inventories, log=print)
+        rep, _ = audit(cfg, inventories, log=print, skipped=header.get("skipped") or None)
     except VexError as exc:
         print(f"OpenVEX: {exc}")
         return EXIT_VEX
     print(summary_line(rep, cfg, started))
+    if header.get("skipped"):
+        print(skipped_warning(header["skipped"]))
     return exit_code(rep, inventories)

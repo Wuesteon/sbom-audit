@@ -98,7 +98,7 @@ def _live(repo: Path, refs: dict[str, list[str]], file: str, secret: str, git_by
     for full_refs in refs.values():
         for ref in full_refs:
             try:
-                content = git_bytes(repo, "show", f"{ref}:{file}")
+                content = git_bytes(repo, "show", "--no-textconv", f"{ref}:{file}")
             except gitio.GitError:  # file gone on this ref
                 continue
             if needle in content:

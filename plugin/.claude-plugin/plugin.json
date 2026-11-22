@@ -1,7 +1,7 @@
 {
   "name": "sbom-audit",
   "displayName": "SBOM Audit",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Portfolio-wide SBOMs, vulnerability audit and secrets scan for every git repository in a folder, with Claude-assisted triage and recorded OpenVEX decisions.",
   "author": {
     "name": "Nils Weiser",

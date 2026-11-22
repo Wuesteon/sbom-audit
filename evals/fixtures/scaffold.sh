@@ -15,8 +15,18 @@
 #              connection attempt fails at name resolution and nothing is ever reachable)
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"   # physical: plugin/evals is a symlink to evals/
-ROOT="$(cd "$HERE/../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# The repository root is the nearest directory above that holds plugin/.claude-plugin/plugin.json.
+# This script runs from evals/fixtures and from the temporary copy under plugin/evals/fixtures
+# (CONTRIBUTING.md, Evals); a fixed "../.." would resolve to plugin/ in the copy.
+ROOT="$HERE"
+while [ ! -f "$ROOT/plugin/.claude-plugin/plugin.json" ]; do
+  if [ "$ROOT" = "/" ]; then
+    echo "scaffold.sh: no plugin/.claude-plugin/plugin.json above $HERE" >&2
+    exit 2
+  fi
+  ROOT="$(dirname "$ROOT")"
+done
 export GIT_AUTHOR_NAME=eval GIT_AUTHOR_EMAIL=eval@example.invalid
 export GIT_COMMITTER_NAME=eval GIT_COMMITTER_EMAIL=eval@example.invalid
 export GIT_AUTHOR_DATE="2026-11-01T12:00:00Z" GIT_COMMITTER_DATE="2026-11-01T12:00:00Z"

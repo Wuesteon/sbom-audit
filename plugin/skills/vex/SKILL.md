@@ -28,4 +28,4 @@ Record why a finding does or does not apply, so the next audit stops repeating i
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py" vex add $ARGUMENTS
 ```
 
-(`vex add <project> <vuln-id> <status> [--justification …] [--impact …] [--subcomponent pkg:npm/name] [--author …]`). Exit 5 means read-only mode (`SBOM_AUDIT_READ_ONLY=1`): nothing was written; say so. Then suggest `/sbom-audit:run` (or `audit`) to see the finding move to the suppressed section.
+(`vex add <project> <vuln-id> <status> [--justification …] [--impact …] [--subcomponent pkg:npm/name] [--author …]`). Exit 5 means read-only mode (`SBOM_AUDIT_READ_ONLY=1`): nothing was written; say so. A `no author` message (exit 2, nothing written) means git has no `user.email` or `user.name`: ask the user who made the decision and repeat the call with `--author`. Then suggest `/sbom-audit:run` (or `audit`) to see the finding move to the suppressed section.

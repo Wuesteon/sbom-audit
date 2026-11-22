@@ -376,6 +376,13 @@ class ManifestEcosystemTests(unittest.TestCase):
         self.assertEqual(readers.package_key("Go", "golang.org/x/net", "pkg:golang/golang.org/x/net@v1"),
                          "golang.org/x/net")
 
+    def test_vcpkg_manifest_names_are_self_packages(self):
+        write(self.src, {"vcpkg.json": '{"name": "My-App", "version": "1.2.0", "dependencies": ["zlib"]}',
+                         "libs/x/vcpkg.json": '{"name": "inner-lib"}', "bad/vcpkg.json": "{not json"})
+        own = {k for k in readers.self_packages(self.src) if k[0] == "vcpkg"}
+        self.assertEqual(own, {("vcpkg", "my-app"), ("vcpkg", "inner-lib")})
+        self.assertEqual(readers.package_key("vcpkg", "My-App", "pkg:vcpkg/my-app@1.2.0"), "my-app")
+
     def test_maven_own_modules_are_self_packages(self):
         self.maven_tree()
         own = {k for k in readers.self_packages(self.src) if k[0] == "Maven"}
@@ -468,3 +475,26 @@ class ManifestEcosystemTests(unittest.TestCase):
         rts = sorted((c.locations[0], c.version) for c in readers.read_tree(self.src, []) if c.ecosystem == "dotnet")
         self.assertEqual(rts, [("Directory.Build.props", "8"), ("global.json", "8"), ("src/App/App.csproj", "9"),
                                ("src/Lib/Lib.csproj", "3.1"), ("src/Lib/Lib.csproj", "6")])
+
+
+class ManifestFilesTests(unittest.TestCase):
+    """Which ecosystems' manifests a branch has: lets `incident` tell "absent" from "nothing was read"."""
+
+    def test_manifest_files_by_osv_ecosystem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            for rel in ("package.json", "web/pnpm-lock.yaml", "api/poetry.lock", "api/requirements-dev.txt",
+                        "svc/go.mod", "App/Package.resolved", "node_modules/x/package.json",
+                        "lib/Cargo.lock", "legacy/old/pom.xml", "README.md"):
+                (src / rel).parent.mkdir(parents=True, exist_ok=True)
+                (src / rel).write_text("x")
+            found = readers.manifest_files(src, ["legacy/"])
+        self.assertEqual(found, {"npm": ["package.json", "web/pnpm-lock.yaml"],
+                                 "PyPI": ["api/poetry.lock", "api/requirements-dev.txt"],
+                                 "Go": ["svc/go.mod"], "SwiftURL": ["App/Package.resolved"],
+                                 "crates.io": ["lib/Cargo.lock"]})
+
+    def test_no_manifest_is_an_empty_dict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "index.html").write_text("x")
+            self.assertEqual(readers.manifest_files(Path(tmp), []), {})

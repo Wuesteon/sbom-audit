@@ -102,6 +102,41 @@ advisory is always a `hit` (evidence suffixed "(from audit.json)" when the inven
 differently), never `absent`. Verdicts are per version,
 so a branch holding two versions of one package shows both. Given a bare package name instead of an id, it prints where that package is used, like
 `lookup`, without a verdict.
+
+*Unknown instead of absent.* Advisory ecosystems are compared in OSV spelling: the inventory's purl
+types map to `SwiftURL` (purl `swift`, matched on the repository path such as
+`github.com/apple/swift-nio`), `GitHub Actions` (`github`), `crates.io` (`cargo`), `RubyGems` (`gem`),
+`Packagist` (`composer`), `ConanCenter` (`conan`), `Go` (`golang`); `cocoapods`, `deno` and `jsr` have no
+OSV ecosystem. For each affected package that is not in a branch's inventory, the verdict for that
+branch is `unknown` (with the reason as evidence), never `absent`, when one of these holds:
+
+1. the branch's last audit was incomplete (above);
+2. the advisory is against the Go runtime (`Go` package `stdlib` or `toolchain`) and the branch has a Go
+   runtime row (a Dockerfile `golang` image, a `.go-version`, a go.mod `go`/`toolchain` line, which is
+   only a build minimum), a Go package or a `go.mod`: osv-scanner does not check the Go toolchain, so
+   compare the version shown with the advisory's fixed versions by hand;
+3. the advisory's ecosystem is one the scan does not inventory, i.e. anything other than `npm`, `PyPI`,
+   `Go`, `RubyGems`, `crates.io`, `Maven`, `NuGet`, `Hex`, `Pub`, `Packagist`, `SwiftURL`,
+   `GitHub Actions`, `ConanCenter` and `Hackage` (for example `CRAN`, `Linux`, `Android`); an
+   operating-system ecosystem (`Debian`, `Ubuntu`, `Alpine`, `Red Hat`, `Wolfi`, …) is `unknown` only
+   on a branch that uses a container image, whose contents the scan does not list, and `absent` on one
+   without;
+4. the branch's inventory holds no package at all although manifests or lockfiles are present, or the
+   inventory was written before manifests were recorded (`manifests` missing in `inventory.json`) and
+   holds no package;
+5. the branch has a manifest or lockfile of the advisory's ecosystem (`manifests` in `inventory.json`,
+   e.g. `poetry.lock` for PyPI) but not one package of that ecosystem was inventoried.
+
+Otherwise the branch is `absent`, once per branch and only when it has no other verdict. Each branch
+inventory records `manifests` (OSV ecosystem → manifest and lockfile paths, at most 20 per ecosystem,
+walked like the readers, without `node_modules`, vendored and ignored folders).
+
+`incident --vex` writes `not_affected` / `component_not_present` only for a project whose every verdict
+is `absent`, only for affected packages of an inventoried ecosystem (never for `Go` `stdlib`/`toolchain`),
+and one statement per examined branch: the product is `<project purl>@<branch>` (a `/` in the branch or
+release label written `%2F`) and the impact statement names the branch and the commit, so the statement
+does not cover branches or commits the scan did not examine. Everything it leaves out it prints as
+`not recorded: <reason>`.
 `/sbom-audit:lookup <name>` answers the plain "who uses X" without an advisory; names
 may be globs (`expo-*`), images (`nginx:alpine`) or runtimes (`nodejs`). A Maven package answers to
 its OSV name `group:artifact` (`org.postgresql:postgresql`, as listed) and to the bare artifact
@@ -168,6 +203,10 @@ python3 plugin/scripts/sbom_audit_cli.py vex add billing-api GHSA-xxxx-yyyy-zzzz
   --impact "The parser is only used on trusted config files."
 ```
 
+The author of a VEX document is `--author`, else `git config user.email` (or `user.name`). With
+neither, `vex add` and `incident --vex` refuse (exit 2, nothing written) and ask for `--author`:
+a decision never carries a made-up author.
+
 Exit codes of `run`: 0 clean, 1 findings present, 2 a source failed (its section is empty,
 not clean; the report says so), 3 a VEX file is malformed (the run aborts naming the
 file), 4 a required tool is missing (checked before anything is written; `scan` needs
@@ -215,9 +254,12 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
 - `priority`: 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production
   project or a supported release (reason `critical_high_production`), an advisory there that is not
   rated (`unrated_production`), and class B secrets · 4 end of life, and secrets ranked lower by their
-  path context (`secret_context`, see [Secrets](#secrets)) · 5 floating tag · 6 everything else.
-- `fix.action`: `upgrade`, `no_fix_released`, `rotate`, `upgrade_runtime`, `pin`, `apt_upgrade`,
-  `reboot`, `no_fix_installable`, `review`.
+  path context (`secret_context`, see [Secrets](#secrets)) · 5 floating tag · 6 everything else,
+  among them a declared minimum (`engines.node`, `requires-python`) that allows an end-of-life
+  version (`eol_minimum`, see [What is read per ecosystem](#what-is-read-per-ecosystem); what
+  runs is not stated or has its own row).
+- `fix.action`: `upgrade`, `no_fix_released`, `rotate`, `upgrade_runtime`, `raise_minimum`, `pin`,
+  `apt_upgrade`, `reboot`, `no_fix_installable`, `review`.
 - Only open issues: findings suppressed by a VEX statement, decided secrets, accepted host findings and
   informational host output are not in it. An id is stable from run to run and the entry disappears
   when the issue does.
@@ -312,8 +354,8 @@ from `[releases]`. Unknown keys are refused.
   announced end) or `(version unknown)` (no version to look up). An empty `eol_before_support_end`
   therefore never hides a runtime without a date; `RELEASES.md` has an "EOL unknown" column, and
   `REPORT.html` and `CRA.md` name them per release. Both lists are empty when the release has no
-  support period to compare with. A go.mod build minimum (status `minimum`, see "The Go runtime is a
-  minimum" below) is in neither list.
+  support period to compare with. A build minimum (status `minimum`: a go.mod line, `engines.node` or
+  `requires-python`, see "The Go runtime is a minimum" below) is in neither list.
 - **Remediation evidence.** For each release, `fixed_since_previous` lists the advisories that matched
   a package in the SBOM of the previous kept release and match none in the SBOM of this one, with
   `first_seen` (the earliest kept release of the unbroken run that held it;
@@ -389,8 +431,23 @@ fork.
 - **One writer.** Only one machine runs the schedule and pushes to the evidence repository.
   When setup sees that the last run happened on another host, it says so; turn the timer
   off on one of them.
-- A missed week (the machine was asleep or off) shows in the session status line (when turned on) and in
-  `STATUS.md` as `scheduler did not run since …`.
+- A missed week (the machine was off at fire time, the timer is unloaded, or the wrapper cannot start)
+  shows in `status`, `STATUS.md` and the session status line (when turned on) as
+  `scheduler did not run since <day> (weekly run <n> days overdue)` once the last fire is more than 8 days
+  old; `<day>` is the local day of the last fire (`scheduler.json` stamps UTC). A timer that never fired
+  counts from its install date. A sleeping Mac is not a missed week: launchd starts the run on wake.
+- A scheduled run that the wrapper could not start or that ended abnormally (it recorded `last_error`, or an
+  exit other than the CLI's 0, 1 or 2, such as 127 when no plugin install or no Python 3.11 is found) shows as
+  `scheduled run of <day> failed (exit <n>)`; one that started more than a day ago and never recorded its exit
+  (killed, machine shut down) as `scheduled run of <day> did not finish`. Exit 1 is normal: findings present.
+- The `## Scheduler` section of `STATUS.md` and `status` lists the last fire (local time and the recorded UTC
+  stamp), its exit and meaning, the last error, the plugin directory the wrapper ran, and the next fire,
+  computed when the status is shown (the `next_fire` that `scheduler.json` keeps from install time is not
+  updated and not shown). When overdue or failing it names the command that shows the timer
+  (`launchctl print gui/$(id -u)/<label>` or `systemctl --user list-timers`).
+- The wrapper finds the plugin through `~/.claude/plugins/installed_plugins.json`; when that cannot be read
+  it runs the newest version directory in the plugin cache, and only then the directory that installed it.
+  The Linux timer test procedure is in [`docs/testing-linux-timer.md`](testing-linux-timer.md).
 - Unattended runs never prompt for a password or passphrase; when GitHub's host key is not
   yet in `~/.ssh/known_hosts`, the fetch fails with `Host key verification failed`, which
   one `ssh -T git@github.com` on that machine fixes.
@@ -398,7 +455,25 @@ fork.
   `[schedule] assess = true`. Then the run also starts a headless, read-only assessment
   (`claude -p` with `SBOM_AUDIT_READ_ONLY=1`, a fixed tool list and
   `--max-budget-usd assess_budget_usd`, default 5.0) that can only write
-  `reports/<date>-assessment-proposal.md`. The proposal is never applied automatically:
+  `reports/<date>-assessment-proposal.md`. Its permissions (`assess.command`):
+  - tools `Read`, `Grep`, `Glob`, `WebFetch`, `Bash` (`--tools`), `--permission-mode dontAsk`,
+    `--strict-mcp-config`; no Write, Edit, Agent or MCP, and no WebSearch;
+  - Read (which also governs Grep and Glob) only inside `security/`; project code only through the
+    read-only `code` subcommand, besides `status`, `lookup` and `incident` (`Bash(python3 <cli>
+    <subcommand>:*)`);
+  - WebFetch only to `osv.dev`, `api.osv.dev`, `api.github.com`, `nvd.nist.gov`, `services.nvd.nist.gov`,
+    `www.cisa.gov`, `endoflife.date`, `security-tracker.debian.org` and `ubuntu.com`; not `github.com`
+    (repository pages anyone can write to) and no package registries;
+  - denied everywhere (`--disallowedTools`): `Read(./.cache/**)`, `Read(//**/.cache/**)`,
+    `Read(//**/.env*)`, `Read(//**/*.pem)`, `Read(//**/*.key)`, `Read(//**/id_*)`, `Read(//**/*.p12)`,
+    `Read(//**/*.pfx)`, `Read(//**/.npmrc)`, `Read(//**/.pypirc)`, `Read(//**/.netrc)`,
+    `Read(//**/.git-credentials)`, `Read(//**/credentials*)`, `Read(//**/.ssh/**)`, `Read(//**/.aws/**)`,
+    `Read(//**/.docker/config.json)`.
+
+  WebSearch is left out because nobody watches the headless run: a search result can lead to any page
+  and the query itself can carry text out, while the advisory databases above answer every id the
+  steps need. The 30-day web sweep for new advisories (assess step 2) therefore happens only in an
+  interactive `/sbom-audit:assess`; the headless proposal lists it as still to do. The proposal is never applied automatically:
   `STATUS.md` lists it as `proposal waiting: reports/<date>-assessment-proposal.md`, and you
   review and apply it with `/sbom-audit:assess`. `log.md` records it as
   `<time> | assess-proposal | cost <usd> | reports/<date>-assessment-proposal.md`.
@@ -525,7 +600,10 @@ from the working tree is still a finding.
 
 No value is ever stored, printed, logged or committed: findings carry a fingerprint, file,
 line, branches, whether the value is still in the working tree, its age and a keyed
-`value_id`. The raw engine report is a `0600` file deleted after reading. The results are
+`value_id`. The raw engine report is read from the engine's stdout (`-r -`) and never written
+to disk; the engine runs in its own process group with its own `--timeout`, and a timeout,
+an interrupt or SIGTERM kills that group (files an older version left in
+`.cache/secrets/raw/` are deleted at the start of every scan). The results are
 `secrets.json` and `SECRETS.md` (with rotation hints per provider and the other projects
 that use the same credential); decisions live in `secrets-decisions.toml` with the statuses
 `open`, `rotated`, `false_positive`, `test_fixture` and `accepted`. Each `run` scans new
@@ -645,9 +723,35 @@ python3 plugin/scripts/sbom_audit_cli.py code files shop main src
 ```
 
 Only configured projects and existing branches (local or `origin/`, chosen like the scan does); paths
-must be repository-relative, `security/.cache/` is never read, repository textconv drivers and hooks
-never run, and output is capped at 400 lines. Exit 1 means no match, 2 a refused request. It writes
-nothing, so the headless assessment may call it too.
+must be repository-relative and are taken literally (no globs, no `:(…)` pathspec magic),
+`security/.cache/` is never read or listed, and output is capped at 400 lines. It uses only git plumbing
+that reads objects (`grep` on a tree, `cat-file`, `ls-tree`, no textconv), with fsmonitor, hooks and the
+external diff command switched off by command-line config (see
+[Hostile repositories](#hostile-repositories)); every git call has the 10-minute git timeout, and a
+timeout is exit 2, never "no match". It writes nothing, so the headless assessment may call it too.
+
+Secrets stay out of the output. Files that typically hold one (`.env*`, `*.pem`, `*.key`, `id_*`,
+`*.p12`, `*.pfx`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `credentials*`, anything under
+`.ssh/` or `.aws/`, `.docker/config.json`, case-insensitive; the same list the headless assessment denies
+to its own Read, Grep and Glob) are refused by `show`, never searched by `grep` and left out of `files`.
+Where `secrets.json` records a finding, `show` prints `N: [withheld: a secrets finding is recorded on this
+line]` instead of the line and `grep` does not search the line, so neither its output nor its exit code
+says whether the line matches. A finding's line number is the one of the commit it was found in: when
+the file on the branch changed since and the value is still live, the line may have moved, so `show`
+refuses the whole file and `grep` skips it. A last line such as `… withheld, not searched: 2 files,
+1 line (…); content not shown` says how much was held back, never which content. Only what the secrets
+scan found is masked: a secret it does not recognise in an ordinary source file is printed like any
+other line. Three outcomes, never confused:
+
+| Exit | Meaning | Message |
+|---|---|---|
+| 0 / 1 | output (for `grep`: a match) / no match | `no match in <project>@<branch>` |
+| 2 | refused request, or the repository or ref could not be read | `code: repository or ref unreadable: <project>@<branch>: <first line of git's error>` |
+| 4 | git itself could not run: not found, not executable, or failing before it reads any repository | `code: git could not run: <first line of git's stderr or the OS error>; hint: git not usable (macOS xcrun shim or sandbox?)` |
+
+After a failed git call, `code` runs `git --version` once to tell 2 from 4; it does not look for another
+git binary. Exit 2 and 4 read nothing and say nothing about the code. The assessment's verifiers record
+them in the finding as `code not read: <message line>` instead of a bare "under investigation".
 
 ## The `security/` folder
 
@@ -768,6 +872,19 @@ Deno, Expo/React Native, SvelteKit, NestJS, Astro, Vite, FastAPI and Postgres. J
 `openjdk`, `eclipse-temurin`, `amazon-corretto` and other JDK distributions), Go and .NET appear
 when some branch has a value there, and any other runtime pinned in a manifest gets a column
 named by its endoflife.date product; runtimes read from a base image are in the Images column.
+
+**One package in two manifests.** When a pom.xml and a build.gradle (or any two manifests) declare the
+same coordinate (ecosystem, name, and the same version or none resolved in either), `inventory.json`
+keeps one row per manifest as evidence. Counts of packages count the coordinate once: the branch line
+of `INVENTORY.md` reads "N distinct packages" ("1 distinct package" for one), adding "in M manifest rows" when the two differ; the
+Direct dependencies table shows one line, "same coordinate, 2 manifests: `pom.xml`, `build.gradle`";
+the releases table counts distinct packages; `audit.json` `stats.unique_package_versions` and
+`stats.direct_dependencies` (per project and branch) count coordinates, and `stats.occurrences` counts
+the rows (declarations) on purpose; `stats.unique_package_versions_unchecked` counts the coordinates no
+vulnerability check covers (a type OSV cannot match, a GitHub Action, a version not resolved), shown in
+`AUDIT.md` as "… of these not checked for vulnerabilities" under "Distinct package versions". Different
+resolved versions stay separate lines. Manifests are
+named by path; the inventory does not keep line numbers.
 
 Portfolio mode: the parent of `security/` is a plain folder whose direct subfolders with a
 `.git` are the projects; `security/` is outside every audited repository. Single-repo
@@ -925,8 +1042,9 @@ outbound hosts, all public databases except your own git remotes, servers, Anthr
 `HOSTS.md` and `hosts.json` contain IP addresses, open ports and user names of your servers, so the private evidence repository rule applies to them in particular.
 
 gitleaks runs locally and makes no network calls: no verification of found credentials, no
-telemetry. During the assessment Claude performs web searches for incidents of the last 30
-days; the queries name the runtimes and frameworks in your inventory, not your projects.
+telemetry. During an interactive assessment Claude performs web searches for incidents of the last 30
+days; the queries name the runtimes and frameworks in your inventory, not your projects. The headless
+assessment makes no web search and fetches only from the hosts listed under [Scheduler](#scheduler).
 When Claude runs `assess`, `incident` or `lookup` it may also use its own WebSearch/WebFetch
 for advisory pages; those requests go through Claude Code, not the plugin, and carry only
 advisory ids and package names.
@@ -947,6 +1065,7 @@ it is not a dependency.
 | Maven | `<dependencies>` (and profile dependencies) of every `pom.xml`; not `<dependencyManagement>`, not plugin dependencies | a dependency whose every declaration has `<scope>test</scope>`, its own or one a `<dependencyManagement>` entry in the repository sets | `groupId:artifactId` of every `pom.xml` (the reactor modules) | Java language level: `maven-compiler-plugin` `<release>`/`<target>`/`<source>`, then `maven.compiler.release`/`target`/`source`, then `java.version`; checked against Eclipse Temurin's support dates |
 | Gradle (Maven purls) | `dependencies { }` of every `build.gradle` and `build.gradle.kts` (projects in `settings.gradle(.kts)` included; not `buildscript`, not `plugins { }`, not `project(...)`) | every declaration in a test, debug or build-tool configuration, every Maven declaration `test` too; a package only in `gradle.lockfile` when all its lock configurations are test ones and every module is locked (see [Gradle](#gradle)) | none (`project(...)` dependencies are skipped) | none |
 | .NET | none (no NuGet reader) | none | none | `global.json` `sdk.version` and `<TargetFramework(s)>` in `*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Build.props` (`net5.0`+ and `netcoreappX.Y`; .NET Framework and .NET Standard skipped) |
+| vcpkg | none (`gaps` counts the `dependencies` of `vcpkg.json` as a coverage gap) | none | `vcpkg.json` `name` (Syft reports only the manifest's own name and version) | none |
 | others (Cargo, RubyGems, Composer, Swift, CocoaPods, GitHub Actions, …) | none | none | none | images in Dockerfiles and Compose files only |
 
 - **Unknown is not transitive.** For an ecosystem without a reader, `direct` is left out of
@@ -976,6 +1095,24 @@ it is not a dependency.
   `STATUS.md` or `MANAGEMENT.md`, and is in neither release list. A `golang` image of the same cycle
   on the same branch is what builds or runs the code, so that cycle stays a normal runtime row with
   its real status. The rule lives in `enrich.build_minimum` and `enrich.eol`.
+- **`engines.node` and `requires-python` are minimums too.** They say which versions the code
+  allows, not which one runs. When every source of a Node.js or Python cycle on a branch is such a
+  declaration (the lowest version the range allows), the row has status `minimum`, `basis`
+  `"engines.node"` or `"requires-python"`, the cycle's own status in `cycle_status` (with `eol_date`),
+  `declared` (the declarations, e.g. `"requires-python >=3.8"`) and `pinned`: the real runtime sources
+  of the same product on the same project and branch (`.nvmrc`, `.node-version`, `.python-version`,
+  an image), each as `{"cycle", "source"}`. It is not counted as end of life, not in the exit code and
+  in neither release list; the pinned runtime has its own row and decides the end-of-life status. When
+  `cycle_status` is `EOL`, the row is counted apart as **allowed but unsupported**: `audit.json`
+  `stats.allowed_unsupported`, `status.json` `counts.allowed_unsupported`, a row in the `AUDIT.md`
+  summary, the `STATUS.md` counts line and a note next to the end-of-life figure in `REPORT.html`.
+  `AUDIT.md` lists the row as `build minimum (cycle EOL)` and explains each location, e.g. "build
+  minimum: `requires-python >=3.8` allows Python 3.8, which reached end of life on 2024-10-07. The
+  runtime actually used is not stated in this repository. Add `.python-version`, a Dockerfile image or
+  a build SBOM to confirm it." With a pin, the last two sentences become "Pinned runtime: Node.js 22
+  (Dockerfile); its own row gives the end-of-life status." In `issues.json` it is an `eol` issue with
+  priority 6, reason `eol_minimum` and fix `raise_minimum` (raise the floor to a supported cycle).
+  Go minimums keep the behaviour above and are not counted here.
 - **.NET** runtime detection is unit-tested only; it has not been checked against a real .NET
   repository yet.
 
@@ -1178,7 +1315,9 @@ validation, and it says nothing about whether the components are the right ones.
 | error | `not-object`, `bom-format`, `spec-version` (1.4 to 1.7), `serial-number-format` (`urn:uuid:`), `version-invalid`; `metadata-type`, `timestamp-format` (ISO 8601 date-time with zone), `tools-type`, `subject-type`, `subject-type-invalid`, `subject-name-missing`; `component-not-object`, `component-type-missing`, `component-type-invalid`, `component-name-missing`, `component-components`, `purl-syntax`, `version-type`; `bom-ref-type`, `bom-ref-too-long`, `bom-ref-duplicate`; `dependencies-type`, `dependency-not-object`, `dependency-ref-type`, `dependency-ref-dangling`, `depends-on-type`, `depends-on-dangling`; `too-many-components`, `too-many-dependencies`. Unreadable: `missing`, `too-large`, `unreadable`, `not-json` |
 | warning | `serial-number-missing`, `version-missing`, `metadata-missing`, `timestamp-missing`, `tools-missing`, `subject-missing` (all optional in CycloneDX), `dependency-ref-repeated`, `nesting-too-deep` |
 
-**Coverage.** For each field, how many components carry it, and the share. Components of type `file`
+**Coverage.** For each field, how many component entries carry it, and the share. The count is of entries
+in the document, not of distinct packages: a package declared in two manifests (a `pom.xml` and a
+`build.gradle`) with versions spelled differently is two entries. Components of type `file`
 (Syft lists the manifests it read) are counted apart and left out of the shares. A value counts only
 when it is there and non-empty; nothing is inferred and nothing is filled in. The plugin never adds a
 supplier, licence or hash a source does not state, so a low share is the honest result for most
@@ -1229,6 +1368,28 @@ NTIA's practices (frequency, delivery, access control) are outside a file check.
 
 ## Limitations
 
+The overview, with C/C++ and firmware coverage, untested platforms and the data that leaves the
+machine per mode, is [Limitations](limitations.md); the plain-CLI sequence is
+[Using sbom-audit without Claude Code](without-claude-code.md). The details:
+
+- C/C++ and firmware: git submodules, vendored C/C++ code, Zephyr `west.yml`, ESP-IDF
+  `idf_component.yml`, PlatformIO `platformio.ini`/`library.json`, Conan `conanfile.py`, the
+  dependencies of `vcpkg.json` and CMake `FetchContent`/`ExternalProject` are not inventoried. They
+  are detected per branch (`coverage_gaps` in `inventory.json`) and reported, never as clean:
+  `AUDIT.md` summary row "Branches with submodules, C/C++ code or firmware manifests not inventoried"
+  and a Note per branch, `stats.coverage_gaps` in `audit.json`, the counts in `STATUS.md`, the limits of
+  `REPORT.html` and `INCOMPLETE` in the CRA SBOM row. Import a build SBOM to cover them.
+- Packages with a purl type OSV has no advisories for (`generic`, `github` outside workflows, `conan`,
+  `vcpkg`, `bitbucket`, `gitlab`), typically from an imported C/C++ build SBOM, are inventoried but not
+  checked: `stats.packages_unmatched`, the `AUDIT.md` summary row "Packages OSV cannot match" and a Note
+  per branch. CPEs are not used for matching.
+- While any of the three above is non-zero, `REPORT.html` section 1 never says plainly that no finding
+  needs immediate action: it says "No finding among the checked packages requires immediate action;
+  not checked: …" with the counts, pointing to the Limits.
+- A project with none of the configured branches is not scanned: `setup` warns, the run lists it in
+  `AUDIT.md` Notes, `skipped_projects` and `stats.projects_not_scanned` in `audit.json`, and `STATUS.md`
+  Sources and Counts. The exit code does not change (2 means a source failed); instead `run`, `scan` and
+  `audit` end with `WARNING: incomplete run: N projects not scanned (…)`.
 - Ecosystems OSV does not cover (CocoaPods, Swift packages, system packages) are listed
   in the inventory but not matched against vulnerabilities.
 - GitHub Actions used in workflows (`pkg:github/<owner>/<repo>@<ref>`) are inventoried but not
@@ -1259,8 +1420,8 @@ NTIA's practices (frequency, delivery, access control) are outside a file check.
 - An advisory that no source rates reads "not rated"; it ranks with CRITICAL/HIGH in production
   (issues priority 3) rather than below LOW, and someone has to read it to know how bad it is.
 - No reachability analysis: a vulnerable package in the lockfile counts as a finding until
-  a VEX statement says otherwise. The verifier in `assess` reads code; it runs nothing, and a
-  `holds` verdict is a second opinion, not a proof.
+  a VEX statement says otherwise. The verifier in `assess` reads code through `code`; it never builds,
+  installs or executes the project, and a `holds` verdict is a second opinion, not a proof.
 - `deno.lock` packages pulled through a CDN (esm.sh, unpkg, jsDelivr, Skypack) are listed;
   `deno.land` modules are not, because OSV has no ecosystem for them.
 - `run --only <project>` replaces the inventory and report with those projects only; run
@@ -1270,6 +1431,21 @@ NTIA's practices (frequency, delivery, access control) are outside a file check.
 - `git archive` honours `export-ignore` in a scanned repository's `.gitattributes`: a manifest
   or lockfile marked that way is missing from the SBOM. The secrets scan reads the history
   directly and is not affected.
+- <a id="hostile-repositories"></a>**Hostile repositories.** Every git process the plugin starts,
+  directly or through gitleaks, gets command-line-scope config (`GIT_CONFIG_COUNT`) that overrides the
+  repository's own `.git/config`: `core.fsmonitor=false`, `core.hooksPath=/dev/null`, an empty
+  `diff.external`, `log.showSignature=false` and `protocol.ext.allow=never`. gitleaks' `git log` runs
+  with `--no-textconv --no-ext-diff`; the tree export empties every filter driver (`smudge`, `clean`,
+  `process`) the repository configures, so `git archive` runs none; branches are read by full ref
+  (`refs/heads/…`, `refs/remotes/origin/…`), so a tag with a branch's name changes nothing (the run
+  prints a warning). Readers follow a committed symlink only to a regular file inside the exported
+  tree. Not covered: `git fetch` still uses the repository's transport settings (`core.sshCommand`,
+  `credential.helper`, `core.askPass`, proxies), which a fetch of a private remote needs; use
+  `--no-fetch` (or `fetch = false`) for a repository you do not trust. The git binary, syft,
+  osv-scanner and gitleaks themselves parse the repository's files; a bug in one of them is outside
+  what the plugin can rule out. Each external command has a timeout (git 10 min, a tree export
+  30 min, syft and osv-scanner 30 min, gitleaks 10 min plus 30 s); a timeout is a failed source,
+  never a clean one.
 - Host mode covers Debian and Ubuntu servers with apt only; other distributions are reported as unsupported. A Lynis run takes several minutes per host, so a check of many servers takes a while (hosts run in parallel, 4 by default). Hosts reached only through ProxyJump or ProxyCommand are not supported. `patch` installs only the confirmed list and may refuse an upgrade that needs a new package (see [Hosts](#hosts)).
 - The scheduler covers macOS and Linux; elsewhere use the GitHub Actions template.
 - Release scanning reads local tags only, and only the newest `keep` of them; a release outside that

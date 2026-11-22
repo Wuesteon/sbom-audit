@@ -11,6 +11,7 @@ Every merge recomputes `age_days` from each finding's commit date.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import subprocess
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from . import report as secrets_report
 
 EXIT_CLEAN, EXIT_FINDINGS, EXIT_FAILED, EXIT_TOOL_MISSING = 0, 1, 2, 4
 RAW_DIR = Path(".cache") / "secrets" / "raw"
+OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")   # SHA-1 or SHA-256, lower-case, full length
 
 
 def _problem_reason(problem: engine.EngineProblem) -> str:
@@ -67,9 +69,13 @@ def _stored_path(path: Path, cfg: config.Config, out: Path) -> str | None:
 
 def _live_tips(path: Path, tips: list[str], current: list[str]) -> list[str]:
     """The previous tips that still exist (a force-push plus gc can remove one; `^<gone>` would fail).
-    A tip that is still a ref tip exists; only the others are looked up."""
+    A tip that is still a ref tip exists; only the others are looked up. `secrets.json` is not trusted:
+    anything but a full object id (`HEAD`, a branch name, an option, text with spaces) is dropped, since it
+    would end up in gitleaks' `--log-opts` as `^<tip>`."""
     live, now = [], set(current)
     for tip in tips:
+        if not isinstance(tip, str) or not OBJECT_ID.fullmatch(tip):
+            continue
         if tip in now:
             live.append(tip)
             continue

@@ -175,6 +175,21 @@ class ScanTests(unittest.TestCase):
         self.assertIn(("image", "node"), {(c.kind, c.name) for c in inv.components})
         self.assertTrue(scan.sbom_path(self.out, "app", "main").exists())
 
+    def test_tag_named_like_a_branch_is_warned_about_and_not_read(self):
+        repo = make_repo(self.root, "app", {"Dockerfile": "FROM node:20-alpine\n"})
+        git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
+        git("tag", "main")                                   # the tag holds the old Dockerfile
+        (repo / "Dockerfile").write_text("FROM python:3.12-slim\n")
+        git("commit", "-q", "-am", "python")
+        lines = []
+        with mock.patch.object(scan.syft, "inventory", side_effect=ToolError("syft", 1, "boom")):
+            result = scan.scan(config.load(self.out), only=["app"], fetch=False, log=lines.append)
+        inv = result.inventories[0]
+        self.assertEqual(inv.ref, "refs/heads/main")
+        self.assertIn(("image", "python"), {(c.kind, c.name) for c in inv.components})
+        self.assertNotIn(("image", "node"), {(c.kind, c.name) for c in inv.components})
+        self.assertTrue(any("tag named 'main'" in line for line in lines), lines)
+
     def test_reader_packages_already_catalogued_by_syft_are_not_duplicated(self):
         """If a future Syft lists esm.sh packages itself, the deno.lock reader must not add a second copy."""
         lock = '{"version": "4", "remote": {"https://esm.sh/inngest@3.52.7": "h"}}'
@@ -289,6 +304,45 @@ class ScanTests(unittest.TestCase):
         sbom = {c.name: c for c in cyclonedx.read_components(scan.sbom_path(self.out, "droid", "main"))}
         self.assertEqual(sbom["junit"].scope, "optional")
         self.assertTrue(sbom["dynamic"].props.get("unresolved"))
+
+    def test_pom_and_gradle_declaring_one_unresolved_coordinate_keep_two_rows(self):
+        """Each manifest's row is evidence and stays; reports group them (coverage.coordinate)."""
+        from sbomaudit import coverage, sbomquality
+        pom = ("<project><dependencies><dependency><groupId>org.a</groupId><artifactId>core</artifactId>"
+               "<version>${core.version}</version></dependency></dependencies></project>\n")
+        make_repo(self.root, "java", {"pom.xml": pom, "build.gradle": "dependencies {\n implementation 'org.a:core'\n}\n"})
+        cfg = config.load(self.out)
+        purl = "pkg:maven/org.a/core@${core.version}"
+        entry = {"bom-ref": purl, "type": "library", "name": "core", "version": "${core.version}", "purl": purl,
+                 "properties": [{"name": "sbom-audit:scope", "value": "required"},
+                                {"name": "syft:location:0:path", "value": "/pom.xml"}]}
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1, "components": [entry]}
+        comps = cyclonedx.components({"components": [dict(entry)]})
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["java"], fetch=False)
+        rows = [c for c in result.inventories[0].components if c.kind == "package"]
+        self.assertEqual(sorted((c.version, tuple(c.locations)) for c in rows),
+                         [("", ("build.gradle",)), ("${core.version}", ("pom.xml",))])
+        self.assertEqual(len(coverage.distinct_packages(rows)), 1)
+        quality = sbomquality.check_path(scan.sbom_path(self.out, "java", "main"))
+        self.assertEqual(quality["coverage"]["components"], 2)          # two entries in the document, labelled so
+
+    def test_vcpkg_project_is_not_a_dependency_of_itself(self):
+        """Syft's vcpkg-manifest-cataloger reports only the manifest's own name and version (Syft 1.56.0)."""
+        make_repo(self.root, "cpp", {"vcpkg.json": json.dumps({"name": "my-app", "version": "1.2.0",
+                                                               "dependencies": ["zlib"]})})
+        cfg = config.load(self.out)
+        entry = {"bom-ref": "pkg:vcpkg/my-app@1.2.0", "type": "library", "name": "my-app", "version": "1.2.0",
+                 "purl": "pkg:vcpkg/my-app@1.2.0",
+                 "properties": [{"name": "syft:package:foundBy", "value": "vcpkg-manifest-cataloger"},
+                                {"name": "syft:location:0:path", "value": "/vcpkg.json"}]}
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1, "components": [entry]}
+        comps = cyclonedx.components({"components": [dict(entry)]})
+        with mock.patch.object(scan.syft, "inventory", return_value=(bom, comps)):
+            result = scan.scan(cfg, only=["cpp"], fetch=False)
+        self.assertEqual([c.name for c in result.inventories[0].components if c.kind == "package"], [])
+        names = [c.name for c in cyclonedx.read_components(scan.sbom_path(self.out, "cpp", "main"))]
+        self.assertNotIn("my-app", names)
 
     def test_only_filters_and_reports_unknown_names(self):
         make_repo(self.root, "a", {"README": "a\n"})

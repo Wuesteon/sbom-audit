@@ -102,6 +102,38 @@ class BuildTest(unittest.TestCase):
         doc = issues.build(rep, None, None)
         self.assertEqual(doc["issues"], [])
 
+    def test_declared_minimum_allowing_eol_is_a_lower_priority_issue(self):
+        rep = make_rep(runtimes=[
+            {"product": "python", "cycle": "3.8", "status": "minimum", "basis": "requires-python",
+             "cycle_status": "EOL", "eol_date": "2024-10-07", "latest": "3.8.20",
+             "locations": [{"project": "prod", "branch": "main", "source": "pyproject.toml: requires-python >=3.8",
+                            "declared": ["requires-python >=3.8"], "pinned": []},
+                           {"project": "prod", "branch": "dev", "source": "pyproject.toml: requires-python >=3.8",
+                            "declared": ["requires-python >=3.8"], "pinned": []}]},
+            {"product": "python", "cycle": "3.12", "status": "minimum", "basis": "requires-python",
+             "cycle_status": "supported", "eol_date": "2028-10-31",
+             "locations": [{"project": "prod", "branch": "main", "source": "api/pyproject.toml: requires-python >=3.12",
+                            "declared": ["requires-python >=3.12"], "pinned": []}]},
+            {"product": "nodejs", "cycle": "18", "status": "EOL", "eol_date": "2025-04-30",
+             "locations": [{"project": "prod", "branch": "main", "source": "Dockerfile: image node:18"}]}])
+        doc = issues.build(rep, None, None)
+        got = by_id(doc)
+        self.assertEqual(sorted(got), ["eol-minimum:prod:python@3.8:pyproject.toml: requires-python >=3.8",
+                                       "eol:prod:nodejs@18:Dockerfile: image node:18"])
+        floor = got["eol-minimum:prod:python@3.8:pyproject.toml: requires-python >=3.8"]
+        real = got["eol:prod:nodejs@18:Dockerfile: image node:18"]
+        self.assertGreater(floor["priority"], real["priority"])
+        self.assertEqual((floor["kind"], floor["priority"], floor["reason"]), ("eol", 6, "eol_minimum"))
+        self.assertIn("eol_minimum", issues.PRIORITY_REASONS[6])
+        self.assertEqual(floor["title"], "requires-python >=3.8 allows Python 3.8, past end of life (2024-10-07)")
+        self.assertEqual(floor["where"], {"project": "prod", "branches": ["dev", "main"], "path": "pyproject.toml",
+                                          "line": None})
+        self.assertEqual(floor["fix"]["action"], "raise_minimum")
+        self.assertIn("allows Python 3.8", floor["details"]["text"])
+        self.assertNotIn("runs", floor["title"])
+        self.assertEqual([i["id"] for i in doc["issues"]][-1], floor["id"])     # after the real EOL runtime
+        self.assertIn("raise minimum", issues.render_md(doc))
+
     def test_eol_and_floating_tags(self):
         rep = make_rep(
             runtimes=[{"product": "nodejs", "cycle": "18", "status": "EOL", "eol_date": "2025-04-30", "latest": "18.20.8",
@@ -299,6 +331,7 @@ class RefreshTest(unittest.TestCase):
         code, text = self.run_cli("issues")
         self.assertEqual(code, 2)
         self.assertIn("no audit.json yet", text)
+        self.assertRegex(text, r"/sbom-audit:run \(CLI: python3 \S*sbom_audit_cli\.py'? run\)")
         self.assertFalse((self.out / "issues.json").exists())
         self.write("audit.json", make_rep(vulnerabilities=[vuln("a", "HIGH", [("prod", "main", "p.json", "required")])]))
         code, text = self.run_cli("issues")

@@ -1,6 +1,6 @@
 # Dependency Audit — 2026-11-07
 
-Generated 2026-11-07T03:00:00Z by sbom-audit 1.3.0. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
+Generated 2026-11-07T03:00:00Z by sbom-audit 1.3.1. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
 
 ## Source status
 
@@ -15,7 +15,7 @@ A failed source means its section below is empty, not clean.
 | Metric | Count |
 |---|---|
 | Projects / branches scanned | 3 / 3 |
-| Unique package versions checked | 3 |
+| Distinct package versions (ecosystem, name, version) | 3 |
 | Vulnerable package versions | 1 |
 | … in CISA KEV (actively exploited) | 0 |
 | … max severity HIGH | 1 |
@@ -26,6 +26,7 @@ A failed source means its section below is empty, not clean.
 | Vulnerable direct dependencies | 1 |
 | Runtimes / images past end-of-life | 0 |
 | Runtimes / images reaching EOL within 90 days | 0 |
+| Allowed but unsupported: declared minimum allows an end-of-life version (not counted as EOL) | 0 |
 | Floating container images (unique) | 0 |
 | Direct deps ≥1 major behind latest | 0 |
 | Suppressed by VEX | 0 |
