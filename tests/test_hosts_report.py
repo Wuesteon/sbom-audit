@@ -274,8 +274,9 @@ class EpssTest(ReportCase):
         doc = {**document({"box-a": entry(self.scored(None, None))}),
                "epss": {"available": True, "score_date": "2026-11-23T12:00:23Z"}}
         md = self.render(doc)
-        self.assertIn("CVE-2024-1086 (KEV, EPSS no EPSS) in ", self.line(md, self.KEV))
-        self.assertIn(" - highest EPSS no EPSS", self.line(md, self.VULN))
+        self.assertIn("CVE-2024-1086 (KEV, no EPSS) in ", self.line(md, self.KEV))
+        self.assertIn("no fix installable - no EPSS", self.line(md, self.VULN))
+        self.assertNotIn("EPSS no EPSS", md)
         self.assertNotIn("0.0%", md)
 
     def test_hosts_md_when_scores_were_not_available(self):

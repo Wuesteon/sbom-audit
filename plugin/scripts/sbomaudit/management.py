@@ -1188,6 +1188,10 @@ def _fix(i: dict, S: dict) -> str:
     return text
 
 
+def _details(i: dict) -> dict:
+    return i.get("details") if isinstance(i.get("details"), dict) else {}
+
+
 def _epss_cell(i: dict, block: dict, S: dict) -> str:
     """The EPSS column: the highest score of a vulnerability, "not available" when no score file was
     available, `–` for every other kind (as ISSUES.md does)."""
@@ -1218,8 +1222,11 @@ def _action(data: dict, S: dict) -> str:
         L.append(f'<p class="warn">{S["action_incomplete"].format(what=names)}</p>')
     items = [i for i in doc.get("issues") or [] if isinstance(i, dict)]
     urgent = [i for i in items if isinstance(i.get("priority"), int) and i["priority"] <= TOP_PRIORITY]
-    # direct, then unknown, then transitive within a priority, also for an issues.json written before that order
-    urgent.sort(key=lambda i: (i["priority"], not i.get("production"), issues.dependency_rank(i)))
+    # the leading elements of issues._sort_key (priority, production, likely to be exploited by EPSS, then direct,
+    # unknown, transitive), also for an issues.json written before that order; the sort is stable, so the score
+    # order of issues.json stays inside these groups. Without `epss_likely` it sorts exactly as before.
+    urgent.sort(key=lambda i: (i["priority"], not i.get("production"), not _details(i).get("epss_likely", False),
+                               issues.dependency_rank(i)))
     split = issues.dependency_split(urgent)
     if split["total"]:
         parts = S["action_deps_split_unknown" if split["unknown"] else "action_deps_split"].format(**split)

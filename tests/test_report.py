@@ -409,11 +409,40 @@ class EpssAuditMdTests(unittest.TestCase):
             off = self.render(Path(tmp), self.findings(medium=0.25), epss={**REP_EPSS, "threshold": 0})
         self.assertIn("| Promoted by EPSS (at or above 10.0%, in production or a supported release) | 1 |",
                       section(text, "Summary"))
-        self.assertIn("- **minimist@1.2.5**", section(text, "Likely to be exploited (EPSS)"))
+        self.assertIn("- **minimist@1.2.5** (npm, runtime scope): EPSS 25.0%, GHSA-2 - used by zeta@main; "
+                      "promoted to priority 3", section(text, "Likely to be exploited (EPSS)"))
         self.assertIn("| Promoted by EPSS | off |", section(off, "Summary"))
         self.assertIn("Promotion by EPSS is turned off ([epss] promote_at = 0); scores are shown in the tables.",
                       section(off, "Likely to be exploited (EPSS)"))
         self.assertIn("44.1%", section(off, "Critical and high severity by project"))
+
+    def test_section_marks_the_rows_the_summary_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sec = section(self.render(Path(tmp), self.findings(medium=0.25, dev=0.5)), "Likely to be exploited (EPSS)")
+        self.assertIn("Rows marked promoted are the ones the summary counts; the others were already urgent or are "
+                      "not ranked like production.", sec)
+        lines = {line.split("**")[1]: line for line in sec.splitlines() if line.startswith("- **")}
+        self.assertEqual(sorted(lines), ["esbuild@0.17.0", "lodash@4.17.20", "minimist@1.2.5"])
+        self.assertTrue(lines["minimist@1.2.5"].endswith("; promoted to priority 3"))
+        self.assertNotIn("promoted", lines["lodash@4.17.20"])       # HIGH: already urgent
+        self.assertNotIn("promoted", lines["esbuild@0.17.0"])       # dev-only: not ranked like production
+
+    def test_score_exactly_at_the_threshold_is_counted_and_listed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            at = self.render(Path(tmp), self.findings(high=0.01, medium=0.10))
+            under = self.render(Path(tmp), self.findings(high=0.01, medium=0.0999))
+        self.assertIn("| Promoted by EPSS (at or above 10.0%, in production or a supported release) | 1 |",
+                      section(at, "Summary"))
+        self.assertIn("- **minimist@1.2.5** (npm, runtime scope): EPSS 10.0%", section(at, "Likely to be exploited (EPSS)"))
+        self.assertIn("| Promoted by EPSS (at or above 10.0%, in production or a supported release) | 0 |",
+                      section(under, "Summary"))
+        self.assertNotIn("minimist", section(under, "Likely to be exploited (EPSS)"))
+
+    def test_summary_says_not_available_when_the_source_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.render(Path(tmp), self.findings(high=None), epss={**REP_EPSS, "available": False})
+        self.assertIn("| Promoted by EPSS | not available |", section(text, "Summary"))
+        self.assertNotIn("| Promoted by EPSS (at or above", text)
 
     def test_no_row_at_or_above_the_threshold(self):
         with tempfile.TemporaryDirectory() as tmp:

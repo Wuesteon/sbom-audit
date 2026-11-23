@@ -364,9 +364,15 @@ def _report(data) -> ReportOpts:
                       language=language)
 
 
+EPSS_KEYS = ("enabled", "promote_at")
+
+
 def _epss(data) -> EpssOpts:
     if not isinstance(data, dict):
         raise ConfigError("[epss] must be a table")
+    unknown = sorted(set(data) - set(EPSS_KEYS))
+    if unknown:              # a typo must not go unnoticed: promote_at changes priorities
+        raise ConfigError(f"[epss]: unknown key {unknown[0]} (known: {', '.join(EPSS_KEYS)})")
     promote_at = data.get("promote_at", 0.10)
     if (isinstance(promote_at, bool) or not isinstance(promote_at, (int, float))
             or not 0 <= promote_at <= 1):

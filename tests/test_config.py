@@ -131,6 +131,12 @@ class ConfigTests(unittest.TestCase):
             self.load_with('[epss]\nenabled = "no"\n')
         self.assertIn("[epss] enabled", str(ctx.exception))
 
+    def test_epss_unknown_key_is_refused(self):
+        for text, key in (("promote_att = 0.5", "promote_att"), ("enable = false", "enable")):
+            with self.subTest(key), self.assertRaises(ConfigError) as ctx:
+                self.load_with(f"[epss]\n{text}\n")
+            self.assertEqual(str(ctx.exception), f"[epss]: unknown key {key} (known: enabled, promote_at)")
+
     def test_write_default_mentions_epss_commented_and_loads(self):
         out = self.tmp / "security"
         text = config.write_default(out, config.load(out)).read_text()

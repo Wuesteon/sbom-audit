@@ -381,6 +381,23 @@ class TestEpss(ManagementTestCase):
         self.assertLess(text.index("CISA KEV catalogue answered"), text.index("EPSS scores (FIRST) answered"))
         self.assertLess(text.index("EPSS scores (FIRST) answered"), text.index("endoflife.date answered"))
 
+    def test_action_list_puts_likely_issues_first_as_issues_md_does(self):
+        out = with_epss(full_folder(self.tmp / "security"))
+        doc = json.loads((out / "issues.json").read_text())
+        # an issues.json written before the dependency order: the direct issue first
+        doc["issues"][3:3] = [
+            {"id": "d2", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "HIGH", "production": True, "title": "plain 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": True, "dev_only": False, "max_epss": 0.01, "epss_likely": False},
+             "fix": {"action": "upgrade", "target": "2.0.0"}, "first_seen": "2026-11-10"},
+            {"id": "t2", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "HIGH", "production": True, "title": "likely 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": False, "dev_only": False, "max_epss": 0.5, "epss_likely": True},
+             "fix": {"action": "upgrade", "target": "2.0.0"}, "first_seen": "2026-11-10"}]
+        write_json(out / "issues.json", doc)
+        text = text_of(management.render(management.load(out)))
+        self.assertLess(text.index("likely 1.0.0"), text.index("plain 1.0.0"))     # likely before direct
+
     def test_report_epss_cell_is_a_dash_for_other_kinds(self):
         out = with_epss(full_folder(self.tmp / "security"))
         html = management.render(management.load(out))

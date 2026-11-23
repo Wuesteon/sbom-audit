@@ -28,8 +28,8 @@ from .cache import atomic_write
 from .coverage import severity_text, unrated_advisories
 from .cvss import SEV_ORDER
 from .model import direct_text, merge_direct
-from .report import (ACTIONABLE, JSON_FILE as AUDIT_JSON, PRODUCT_NAME, allowed_unsupported, counts_as_production,
-                     md, minimum_text, worst_advisory)
+from .report import (ACTIONABLE, JSON_FILE as AUDIT_JSON, PRODUCT_NAME, _epss_on, allowed_unsupported,
+                     counts_as_production, md, minimum_text, worst_advisory)
 from .secrets.classify import context_text, ranked_lower
 from .versions import ver_key
 
@@ -480,10 +480,17 @@ def render_md(doc: dict) -> str:
     """ISSUES.md: the same list per project and host, most urgent place first."""
     counts = doc["counts"]
     block = doc.get("epss")                  # None: no EPSS column or sentence, ISSUES.md as in 1.3.x
-    item3 = ("3 CRITICAL/HIGH in production or a supported release or not rated there, class B secret"
-             if block is None else
-             "3 CRITICAL/HIGH in production or a supported release, or not rated there, or EPSS at or above "
-             f"{epss.text(block.get('threshold'))} there (off when the threshold is 0), class B secret")
+    promoting = block is not None and _epss_on(block)
+    if block is None:
+        item3 = "3 CRITICAL/HIGH in production or a supported release or not rated there, class B secret"
+    elif promoting:
+        item3 = ("3 CRITICAL/HIGH in production or a supported release, or not rated there, or EPSS at or above "
+                 f"{epss.text(block.get('threshold'))} there (off when the threshold is 0), class B secret")
+    else:
+        item3 = ("3 CRITICAL/HIGH in production or a supported release, or not rated there (promotion by EPSS is "
+                 "off: `[epss] promote_at = 0`), class B secret")
+    split_label = ("(KEV, CRITICAL/HIGH or not rated in production or a supported release, or likely to be exploited "
+                   "by EPSS there)" if promoting else "(KEV, or CRITICAL/HIGH in production or a supported release)")
     within = ("Within a priority, direct dependencies are listed first: they are fixed in "
               if block is None else
               "Within a priority, production comes first, then findings at or above the EPSS threshold, then direct "
@@ -498,8 +505,7 @@ def render_md(doc: dict) -> str:
          "(test, docs, ...) · 5 floating tag · 6 other, a declared minimum that allows an end-of-life version.", ""]
     split = dependency_split(doc["issues"])
     if split["total"]:
-        L += [f"Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "
-              + split_text(split) + ". " + within
+        L += [f"Vulnerabilities at priority 2 and 3 {split_label}: " + split_text(split) + ". " + within
               + "your own manifest; a transitive one through the parent that pulls it in, or a lockfile refresh"
               + ("; one of unknown type comes between them: check the manifest first, unknown is not transitive"
                  if split["unknown"] else "") + ". Transitive "
@@ -613,8 +619,7 @@ def _line(i: dict) -> str:
     place = where.get("host") or where.get("project") or "?"
     path = f" {where['path']}" + (f":{where['line']}" if where.get("line") else "") if where.get("path") else ""
     details = i.get("details") if isinstance(i.get("details"), dict) else {}
-    score = (f" EPSS {epss.text(details['max_epss'])}"
-             if i["kind"] == "vulnerability" and "max_epss" in details else "")
+    score = f" {epss.label(details['max_epss'])}" if i["kind"] == "vulnerability" and "max_epss" in details else ""
     return f"P{i['priority']} {i['kind']:<13} {place}{path}: {i['title']} [{_fix_cell(i)}] {i['id']}{score}"
 
 

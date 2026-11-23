@@ -116,6 +116,32 @@ class EpssTests(unittest.TestCase):
         self.assertLess(epss.order(0.5, 0.1), epss.order(None, 0.1))
         self.assertLess(epss.order(None, 0.1), epss.order(0.05, 0.1))
 
+    def test_label_names_the_score_or_says_no_epss(self):
+        self.assertEqual([epss.label(x) for x in (0.44, 0.0004, None)], ["EPSS 44.0%", "EPSS <0.1%", "no EPSS"])
+        self.assertEqual([epss.label(x, "highest EPSS") for x in (0.123, None)], ["highest EPSS 12.3%", "no EPSS"])
+
+    def test_unpack_cap_is_64_mb(self):
+        self.assertEqual(epss.MAX_UNPACKED, 64 * 1024 * 1024)
+
+    def test_a_file_that_unpacks_beyond_the_cap_is_refused(self):
+        big = epss_gz({f"CVE-2024-{n:05d}": (0.5, 0.5) for n in range(1, 2000)})
+        cap = len(gzip.decompress(RAW)) + 10          # the small file fits, the big one does not
+        self.assertGreater(len(gzip.decompress(big)), cap)
+        with mock.patch.object(epss, "MAX_UNPACKED", cap):
+            with self.assertRaises(ValueError) as ctx:
+                epss.parse(big)
+            self.assertIn("unpacks to more than", str(ctx.exception))
+            failed = epss.load(self.cache, epss_fetch(big))
+            self.assertEqual((failed.scores, failed.origin, failed.available), ({}, None, False))
+            self.assertIn("unpacks to more than", failed.error)
+            epss.load(self.cache, epss_fetch(RAW))
+            expired = Cache(self.cache.dir, ttl_hours=24)
+            with mock.patch("sbomaudit.cache.time.time", return_value=time.time() + 25 * 3600):
+                stale = epss.load(expired, epss_fetch(big))
+        self.assertEqual((stale.origin, stale.error, len(stale.scores)), ("stale", None, 2))
+        self.assertIn("unpacks to more than", stale.warning)
+        self.assertNotIn("CVE-2024-00001", stale.scores)
+
     def test_http_get_bytes_refuses_http_and_oversize(self):
         with self.assertRaises(ValueError):
             epss.http_get_bytes("http://example.invalid/x")

@@ -571,6 +571,8 @@ def _epss_summary_rows(rep: dict, production: set[str]) -> list[tuple[str, objec
     block = rep.get("epss")
     if not block:
         return []
+    if not block.get("available"):          # no score file: never a count of 0
+        return [("Promoted by EPSS", "not available")]
     if not _epss_on(block):
         return [("Promoted by EPSS", "off")]
     threshold = block["threshold"]
@@ -608,7 +610,7 @@ def _kev_section(vulns: list[dict]) -> list[str]:
     return L + [""]
 
 
-def _epss_section(vulns: list[dict], block: dict) -> list[str]:
+def _epss_section(vulns: list[dict], block: dict, production: set[str]) -> list[str]:
     L = ["## Likely to be exploited (EPSS)", ""]
     if not block.get("available"):
         return L + ["EPSS scores were not available in this run. No finding was promoted or demoted because of it.", ""]
@@ -623,14 +625,16 @@ def _epss_section(vulns: list[dict], block: dict) -> list[str]:
     if not rows:
         return L + [f"{intro} None of the vulnerable package versions has an EPSS score at or above "
                     f"{epss.text(threshold)}.", ""]
-    L += [f"{intro} Package versions at or above {epss.text(threshold)}:", ""]
+    L += [f"{intro} Rows marked promoted are the ones the summary counts; the others were already urgent or are "
+          f"not ranked like production. Package versions at or above {epss.text(threshold)}:", ""]
     for v in rows:
         ids = ", ".join(" ".join([s.get("id", "?")] + [c for c in s.get("cves", []) if c != s.get("id")])
                         for s in v["vulns"] if epss.likely(s.get("epss"), threshold))
         where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in v["locations"]}))
         scope = "dev-only" if v["scope"] == "optional" else "runtime scope"
         L.append(f"- **{md(_pkg(v))}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): "
-                 f"EPSS {epss.text(v['max_epss'])}, {md(ids)} - used by {md(where)}")
+                 f"EPSS {epss.text(v['max_epss'])}, {md(ids)} - used by {md(where)}"
+                 + ("; promoted to priority 3" if epss_promoted(v, production, threshold) else ""))
     return L + [""]
 
 
@@ -853,7 +857,7 @@ def write_audit_md(rep: dict, out: Path) -> Path:
     L += _summary(rep)
     L += _kev_section(rep["vulnerabilities"])
     if block:
-        L += _epss_section(rep["vulnerabilities"], block)
+        L += _epss_section(rep["vulnerabilities"], block, production)
     L += _by_project_section(rep["vulnerabilities"], production, block)
     if any(unrated_in_production(v, production) for v in rep["vulnerabilities"]):
         L += coverage.unrated_section(rep["vulnerabilities"], lambda v: unrated_in_production(v, production))

@@ -1127,6 +1127,11 @@ class SummaryLineEpssTests(unittest.TestCase):
     def test_promoted_rows_are_named(self):
         self.assertIn(", 1 promoted by EPSS", self.line(self.rep()))
 
+    def test_failed_source_prints_no_zero_count(self):
+        rep = self.rep(max_epss=None)
+        rep["epss"]["available"] = False
+        self.assertNotIn("promoted", self.line(rep))
+
     def test_nothing_about_epss_without_the_step_or_a_promotion(self):
         self.assertNotIn("EPSS", self.line(self.rep(epss_block=False)))
         self.assertNotIn("EPSS", self.line(self.rep(max_epss=0.01)))

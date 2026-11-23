@@ -253,7 +253,7 @@ def _audit_hits(rep: dict, ids: set[str]) -> dict[tuple[str, str, str, str, str]
         v = matching_vulns[0]
         evidence = f"{v.get('id')} {v.get('severity', '')}".strip()
         if "epss" in v:                      # only when the EPSS step ran; None reads "no EPSS", never 0
-            evidence += f", EPSS {epss.text(v['epss'])}" if v["epss"] is not None else ", no EPSS"
+            evidence += f", {epss.label(v['epss'])}"
         if v.get("fixed_in"):
             evidence += f", fix {entry['version']} → {v['fixed_in']}"
         if v.get("kev"):

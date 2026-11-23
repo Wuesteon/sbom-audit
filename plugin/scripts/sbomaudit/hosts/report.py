@@ -22,8 +22,8 @@ Layout decisions:
   it carries are marked as from that check, and the host is never counted as clean.
 - EPSS (only when `hosts.json` has `epss`, that is when the check ran the EPSS step): one line under the
   table names the score date or says that no scores were available; with scores, KEV lines read
-  `<cve> (KEV, EPSS <score>) in ...` and `vuln` lines end with ` - highest EPSS <score>` (`no EPSS` without
-  one). Information only: no section, order or count depends on a score.
+  `<cve> (KEV, EPSS <score>) in ...` and `vuln` lines end with ` - highest EPSS <score>`; without a score they
+  read `(KEV, no EPSS)` and ` - no EPSS` (`epss.label`). Information only: no section, order or count depends on a score.
 """
 from __future__ import annotations
 
@@ -192,13 +192,13 @@ def _line(host: str, h: dict, f: dict, decisions: dict, *, critical: bool = Fals
         parts[0] = f"- **{core.md(GROUP_LABEL.get(f.get('group'), f.get('group')))}** {_code(f.get('id', '?'))}"
     fix = _fix_state(f) if f.get("group") == "kev" else None
     if fix and f.get("cve") and f.get("package"):
-        label = f"KEV, EPSS {epss.text(f.get('epss'))}" if scores else "KEV"
+        label = f"KEV, {epss.label(f.get('epss'))}" if scores else "KEV"
         parts.append(f"{core.md(f['cve'])} ({label}) in {core.md(f['package'])} {core.md(f.get('version') or '')}"
                      .rstrip() + f": {fix}")
     else:
         parts.append(core.md(f.get("text", "")) + (f" ({fix})" if fix else ""))
     if scores and f.get("group") == "vuln":
-        parts.append(f"highest EPSS {epss.text(f.get('max_epss'))}")
+        parts.append(epss.label(f.get("max_epss"), "highest EPSS"))
     line = " - ".join(parts)
     if f.get("accepted"):
         line += " " + _accepted_note(host, f, decisions)

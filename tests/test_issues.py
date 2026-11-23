@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sbomaudit import cli, issues
+from sbomaudit import cli, issues, report
 
 
 def vuln(name, sev, locations, kev=False, fixed=("1.2.0", None)):
@@ -380,10 +380,46 @@ class EpssTest(unittest.TestCase):
         self.assertIn("| 1 | secret | – |", md)
         got = by_id(doc)
         self.assertTrue(issues._line(got["vuln:zeta:package.json:npm:lib@1.0.0"]).endswith(" EPSS 12.0%"))
-        self.assertTrue(issues._line(got["vuln:zeta:package.json:npm:cold@1.0.0"]).endswith(" EPSS no EPSS"))
+        self.assertTrue(issues._line(got["vuln:zeta:package.json:npm:cold@1.0.0"]).endswith("] "
+                        "vuln:zeta:package.json:npm:cold@1.0.0 no EPSS"))
         self.assertNotIn("EPSS", issues._line(got["secret:fp"]))
         off = issues.build(epss_rep(scored("lib", "MEDIUM", None), epss={**EPSS, "available": False}), None, None)
         self.assertIn("| 6 | vulnerability, direct | n/a | lib 1.0.0", issues.render_md(off))
+
+    SPLIT_131 = "Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "
+    LEGEND_131 = "3 CRITICAL/HIGH in production or a supported release or not rated there, class B secret"
+
+    def test_split_sentence_covers_promoted_issues(self):
+        rows = (scored("lib", "MEDIUM", 0.12), scored("hot", "HIGH", 0.01))
+        on = issues.render_md(issues.build(epss_rep(*rows), None, None))
+        self.assertIn("Vulnerabilities at priority 2 and 3 (KEV, CRITICAL/HIGH or not rated in production or a "
+                      "supported release, or likely to be exploited by EPSS there): 2, of which 2 in direct", on)
+        self.assertNotIn(self.SPLIT_131, on)
+        off = issues.render_md(issues.build(epss_rep(*rows, epss={**EPSS, "threshold": 0}), None, None))
+        self.assertIn(self.SPLIT_131 + "1, of which 1 in direct", off)
+        plain = issues.render_md(issues.build(make_rep(production_projects=["zeta"], vulnerabilities=[
+            vuln("hot", "HIGH", [("zeta", "main", "package.json", "required")])]), None, None))
+        self.assertIn(self.SPLIT_131, plain)
+        self.assertIn(self.LEGEND_131, plain)
+
+    def test_legend_says_promotion_is_off(self):
+        for threshold in (0, None):
+            with self.subTest(threshold=threshold):
+                md = issues.render_md(issues.build(epss_rep(scored("hot", "HIGH", 0.5),
+                                                            epss={**EPSS, "threshold": threshold}), None, None))
+                self.assertIn("3 CRITICAL/HIGH in production or a supported release, or not rated there (promotion "
+                              "by EPSS is off: `[epss] promote_at = 0`), class B secret", md)
+                self.assertNotIn("EPSS at or above", md)
+
+    def test_score_exactly_at_the_threshold_is_promoted(self):
+        rep = epss_rep(scored("edge", "MEDIUM", 0.10), scored("under", "MEDIUM", 0.0999))
+        got = by_id(issues.build(rep, None, None))
+        edge, under = got["vuln:zeta:package.json:npm:edge@1.0.0"], got["vuln:zeta:package.json:npm:under@1.0.0"]
+        self.assertEqual((edge["priority"], edge["reason"], edge["details"]["epss_likely"]),
+                         (3, "epss_production", True))
+        self.assertEqual((under["priority"], under["reason"], under["details"]["epss_likely"]), (6, "other", False))
+        self.assertEqual(sum(1 for v in rep["vulnerabilities"]
+                             if report.epss_promoted(v, {"zeta"}, rep["epss"]["threshold"])), 1)
 
     def test_host_priorities_do_not_change_with_epss(self):
         hosts = host_doc([{"id": "vuln:curl", "group": "vuln", "text": "curl", "fixable": 1, "fix": "installable",

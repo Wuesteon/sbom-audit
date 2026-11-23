@@ -27,7 +27,7 @@ from .model import Finding
 EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
 DEFAULT_THRESHOLD = 0.10
 MAX_DOWNLOAD = 64 * 1024 * 1024       # bytes of gzip read from the network
-MAX_UNPACKED = 256 * 1024 * 1024      # bytes after decompression
+MAX_UNPACKED = 64 * 1024 * 1024       # bytes after decompression (the real file is about 12 MB)
 CACHE_FILE = "epss-scores.csv.gz"     # in cache.dir
 META_KEY = "epss-meta"                # Cache entry: {"score_date", "model_version", "entries", "sha256"}
 
@@ -200,6 +200,12 @@ def text(value: float | None) -> str:
     if value < 0.0005:
         return "<0.1%"
     return f"{value * 100:.1f}%"
+
+
+def label(value: float | None, lead: str = "EPSS") -> str:
+    """A score with its label, "EPSS 44.1%" (or `lead` instead of "EPSS"); "no EPSS" without a score, never
+    "EPSS no EPSS"."""
+    return f"{lead} {text(value)}" if value is not None else text(None)
 
 
 def likely(value: float | None, threshold: float | None) -> bool:
