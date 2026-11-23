@@ -67,6 +67,9 @@ to the next with no change in your dependencies.
   existing evidence folder once, so its table of outbound hosts names the EPSS host; hand-written files
   without the marker are left alone.
 - The eval fixture carries a synthetic EPSS score on its lodash advisory.
+- Evals, 2026-11-24 (three runs per arm): every case at or above 0.8 with the plugin (`assess`, `lookup`,
+  `run`, `setup` 1.00, `incident` and `secrets` 0.92, `hosts` 0.83); no eval exception is recorded for
+  1.4.0. Details in `CONTRIBUTING.md`.
 
 ## 1.3.1 — 2026-11-23
 
