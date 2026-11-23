@@ -25,6 +25,20 @@ def atomic_write(path: Path, text: str) -> Path:
     return path
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> Path:
+    """`atomic_write` for bytes: tmp next to `path`, then replace."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return path
+
+
 class Cache:
     def __init__(self, dir: Path, ttl_hours: int = 24):
         self.dir = Path(dir)
