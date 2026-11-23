@@ -1,4 +1,4 @@
-<!-- sbom-audit-template v6 -->
+<!-- sbom-audit-template v7 -->
 # Evidence folder (written by sbom-audit)
 
 This folder is the output of the [sbom-audit](https://github.com/Wuesteon/sbom-audit) plugin: the

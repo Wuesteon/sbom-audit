@@ -33,7 +33,7 @@ column and rule, set `enabled = false`.
 - `AUDIT.md`: a method sentence, the summary row "Promoted by EPSS", the section "Likely to be exploited
   (EPSS)" and an EPSS column in the by-project and dev-only tables. `ISSUES.md` and `REPORT.html` (EN,
   DE): an EPSS column and the reason "Likely to be exploited (EPSS)". `STATUS.md` and the run summary
-  count the promoted ones; `incident`, `lookup` and the `issues` query line show the score.
+  count the promoted ones; `incident` shows the score in its evidence, the `issues` query line at its end.
 - Hosts: KEV findings carry the CVE's score, `vuln` findings the highest one, in `hosts.json` and
   `HOSTS.md`. Information only: no host priority depends on it, and finding ids and texts never contain
   a score.
@@ -53,6 +53,9 @@ column and rule, set `enabled = false`.
   behaviour and limitations (a forecast, CVEs only, a missing score is not a low score, the 10% default
   is a judgement, scores change daily). `README.md`, `docs/limitations.md`, `docs/index.html` and the
   evidence folder templates name the new source and host.
+- Evidence folder templates v7: the next run rewrites the plugin-owned `README.md` and `CLAUDE.md` in an
+  existing evidence folder once, so its table of outbound hosts names the EPSS host; hand-written files
+  without the marker are left alone.
 - The eval fixture carries a synthetic EPSS score on its lodash advisory.
 
 ## 1.3.1 — 2026-11-23

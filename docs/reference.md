@@ -202,8 +202,7 @@ promote_at = 0.10     # a fraction from 0 to 1 (0.10 for 10%); 0 turns promotion
   and an EPSS column in the by-project and dev-only tables. A missing score reads `no EPSS`, never 0%; a
   score under 0.1% reads `<0.1%`. `STATUS.md` and the run summary count the promoted ones
   (`status.json` `counts.epss_promoted`); `REPORT.html` adds an EPSS column and the reason "Likely to be
-  exploited (EPSS)"; `incident` and `lookup` show the score in their evidence, the `issues` query line
-  at its end.
+  exploited (EPSS)"; `incident` shows the score in its evidence, the `issues` query line at its end.
 - **Outage.** When the download fails and an older file is cached, that file is used: the source status
   is `stale` with the reason and the date of the scores, and the exit code does not change. Without any
   file the source is failed (exit 2, as for KEV), no finding is promoted and the EPSS section says the

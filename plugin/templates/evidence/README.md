@@ -1,4 +1,4 @@
-<!-- sbom-audit-template v6 -->
+<!-- sbom-audit-template v7 -->
 # Security evidence
 
 SBOMs, a vulnerability audit, secrets scan results and VEX decisions for the projects in this

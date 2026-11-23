@@ -34,9 +34,9 @@ class FolderDocsTest(unittest.TestCase):
         written = evidence.write_folder_docs(out)
         self.assertEqual(sorted(p.name for p in written), ["CLAUDE.md", "README.md"])
         for name in ("CLAUDE.md", "README.md"):
-            self.assertEqual((out / name).read_text().splitlines()[0], MARKER.format(6))
+            self.assertEqual((out / name).read_text().splitlines()[0], MARKER.format(7))
         # same version again: nothing is rewritten, but both stay owned (returned for the run commit)
-        (out / "CLAUDE.md").write_text(MARKER.format(6) + "\nlocal tweak below the marker\n")
+        (out / "CLAUDE.md").write_text(MARKER.format(7) + "\nlocal tweak below the marker\n")
         owned = evidence.write_folder_docs(out)
         self.assertEqual(sorted(p.name for p in owned), ["CLAUDE.md", "README.md"])
         self.assertIn("local tweak", (out / "CLAUDE.md").read_text())
@@ -48,14 +48,14 @@ class FolderDocsTest(unittest.TestCase):
         (out / "CLAUDE.md").write_text(MARKER.format(0) + "\nold text\n")
         again = evidence.write_folder_docs(out)
         self.assertEqual([p.name for p in again], ["CLAUDE.md"])
-        self.assertEqual((out / "CLAUDE.md").read_text().splitlines()[0], MARKER.format(6))
+        self.assertEqual((out / "CLAUDE.md").read_text().splitlines()[0], MARKER.format(7))
         self.assertNotIn("old text", (out / "CLAUDE.md").read_text())
 
     def test_templates_state_the_rules(self):
         claude = (evidence.TEMPLATE_DIR / "CLAUDE.md").read_text()
         readme = (evidence.TEMPLATE_DIR / "README.md").read_text()
-        self.assertEqual(claude.splitlines()[0], MARKER.format(6))
-        self.assertEqual(readme.splitlines()[0], MARKER.format(6))
+        self.assertEqual(claude.splitlines()[0], MARKER.format(7))
+        self.assertEqual(readme.splitlines()[0], MARKER.format(7))
         for needle in ("## Assessment", "status.json", "issues.json", "secrets.json", "SECRETS.md", "sbom/",
                        "/sbom-audit:vex", "/sbom-audit:secrets resolve", "private", "HOSTS.md", "hosts.json",
                        "hosts/", "hosts-decisions.toml", "--confirm"):
