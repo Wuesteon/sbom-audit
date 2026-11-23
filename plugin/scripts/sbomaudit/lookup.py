@@ -10,7 +10,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, ecosystems, report, scan, vex
+from . import config, ecosystems, epss, report, scan, vex
 from . import hint as cli_hint
 from .config import Config
 from .coverage import UNRESOLVED_TEXT as UNRESOLVED_EVIDENCE
@@ -252,6 +252,8 @@ def _audit_hits(rep: dict, ids: set[str]) -> dict[tuple[str, str, str, str, str]
             continue
         v = matching_vulns[0]
         evidence = f"{v.get('id')} {v.get('severity', '')}".strip()
+        if "epss" in v:                      # only when the EPSS step ran; None reads "no EPSS", never 0
+            evidence += f", EPSS {epss.text(v['epss'])}" if v["epss"] is not None else ", no EPSS"
         if v.get("fixed_in"):
             evidence += f", fix {entry['version']} → {v['fixed_in']}"
         if v.get("kev"):

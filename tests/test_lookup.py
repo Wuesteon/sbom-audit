@@ -251,6 +251,21 @@ class IncidentTests(unittest.TestCase):
             self.assertEqual(json.loads((cfg.out / "vex" / "beta.openvex.json").read_text())["author"],
                              "t@example.invalid")
 
+    def test_incident_evidence_carries_the_epss_score(self):
+        def evidence(**score):
+            advisory = {"id": "GHSA-35jh-r3h4-6jhm", "aliases": ["CVE-2021-23337"], "severity": "HIGH",
+                        "fixed_in": "4.17.21", **score}
+            rep = {"vulnerabilities": [{"ecosystem": "npm", "name": "lodash", "version": "4.17.20",
+                                        "vulns": [advisory],
+                                        "locations": [{"project": "zeta", "branch": "main",
+                                                       "manifest": "package-lock.json"}]}]}
+            hits = lookup._audit_hits(rep, {"CVE-2021-23337"})
+            self.assertEqual(len(hits), 1)
+            return next(iter(hits.values()))
+        self.assertIn("GHSA-35jh-r3h4-6jhm HIGH, EPSS 1.2%, fix 4.17.20 → 4.17.21", evidence(epss=0.0123))
+        self.assertIn("GHSA-35jh-r3h4-6jhm HIGH, no EPSS, fix 4.17.20 → 4.17.21", evidence(epss=None))
+        self.assertEqual("GHSA-35jh-r3h4-6jhm HIGH, fix 4.17.20 → 4.17.21 (package-lock.json)", evidence())
+
     def test_incident_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = write_state(Path(tmp))
