@@ -41,6 +41,13 @@ push = false
 # organisation = "..."
 # language = "en"
 
+# EPSS: FIRST's daily probability that a CVE is exploited in the next 30 days (one download of the
+# complete score file; nothing about your packages is sent). promote_at is a fraction (0.10 for 10%);
+# 0 turns promotion off. enabled = false skips the download.
+# [epss]
+# enabled = true
+# promote_at = 0.10
+
 # Release scanning (off until tags is set): one SBOM and audit per release tag for the newest `keep`
 # tags, and each release's support period (months from its date and/or an end date; both: the later).
 # Per project: releases = { tags = "app-v*", support_months = 24 } overrides key by key; false = off.

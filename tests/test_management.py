@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sbomaudit import cli, config, management
+from sbomaudit import cli, config, management, manifest
 from sbomaudit.secrets import store as secrets_store
 
 FIXTURE = Path(__file__).resolve().parent.parent / "evals" / "fixtures" / "security"
@@ -333,6 +333,123 @@ class TestFullRun(ManagementTestCase):
         en = text_of(management.render(management.load(out)))
         self.assertIn("immediate action; not checked: the code in 1 branch (submodules, C/C++ or firmware) "
                       "(see Limits).", en)
+
+
+EPSS_DATE, EPSS_MODEL = "2026-11-09T12:00:23Z", "v2026.06.15"
+
+
+def with_epss(out: Path, *, origin="live", error=None, warning=None) -> Path:
+    """full_folder plus what a run with the EPSS step writes: the `epss` block, sources.epss, the provenance
+    entry and one issue promoted by EPSS (score 0.12)."""
+    audit = json.loads((out / "audit.json").read_text())
+    audit["epss"] = {"threshold": 0.1, "available": error is None, "score_date": EPSS_DATE,
+                     "model_version": EPSS_MODEL}
+    audit["sources"]["epss"] = {"loaded": 0 if error else 411399, "scored": 0 if error else 1,
+                                "score_date": None if error else EPSS_DATE,
+                                "model_version": None if error else EPSS_MODEL, "origin": None if error else origin,
+                                "fetched_at": None if error else "2026-11-10T09:59:30Z", "error": error,
+                                "warning": warning}
+    audit["provenance"] = {"sbom_audit": "1.4.0", "python": "3.12.0", "platform": "test", "config_sha256": None,
+                           "tools": {"osv-scanner": "2.0.0"},
+                           "data_sources": {"epss": manifest._epss_doc(audit["sources"]["epss"])}}
+    write_json(out / "audit.json", audit)
+    doc = json.loads((out / "issues.json").read_text())
+    doc["epss"] = {"threshold": 0.1, "available": error is None, "score_date": EPSS_DATE}
+    doc["issues"].insert(2, {
+        "id": "p1", "kind": "vulnerability", "priority": 3, "reason": "epss_production", "severity": "MEDIUM",
+        "production": True, "title": "minimist 1.0.0", "where": {"project": "shop"},
+        "details": {"direct": True, "dev_only": False, "max_epss": 0.12, "epss_likely": True},
+        "fix": {"action": "upgrade", "target": "1.2.6"}, "first_seen": "2026-11-10"})
+    write_json(out / "issues.json", doc)
+    return out
+
+
+class TestEpss(ManagementTestCase):
+    def test_report_shows_epss_column_reason_and_source(self):
+        out = with_epss(full_folder(self.tmp / "security"))
+        html = management.render(management.load(out))
+        for s in ("Likely to be exploited (EPSS)", "EPSS scores (FIRST)", "12.0%", "<th>EPSS</th>"):
+            self.assertIn(s, html)
+        text = text_of(html)
+        self.assertIn("(KEV, or CRITICAL/HIGH in production or a supported release, or likely to be exploited by "
+                      "EPSS): 2,", text)
+        self.assertIn("Actively exploited (KEV) shop PRODUCTION HIGH lodash 1.0.0", text)
+        self.assertIn("minimist 1.0.0 direct dependency 12.0% Upgrade to 1.2.6", text)
+        self.assertIn("scores of 2026-11-09T12:00:23Z (model v2026.06.15), fetched 2026-11-10T09:59:30Z "
+                      "(downloaded during this audit)", text)
+        self.assertIn("EPSS scores (FIRST) answered 2026-11-10T09:59:30Z", text)
+        self.assertLess(text.index("CISA KEV catalogue answered"), text.index("EPSS scores (FIRST) answered"))
+        self.assertLess(text.index("EPSS scores (FIRST) answered"), text.index("endoflife.date answered"))
+
+    def test_action_list_puts_likely_issues_first_as_issues_md_does(self):
+        out = with_epss(full_folder(self.tmp / "security"))
+        doc = json.loads((out / "issues.json").read_text())
+        # an issues.json written before the dependency order: the direct issue first
+        doc["issues"][3:3] = [
+            {"id": "d2", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "HIGH", "production": True, "title": "plain 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": True, "dev_only": False, "max_epss": 0.01, "epss_likely": False},
+             "fix": {"action": "upgrade", "target": "2.0.0"}, "first_seen": "2026-11-10"},
+            {"id": "t2", "kind": "vulnerability", "priority": 3, "reason": "critical_high_production",
+             "severity": "HIGH", "production": True, "title": "likely 1.0.0", "where": {"project": "shop"},
+             "details": {"direct": False, "dev_only": False, "max_epss": 0.5, "epss_likely": True},
+             "fix": {"action": "upgrade", "target": "2.0.0"}, "first_seen": "2026-11-10"}]
+        write_json(out / "issues.json", doc)
+        text = text_of(management.render(management.load(out)))
+        self.assertLess(text.index("likely 1.0.0"), text.index("plain 1.0.0"))     # likely before direct
+
+    def test_report_epss_cell_is_a_dash_for_other_kinds(self):
+        out = with_epss(full_folder(self.tmp / "security"))
+        html = management.render(management.load(out))
+        row = next(r for r in re.findall(r"<tr>.*?</tr>", html) if "Rotate the credential at the provider" in r)
+        self.assertIn("<td>–</td>", row)
+        self.assertNotIn("no EPSS", row)
+
+    def test_report_epss_strings_in_german(self):
+        out = with_epss(full_folder(self.tmp / "security"))
+        html_de = management.render(management.load(out), lang="de")
+        for s in ("Ausnutzung wahrscheinlich (EPSS)", "EPSS-Werte (FIRST)"):
+            self.assertIn(s, html_de)
+        text = text_of(html_de)
+        self.assertIn("<th>EPSS</th>", html_de)
+        self.assertIn("(KEV, oder CRITICAL/HIGH in Produktion oder einem unterstützten Release, oder laut EPSS "
+                      "wahrscheinlich ausgenutzt): 2,", text)
+        self.assertIn("Werte vom 2026-11-09T12:00:23Z (Modell v2026.06.15), abgerufen 2026-11-10T09:59:30Z "
+                      "(während dieses Audits heruntergeladen)", text)
+
+    def test_report_without_epss_is_unchanged(self):
+        out = full_folder(self.tmp / "security")
+        for lang in ("en", "de"):
+            html_without = management.render(management.load(out), lang=lang)
+            self.assertNotIn("EPSS", html_without)
+
+    def test_failed_epss_source_shows_failed_and_not_loaded(self):
+        out = with_epss(full_folder(self.tmp / "security"), error="EPSS fetch failed: URLError: offline")
+        for lang, failed, not_loaded in (("en", "EPSS scores (FIRST) FAILED", "EPSS (FIRST) failed not loaded"),
+                                         ("de", "EPSS-Werte (FIRST) FEHLGESCHLAGEN",
+                                          "EPSS (FIRST) fehlgeschlagen nicht geladen")):
+            text = text_of(management.render(management.load(out), lang=lang))
+            self.assertIn(failed, text)
+            self.assertIn(not_loaded, text)
+        html = management.render(management.load(out))
+        row = next(r for r in re.findall(r"<tr>.*?</tr>", html) if "minimist 1.0.0" in r)
+        self.assertIn('<td><span class="na">not available</span></td>', row)     # no score file: not "no EPSS"
+        self.assertNotIn("12.0%", row)
+
+    def test_stale_epss_source_shows_its_warning_and_the_stale_label(self):
+        warning = "EPSS download failed: URLError: <offline>"
+        out = with_epss(full_folder(self.tmp / "security"), origin="stale", warning=warning)
+        html = management.render(management.load(out))
+        self.assertIn("EPSS download failed: URLError: &lt;offline&gt;", html)
+        self.assertNotIn("<offline>", html)
+        text = text_of(html)
+        self.assertIn("EPSS scores (FIRST) STALE EPSS download failed", text)
+        self.assertIn("EPSS (FIRST) stale scores of 2026-11-09T12:00:23Z (model v2026.06.15), fetched "
+                      "2026-11-10T09:59:30Z (download failed, older file used)", text)
+        de = text_of(management.render(management.load(out), lang="de"))
+        self.assertIn("EPSS-Werte (FIRST) VERALTET EPSS download failed", de)
+        self.assertIn("EPSS (FIRST) veraltet Werte vom 2026-11-09T12:00:23Z (Modell v2026.06.15), abgerufen "
+                      "2026-11-10T09:59:30Z (Download fehlgeschlagen, ältere Datei verwendet)", de)
 
 
 class TestSkippedIsNotClean(ManagementTestCase):

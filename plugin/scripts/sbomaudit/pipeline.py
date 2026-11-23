@@ -17,8 +17,8 @@ import socket
 import time
 from pathlib import Path
 
-from . import (assess, config, enrich, evidence, issues, manifest, matching, preflight, releases, report, sbomimport,
-               scan, scheduler, status, vex)
+from . import (assess, config, enrich, epss, evidence, issues, manifest, matching, preflight, releases, report,
+               sbomimport, scan, scheduler, status, vex)
 from . import hint as cli_hint
 from .cache import Cache
 from .config import Config, Project
@@ -176,15 +176,19 @@ def finish_tools(cfg: Config) -> dict[str, str]:
 
 def audit(cfg: Config, inventories: list[BranchInventory], log=None,
           http=None, extra_tools: dict | None = None,
-          skipped: list[dict] | None = None) -> tuple[dict, list[Path]]:
+          skipped: list[dict] | None = None, http_bytes=None) -> tuple[dict, list[Path]]:
     """Match, enrich, apply VEX and write every report; returns the report and the paths written.
     `extra_tools`: tools later steps of the same run use (`finish_tools`), listed in the report's tool table.
 
     Raises VexError before any matching.
 
     `http(url) -> obj` serves every database lookup (default: enrich.http_get_json, resolved at call time).
+    `http_bytes(url) -> bytes` downloads the EPSS score file (default: epss.http_get_bytes, resolved at call
+    time). The EPSS step runs when `[epss] enabled` and either `http_bytes` is given or `http` is not: a caller
+    that injects `http` alone gets no EPSS step and no EPSS key anywhere in the report, as before 1.4.0.
     """
     say = log or (lambda msg: None)
+    run_epss = cfg.epss.enabled and (http_bytes is not None or http is None)
     http = http or enrich.http_get_json
     statements = vex.load_all(cfg.out)          # VexError propagates: never audit around a broken decision file
     findings, sources = matching.match_all(inventories, cfg.out, log=say)
@@ -199,6 +203,13 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
     kev_ids, kev_error = enrich.load_kev(cache, http)
     sources["cisa_kev"] = {"loaded": len(kev_ids), "flagged": enrich.mark_kev(findings, kev_ids),
                            "error": kev_error}
+    epss_block = None
+    if run_epss:
+        say("EPSS …")
+        scores = epss.load(cache, http_bytes or epss.http_get_bytes)
+        sources["epss"] = epss.source(scores, epss.mark(findings, scores))
+        epss_block = {"threshold": cfg.epss.promote_at, "available": scores.available,
+                      "score_date": scores.score_date, "model_version": scores.model_version}
     say("endoflife.date …")
     eol_rows, eol_failed = enrich.eol(inventories, cache, http)
     sources["endoflife"] = {"queried": len({(r["product"], r["cycle"]) for r in eol_rows if r["cycle"]}),
@@ -216,7 +227,7 @@ def audit(cfg: Config, inventories: list[BranchInventory], log=None,
 
     release_ctx = releases.context(cfg, inventories)
     rep = report.build(cfg, inventories, kept, suppressed, eol_rows, latest_rows, sources, releases=release_ctx,
-                       skipped=skipped)
+                       skipped=skipped, epss=epss_block)
     tools = {**manifest.tool_versions(), **(extra_tools or {})}
     rep["provenance"] = manifest.try_provenance(cfg, cache, since, sources=sources, eol_rows=eol_rows,
                                                 latest_keys=direct, generated_at=rep.get("generated_at"),
@@ -252,8 +263,12 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
     eol = sum(1 for r in rep["runtimes"] if r["status"] == "EOL")
     allowed = sum(1 for r in rep["runtimes"] if report.allowed_unsupported(r))
     rel = f", {s['releases']} releases" if s.get("releases") else ""
-    unrated = sum(1 for v in vulns if report.unrated_in_production(v, set(rep.get("production_projects") or [])))
+    production = set(rep.get("production_projects") or [])
+    unrated = sum(1 for v in vulns if report.unrated_in_production(v, production))
+    threshold = (rep.get("epss") or {}).get("threshold")
+    promoted = sum(1 for v in vulns if report.epss_promoted(v, production, threshold))
     gaps = (f", {unrated} not rated in production" if unrated else "") + (
+        f", {promoted} promoted by EPSS" if promoted else "") + (
         f", {s['unresolved_versions']} packages with version not resolved (not checked)"
         if s.get("unresolved_versions") else "")
     return (f"{s['projects']} projects, {s['branches']} branches{rel}: {len(vulns)} vulnerable package versions "
@@ -550,7 +565,7 @@ def _write_failed_status(cfg: Config, exc: Exception, started: float, say) -> No
 
 
 def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, log=None,
-        http=None) -> int:
+        http=None, http_bytes=None) -> int:
     """scan + audit + status + commit. Returns the audit exit code; prints progress through `log`."""
     say = log or (lambda msg: None)
     started = time.monotonic()
@@ -566,7 +581,7 @@ def run(cfg: Config, only: list[str] | None = None, fetch: bool | None = None, l
         for s in result.skipped:
             say(f"skipped {s['project']}: {s['reason']}")
         rep, written = audit(cfg, result.inventories, log=say, http=http, extra_tools=finish_tools(cfg),
-                             skipped=result.skipped)
+                             skipped=result.skipped, http_bytes=http_bytes)
     except VexError as exc:
         say(f"OpenVEX: {exc}")
         return EXIT_VEX

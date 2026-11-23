@@ -121,7 +121,8 @@ STRINGS: dict[str, dict] = {
                    "host_critical": "Critical host finding", "critical_high_production": "CRITICAL/HIGH in production",
                    "secret_b": "Leaked credential, class B", "eol": "End of life", "floating_tag": "Floating image tag",
                    "secret_context": "Possible credential in test, docs or vendored files", "other": "Other",
-                   "eol_minimum": "Declared minimum allows an end-of-life version"},
+                   "eol_minimum": "Declared minimum allows an end-of-life version",
+                   "epss_production": "Likely to be exploited (EPSS)"},
         "fix": {"upgrade": "Upgrade to {target}", "no_fix_released": "No fix released yet; mitigate or decide",
                 "rotate": "Rotate the credential at the provider", "upgrade_runtime": "Move to a supported version",
                 "pin": "Pin the image to a version or digest", "apt_upgrade": "Install the update {target}",
@@ -137,10 +138,12 @@ STRINGS: dict[str, dict] = {
                                      "whose dependency type the scan could not tell (unknown is not transitive: "
                                      "check the manifest first; listed after the direct ones)",
         "action_deps": "Vulnerability issues at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported "
-                       "release): {n}, of which {split}. Within a priority, direct dependencies are listed "
+                       "release{epss}): {n}, of which {split}. Within a priority, direct dependencies are listed "
                        "first: they are fixed in your own manifest. Transitive does not mean harmless: a transitive "
                        "package is installed and can run like a direct one, and there is no reachability analysis, "
                        "so each one stays a finding until it is fixed or a decision says otherwise.",
+        "action_deps_epss": ", or likely to be exploited by EPSS",
+        "epss_head": "EPSS",
         "branches": "branches: {list}",
         "more": "+{n} more",
         "line": "line {n}",
@@ -176,6 +179,7 @@ STRINGS: dict[str, dict] = {
         "c_src_skipped": "skipped ({reason})",
         "c_src_absent": "not run",
         "src": {"osv-scanner": "OSV vulnerability match (osv-scanner)", "cisa_kev": "CISA KEV catalogue",
+                "epss": "EPSS scores (FIRST)",
                 "endoflife": "endoflife.date", "registries": "Package registries (latest versions)",
                 "openvex": "OpenVEX decisions", "secrets": "Secrets scan (gitleaks)", "hosts": "Host check (SSH)",
                 "git": "git (reading branches)", "run": "Run"},
@@ -330,10 +334,13 @@ STRINGS: dict[str, dict] = {
         "p_sources_head": ["Data source", "Status", "Freshness"],
         "p_engine": "{name} (secrets scan)",
         "p_status": {"ok": "ok", "partial": "partial", "failed": "failed", "skipped": "skipped",
-                     "not run": "not run"},
+                     "not run": "not run", "stale": "stale"},
         "p_osv": "queried live during the audit, {at}",
         "p_kev": "catalogue {date}, fetched {at} ({origin})",
         "p_kev_none": "not loaded",
+        "p_epss": "scores of {date} (model {model}), fetched {at} ({origin})",
+        "p_epss_none": "not loaded",
+        "p_epss_stale": "download failed, older file used",
         "p_live": "downloaded during this audit",
         "p_cache": "from the local cache",
         "p_lookups": "{n} lookups: {live} during this audit, {cached} from the local cache; oldest {oldest}",
@@ -422,6 +429,8 @@ STRINGS: dict[str, dict] = {
         "delta_untracked": "nicht erfasst",
         "delta_note": "Veränderungen zählen je Advisory (KEV, CRITICAL/HIGH), je Produktzyklus (End of Life) und "
                       "je Befund (Zugangsdaten, Server).",
+        "action_deps_epss": ", oder laut EPSS wahrscheinlich ausgenutzt",
+        "epss_head": "EPSS",
         "action_intro": "Offene Punkte der Priorität 1 bis 3 aus der Arbeitsliste, die dringendsten zuerst. "
                         "Die vollständige Liste mit allen Fundstellen ist ISSUES.md / issues.json.",
         "action_derived": "issues.json liegt nicht im Ordner; die Liste unten wurde beim Erstellen des Berichts "
@@ -440,7 +449,8 @@ STRINGS: dict[str, dict] = {
                    "secret_b": "Offengelegte Zugangsdaten, Klasse B", "eol": "Support-Ende (End of Life)",
                    "floating_tag": "Nicht fixiertes Image-Tag",
                    "secret_context": "Mögliche Zugangsdaten in Test-, Doku- oder Fremdcode", "other": "Sonstiges",
-                   "eol_minimum": "Erklärte Mindestversion erlaubt eine Version ohne Support"},
+                   "eol_minimum": "Erklärte Mindestversion erlaubt eine Version ohne Support",
+                   "epss_production": "Ausnutzung wahrscheinlich (EPSS)"},
         "fix": {"upgrade": "Aktualisieren auf {target}",
                 "no_fix_released": "Noch kein Fix veröffentlicht; abmildern oder entscheiden",
                 "rotate": "Zugangsdaten beim Anbieter austauschen", "upgrade_runtime": "Auf eine unterstützte Version wechseln",
@@ -458,7 +468,7 @@ STRINGS: dict[str, dict] = {
                                      "bei denen der Scan die Abhängigkeitsart nicht erkennen konnte (unbekannt heißt "
                                      "nicht transitiv: zuerst das Manifest prüfen; sie stehen nach den direkten)",
         "action_deps": "Schwachstellen mit Priorität 2 und 3 (KEV, oder CRITICAL/HIGH in Produktion oder einem "
-                       "unterstützten Release): {n}, davon {split}. Innerhalb einer Priorität stehen direkte "
+                       "unterstützten Release{epss}): {n}, davon {split}. Innerhalb einer Priorität stehen direkte "
                        "Abhängigkeiten zuerst: Sie werden im eigenen Manifest behoben. Transitiv heißt nicht harmlos: "
                        "Ein transitives Paket wird installiert und kann laufen wie ein direktes, und es gibt keine "
                        "Erreichbarkeitsanalyse; jeder Punkt bleibt ein Befund, bis er behoben ist oder eine "
@@ -500,6 +510,7 @@ STRINGS: dict[str, dict] = {
         "c_src_skipped": "übersprungen ({reason})",
         "c_src_absent": "nicht gelaufen",
         "src": {"osv-scanner": "OSV-Schwachstellenabgleich (osv-scanner)", "cisa_kev": "CISA-KEV-Katalog",
+                "epss": "EPSS-Werte (FIRST)",
                 "endoflife": "endoflife.date", "registries": "Paket-Registries (aktuelle Versionen)",
                 "openvex": "OpenVEX-Entscheidungen", "secrets": "Secrets-Scan (gitleaks)",
                 "hosts": "Server-Prüfung (SSH)", "git": "git (Lesen der Branches)", "run": "Lauf"},
@@ -689,10 +700,13 @@ STRINGS: dict[str, dict] = {
         "p_sources_head": ["Datenquelle", "Status", "Aktualität"],
         "p_engine": "{name} (Secrets-Scan)",
         "p_status": {"ok": "ok", "partial": "teilweise", "failed": "fehlgeschlagen", "skipped": "übersprungen",
-                     "not run": "nicht ausgeführt"},
+                     "not run": "nicht ausgeführt", "stale": "veraltet"},
         "p_osv": "während des Audits live abgefragt, {at}",
         "p_kev": "Katalog vom {date}, abgerufen {at} ({origin})",
         "p_kev_none": "nicht geladen",
+        "p_epss": "Werte vom {date} (Modell {model}), abgerufen {at} ({origin})",
+        "p_epss_none": "nicht geladen",
+        "p_epss_stale": "Download fehlgeschlagen, ältere Datei verwendet",
         "p_live": "während dieses Audits heruntergeladen",
         "p_cache": "aus dem lokalen Cache",
         "p_lookups": "{n} Abfragen: {live} während dieses Audits, {cached} aus dem lokalen Cache; älteste {oldest}",
@@ -1174,8 +1188,26 @@ def _fix(i: dict, S: dict) -> str:
     return text
 
 
+def _details(i: dict) -> dict:
+    return i.get("details") if isinstance(i.get("details"), dict) else {}
+
+
+def _epss_cell(i: dict, block: dict, S: dict) -> str:
+    """The EPSS column: the highest score of a vulnerability, "not available" when no score file was
+    available, `–` for every other kind (as ISSUES.md does)."""
+    from . import epss
+    if i.get("kind") != "vulnerability":
+        return "–"
+    if not block.get("available"):
+        return f'<span class="na">{e(S["na"])}</span>'
+    details = i.get("details") if isinstance(i.get("details"), dict) else {}
+    return e(epss.text(details.get("max_epss")))
+
+
 def _action(data: dict, S: dict) -> str:
     from . import issues
+    audit = data["audit"] if isinstance(data["audit"], dict) else {}
+    block = audit.get("epss") if isinstance(audit.get("epss"), dict) else None   # None: EPSS did not run
     L = [f"<section><h2>{S['s_action']}</h2>"]
     doc = data["issues"]
     if doc is None:
@@ -1190,12 +1222,16 @@ def _action(data: dict, S: dict) -> str:
         L.append(f'<p class="warn">{S["action_incomplete"].format(what=names)}</p>')
     items = [i for i in doc.get("issues") or [] if isinstance(i, dict)]
     urgent = [i for i in items if isinstance(i.get("priority"), int) and i["priority"] <= TOP_PRIORITY]
-    # direct, then unknown, then transitive within a priority, also for an issues.json written before that order
-    urgent.sort(key=lambda i: (i["priority"], not i.get("production"), issues.dependency_rank(i)))
+    # the leading elements of issues._sort_key (priority, production, likely to be exploited by EPSS, then direct,
+    # unknown, transitive), also for an issues.json written before that order; the sort is stable, so the score
+    # order of issues.json stays inside these groups. Without `epss_likely` it sorts exactly as before.
+    urgent.sort(key=lambda i: (i["priority"], not i.get("production"), not _details(i).get("epss_likely", False),
+                               issues.dependency_rank(i)))
     split = issues.dependency_split(urgent)
     if split["total"]:
         parts = S["action_deps_split_unknown" if split["unknown"] else "action_deps_split"].format(**split)
-        deps = S["action_deps"].format(n=split["total"], split=parts)
+        deps = S["action_deps"].format(n=split["total"], split=parts,
+                                       epss=S["action_deps_epss"] if block is not None else "")
         L.append(f"<p>{e(deps)}</p>")
     if urgent:
         rows = []
@@ -1218,8 +1254,12 @@ def _action(data: dict, S: dict) -> str:
             where = _where(i, S)
             if where:
                 what += f'<br><span class="note">{where}</span>'
-            rows.append([_td(prio), _td(place), _td(what), _td(_fix(i, S)), _td(_date(i.get("first_seen")))])
-        L.append(_table(S["action_head"], rows))
+            cells = [_td(prio), _td(place), _td(what), _td(_fix(i, S)), _td(_date(i.get("first_seen")))]
+            if block is not None:
+                cells.insert(3, _td(_epss_cell(i, block, S)))
+            rows.append(cells)
+        head = S["action_head"]
+        L.append(_table(head if block is None else (*head[:3], S["epss_head"], *head[3:]), rows))
         if len(urgent) > TOP_LIMIT:
             L.append(f"<p>{S['action_more'].format(n=len(urgent) - TOP_LIMIT)}</p>")
     else:
@@ -1354,10 +1394,11 @@ def _coverage(data: dict, S: dict) -> str:
     L.append(f"<h3>{S['c_sources']}</h3>")
     sources = audit.get("sources") if isinstance(audit.get("sources"), dict) else {}
     stamps = {"osv-scanner": audit.get("generated_at"), "cisa_kev": data["kev_fetched"],
+              "epss": sources["epss"].get("fetched_at") if isinstance(sources.get("epss"), dict) else None,
               "endoflife": audit.get("generated_at"), "registries": audit.get("generated_at"),
               "openvex": audit.get("generated_at"), "secrets": (data["secrets"] or {}).get("generated_at"),
               "hosts": (data["hosts"] or {}).get("last_checked")}
-    order = ["git", "osv-scanner", "cisa_kev", "endoflife", "registries", "openvex", "secrets", "hosts"]
+    order = ["git", "osv-scanner", "cisa_kev", "epss", "endoflife", "registries", "openvex", "secrets", "hosts"]
     names = [n for n in order if n in sources or n in ("osv-scanner", "cisa_kev", "endoflife", "secrets")]
     names += [n for n in sources if n not in names]
     if not data["hosts_active"] and "hosts" not in sources:
@@ -1372,6 +1413,9 @@ def _coverage(data: dict, S: dict) -> str:
                      else e(S["c_src_absent"]))
         else:
             state = _source_state(info, S)
+        if n == "epss" and isinstance(info, dict) and info.get("warning") and not info.get("error"):
+            state = (f'<span class="label">{e(S["p_status"]["stale"].upper())}</span>'   # an older file was used
+                     f'<br><span class="note">{e(info["warning"])}</span>')
         stamp = stamps.get(n) if isinstance(info, dict) or n == "secrets" else None
         rows.append([_td(e(S["src"].get(n, n))), _td(state),
                      _td(_time(stamp) if stamp else f'<span class="na">{S["na"]}</span>')])
@@ -1614,6 +1658,13 @@ def _produced(data: dict, S: dict) -> str:
         elif key == "openvex":
             n = info.get("statements")
             fresh = S["p_vex"].format(n=n if n is not None else S["na"])
+        elif key == "epss":
+            origin = {"live": S["p_live"], "cache": S["p_cache"], "stale": S["p_epss_stale"]}
+            fresh = (S["p_epss"].format(date=info.get("score_date") or S["na"],
+                                        model=info.get("model_version") or S["na"],
+                                        at=when(info.get("fetched_at")),
+                                        origin=origin.get(info.get("origin"), info.get("origin") or S["na"]))
+                     if info.get("status") != "failed" else S["p_epss_none"])
         else:
             fresh = ""
         rows.append([_td(e(SOURCE_NAMES.get(key, key))), _td(e(S["p_status"].get(info.get("status"), S["na"]))),

@@ -7,7 +7,9 @@ Suppressed (VEX), decided (secrets), accepted (hosts) and informational findings
 
 Priorities follow the assessment's triage order:
 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production project (not dev-only),
-an advisory with no severity ("not rated", reason `unrated_production`) in the same scope, and class B secrets ·
+an advisory with no severity ("not rated", reason `unrated_production`) in the same scope, a package version
+in the same scope whose EPSS score is at or above `[epss] promote_at` (reason `epss_production`; EPSS only ever
+raises a priority, never lowers one), and class B secrets ·
 4 end-of-life runtimes and images · 5 floating image tags · 6 everything else, among them a declared minimum
 (`engines.node`, `requires-python`) that allows an end-of-life version (reason `eol_minimum`): what runs may be
 newer, so raising the floor is housekeeping, not an end-of-life runtime.
@@ -20,14 +22,14 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from . import __version__
+from . import __version__, epss
 from . import hint as cli_hint
 from .cache import atomic_write
 from .coverage import severity_text, unrated_advisories
 from .cvss import SEV_ORDER
 from .model import direct_text, merge_direct
-from .report import (ACTIONABLE, JSON_FILE as AUDIT_JSON, PRODUCT_NAME, allowed_unsupported, counts_as_production,
-                     md, minimum_text, worst_advisory)
+from .report import (ACTIONABLE, JSON_FILE as AUDIT_JSON, PRODUCT_NAME, _epss_on, allowed_unsupported,
+                     counts_as_production, md, minimum_text, worst_advisory)
 from .secrets.classify import context_text, ranked_lower
 from .versions import ver_key
 
@@ -37,7 +39,7 @@ SCHEMA = 1
 MD_BRANCHES = 3                                  # ISSUES.md names this many branches; issues.json has all
 KINDS = ("secret", "vulnerability", "eol", "floating_tag", "host")
 PRIORITY_REASONS = {1: ("secret_a",), 2: ("kev", "host_critical"),
-                    3: ("critical_high_production", "unrated_production", "secret_b"),
+                    3: ("critical_high_production", "unrated_production", "epss_production", "secret_b"),
                     4: ("eol", "secret_context"), 5: ("floating_tag",), 6: ("other", "eol_minimum")}
 # host finding groups a fixer can act on; logins, Lynis suggestions and `info` are not work items
 HOST_GROUPS = ("change", "patch", "permissive", "lynis_warning", "lynis_index", "third_party")
@@ -63,9 +65,12 @@ def _read(path: Path) -> dict | None:
 # --------------------------------------------------------------------------- one builder per kind
 
 def _advisory(a: dict) -> dict:
-    """Id, CVEs, severity and fix version; the long texts stay in `audit.json`. `kev` only when true."""
+    """Id, CVEs, severity and fix version; the long texts stay in `audit.json`. `kev` only when true; the EPSS
+    score and percentile only when the EPSS step ran."""
     entry = {"id": a.get("id"), "cves": a.get("cves") or [], "severity": a.get("severity"),
              "fixed_in": a.get("fixed_in")}
+    if "epss" in a:
+        entry.update(epss=a.get("epss"), epss_percentile=a.get("epss_percentile"))
     return {**entry, "kev": True} if a.get("kev") else entry
 
 
@@ -80,6 +85,7 @@ def _worst(advisories: list[dict]) -> dict | None:
 def _vulnerabilities(rep: dict) -> list[dict]:
     """One issue per project, manifest and package version; the branches that hold it are listed on it."""
     production = set(rep.get("production_projects") or [])
+    threshold = (rep.get("epss") or {}).get("threshold")
     issues = []
     for v in rep.get("vulnerabilities") or []:
         advisories = v.get("vulns") or []
@@ -100,6 +106,8 @@ def _vulnerabilities(rep: dict) -> list[dict]:
                 priority, reason = 3, "critical_high_production"
             elif ranked and unrated_advisories(v):   # not rated is not low: read it before the MEDIUMs
                 priority, reason = 3, "unrated_production"
+            elif ranked and epss.likely(v.get("max_epss"), threshold):   # likely exploited: raises, never lowers
+                priority, reason = 3, "epss_production"
             else:
                 priority, reason = 6, "other"
             version = v.get("version") or "unresolved"
@@ -108,6 +116,13 @@ def _vulnerabilities(rep: dict) -> list[dict]:
             tags = sorted({l["release"] for l in locs if l.get("release")})
             if tags:                         # only with release scanning: the release tags holding it
                 where["releases"] = tags
+            details = {"ecosystem": v["ecosystem"], "package": v.get("package") or v["name"],
+                       "version": v.get("version"),
+                       "direct": direct, "dev_only": dev_only, "kev": bool(v.get("kev")),
+                       "worst": _worst(advisories),
+                       "advisories": [_advisory(a) for a in advisories]}
+            if "max_epss" in v:              # only when the EPSS step ran
+                details.update(max_epss=v.get("max_epss"), epss_likely=epss.likely(v.get("max_epss"), threshold))
             issues.append({
                 # the id keeps the short name (ids are stable across versions); every text names the package
                 # in full, Maven `group:artifact`
@@ -117,13 +132,11 @@ def _vulnerabilities(rep: dict) -> list[dict]:
                 "title": f"{v.get('package') or v['name']} {version}: {len(advisories)} advisories, worst {severity_text(v.get('max_severity'))}"
                          + (f", {n} not rated" if (n := len(unrated_advisories(v))) and v.get("max_severity") != "UNKNOWN"
                             else "")
-                         + (" (KEV, actively exploited)" if v.get("kev") else ""),
+                         + (" (KEV, actively exploited)" if v.get("kev") else "")
+                         + (f" (likely to be exploited: EPSS at or above {epss.text(threshold)})"
+                            if reason == "epss_production" else ""),
                 "where": where,
-                "details": {"ecosystem": v["ecosystem"], "package": v.get("package") or v["name"],
-                            "version": v.get("version"),
-                            "direct": direct, "dev_only": dev_only, "kev": bool(v.get("kev")),
-                            "worst": _worst(advisories),
-                            "advisories": [_advisory(a) for a in advisories]},
+                "details": details,
                 "fix": {"action": "upgrade" if target else "no_fix_released", "target": target,
                         "unfixed_advisories": sum(1 for f in fixes if not f),
                         "hint": _upgrade_hint(direct, locs)},
@@ -302,14 +315,18 @@ def _hosts(doc: dict | None, accepted: dict[str, set[str]] | None = None) -> lis
             if not critical and (f.get("accepted") or not (
                     group in HOST_GROUPS or (group == "vuln" and f.get("fixable")))):
                 continue
+            details = {"finding": f["id"], "group": group, "package": f.get("package"),
+                       "version": f.get("version") or f.get("installed"), "cve": f.get("cve")}
+            for key in ("epss", "max_epss"):     # only when the host check ran the EPSS step; information only
+                if key in f:
+                    details[key] = f[key]
             issues.append({
                 "id": f"host:{name}:{f['id']}",
                 "kind": "host", "priority": 2 if critical else 6, "reason": "host_critical" if critical else "other",
                 "severity": "critical" if critical else None, "production": bool(h.get("production")),
                 "title": str(f.get("text") or f["id"]),
                 "where": {"host": name, "projects": list(h.get("projects") or []), "path": None, "line": None},
-                "details": {"finding": f["id"], "group": group, "package": f.get("package"),
-                            "version": f.get("version") or f.get("installed"), "cve": f.get("cve")},
+                "details": details,
                 "fix": _host_fix(f),
             })
     return issues
@@ -358,11 +375,17 @@ def split_text(split: dict) -> str:
     return f"{head} and {split['transitive']} in transitive ones"
 
 
-def _sort_key(i: dict):
-    """Priority, production first, direct dependencies before unknown and transitive ones, severity, place, id."""
+def _sort_key(i: dict, threshold: float | None = None):
+    """Priority, production first, at or above the EPSS threshold first, direct dependencies before unknown and
+    transitive ones, the higher EPSS score (none: as if it were `threshold`), severity, place, id. Without EPSS
+    fields the two EPSS elements are the same for every issue, so the order is that of 1.3.x. The score orders
+    vulnerability issues only: a host issue's score is information, so it never moves the issue."""
     place = i["where"].get("project") or i["where"].get("host") or ""
-    return (i["priority"], not i["production"], dependency_rank(i), SEV_ORDER.get(str(i.get("severity")), 5),
-            place.lower(), i["id"])
+    details = i.get("details") if isinstance(i.get("details"), dict) else {}
+    scored = i.get("kind") == "vulnerability" and "max_epss" in details
+    order = epss.order(details["max_epss"], threshold) if scored else 0.0
+    return (i["priority"], not i["production"], not details.get("epss_likely", False), dependency_rank(i), order,
+            SEV_ORDER.get(str(i.get("severity")), 5), place.lower(), i["id"])
 
 
 def _counts(issues: list[dict]) -> dict:
@@ -387,16 +410,20 @@ def build(rep: dict | None, secrets: dict | None, hosts: dict | None, *, previou
     for i in issues:
         own = i.pop("_first_seen", None)
         i["first_seen"] = seen.get(i["id"]) or own or now[:10]
-    issues.sort(key=_sort_key)
-    return {
+    block = rep.get("epss")
+    threshold = (block or {}).get("threshold")
+    issues.sort(key=lambda i: _sort_key(i, threshold))
+    doc = {
         "schema": SCHEMA, "generated_at": now, "plugin_version": __version__,
         "sources": {"audit": rep.get("generated_at"),
                     "secrets": (secrets or {}).get("generated_at"),
                     "hosts": (hosts or {}).get("last_checked")},
         "incomplete": list(incomplete or []),
-        "counts": _counts(issues),
-        "issues": issues,
     }
+    if block is not None:                    # only when the EPSS step ran: issues.json is unchanged without it
+        doc["epss"] = {"threshold": block.get("threshold"), "available": block.get("available"),
+                       "score_date": block.get("score_date")}
+    return {**doc, "counts": _counts(issues), "issues": issues}
 
 
 def dumps(doc: dict) -> str:
@@ -439,22 +466,47 @@ def _fix_cell(i: dict) -> str:
     return text + (f" ({unfixed} unfixed)" if unfixed and fix.get("target") else "")
 
 
+def _epss_cell(i: dict, block: dict) -> str:
+    """The EPSS column: the highest score of a vulnerability, `n/a` when no score file was available, `–` for
+    every other kind."""
+    if i["kind"] != "vulnerability":
+        return "–"
+    if not block.get("available"):
+        return "n/a"
+    return epss.text((i.get("details") or {}).get("max_epss"))
+
+
 def render_md(doc: dict) -> str:
     """ISSUES.md: the same list per project and host, most urgent place first."""
     counts = doc["counts"]
+    block = doc.get("epss")                  # None: no EPSS column or sentence, ISSUES.md as in 1.3.x
+    promoting = block is not None and _epss_on(block)
+    if block is None:
+        item3 = "3 CRITICAL/HIGH in production or a supported release or not rated there, class B secret"
+    elif promoting:
+        item3 = ("3 CRITICAL/HIGH in production or a supported release, or not rated there, or EPSS at or above "
+                 f"{epss.text(block.get('threshold'))} there (off when the threshold is 0), class B secret")
+    else:
+        item3 = ("3 CRITICAL/HIGH in production or a supported release, or not rated there (promotion by EPSS is "
+                 "off: `[epss] promote_at = 0`), class B secret")
+    split_label = ("(KEV, CRITICAL/HIGH or not rated in production or a supported release, or likely to be exploited "
+                   "by EPSS there)" if promoting else "(KEV, or CRITICAL/HIGH in production or a supported release)")
+    within = ("Within a priority, direct dependencies are listed first: they are fixed in "
+              if block is None else
+              "Within a priority, production comes first, then findings at or above the EPSS threshold, then direct "
+              "dependencies before transitive ones, then the higher EPSS score. A direct one is fixed in ")
     L = [f"# Open issues {doc['generated_at'][:10]}", "",
          "What is open and where, for whoever fixes it. Derived from `audit.json`, `secrets.json` and `hosts.json`; "
          "the machine-readable list is `issues.json`. Never edit either by hand. Suppressed, decided, accepted and "
          "informational findings are not listed.", "",
          f"{counts['total']} open: " + (", ".join(f"{n} {k}" for k, n in counts["by_kind"].items()) or "nothing") + ".",
-         "", "Priority: 1 class A secret · 2 KEV, critical host finding · 3 CRITICAL/HIGH in production or a supported "
-         "release or not rated there, class B secret · 4 end of life, a secret ranked lower by its context "
+         "", f"Priority: 1 class A secret · 2 KEV, critical host finding · {item3} · 4 end of life, a secret ranked "
+         "lower by its context "
          "(test, docs, ...) · 5 floating tag · 6 other, a declared minimum that allows an end-of-life version.", ""]
     split = dependency_split(doc["issues"])
     if split["total"]:
-        L += [f"Vulnerabilities at priority 2 and 3 (KEV, or CRITICAL/HIGH in production or a supported release): "
-              + split_text(split) + ". Within a priority, direct dependencies are listed first: they are fixed in "
-              "your own manifest; a transitive one through the parent that pulls it in, or a lockfile refresh"
+        L += [f"Vulnerabilities at priority 2 and 3 {split_label}: " + split_text(split) + ". " + within
+              + "your own manifest; a transitive one through the parent that pulls it in, or a lockfile refresh"
               + ("; one of unknown type comes between them: check the manifest first, unknown is not transitive"
                  if split["unknown"] else "") + ". Transitive "
               "does not mean harmless: a transitive package is installed and can run like a direct one, and there "
@@ -472,9 +524,11 @@ def render_md(doc: dict) -> str:
     for (kind, name), items in sorted(places.items(), key=lambda kv: (_sort_key(kv[1][0])[:2], kv[0])):
         flag = " (production)" if items[0]["production"] else ""
         L += [f"## {'Host ' if kind == 'host' else ''}{md(name)}{flag}", "",
-              "| P | Kind | Issue | Where | Fix | Open since |", "|---|---|---|---|---|---|"]
-        L += [f"| {i['priority']} | {_kind_cell(i)} | {md(i['title'])} | {_where_cell(i)} | "
-              f"{_fix_cell(i)} | {i['first_seen']} |" for i in items]
+              "| P | Kind | Issue | Where | Fix | Open since |" if block is None else
+              "| P | Kind | EPSS | Issue | Where | Fix | Open since |",
+              "|---|---|---|---|---|---|" if block is None else "|---|---|---|---|---|---|---|"]
+        L += [f"| {i['priority']} | {_kind_cell(i)} |" + (f" {_epss_cell(i, block)} |" if block is not None else "")
+              + f" {md(i['title'])} | {_where_cell(i)} | {_fix_cell(i)} | {i['first_seen']} |" for i in items]
         L.append("")
     return "\n".join(L)
 
@@ -564,7 +618,9 @@ def _line(i: dict) -> str:
     where = i["where"]
     place = where.get("host") or where.get("project") or "?"
     path = f" {where['path']}" + (f":{where['line']}" if where.get("line") else "") if where.get("path") else ""
-    return f"P{i['priority']} {i['kind']:<13} {place}{path}: {i['title']} [{_fix_cell(i)}] {i['id']}"
+    details = i.get("details") if isinstance(i.get("details"), dict) else {}
+    score = f" {epss.label(details['max_epss'])}" if i["kind"] == "vulnerability" and "max_epss" in details else ""
+    return f"P{i['priority']} {i['kind']:<13} {place}{path}: {i['title']} [{_fix_cell(i)}] {i['id']}{score}"
 
 
 def _query(args, out: Path) -> int:

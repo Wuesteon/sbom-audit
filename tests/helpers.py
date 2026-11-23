@@ -1,6 +1,7 @@
-"""Shared test helpers: real git repositories in temp folders, canned HTTP errors."""
+"""Shared test helpers: real git repositories in temp folders, canned HTTP errors, EPSS files."""
 from __future__ import annotations
 
+import gzip
 import io
 import subprocess
 import urllib.error
@@ -16,6 +17,29 @@ def not_found(url: str) -> urllib.error.HTTPError:
     err = urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO())  # type: ignore[arg-type]
     err.close()
     return err
+
+
+def epss_gz(rows: dict[str, tuple[float, float]] | None = None,
+            score_date: str = "2026-11-23T12:00:23Z", model: str = "v2026.06.15") -> bytes:
+    """A valid EPSS score file as FIRST publishes it: gzip, a comment line, a header, one row per CVE."""
+    rows = {"CVE-2021-23337": (0.0123, 0.79)} if rows is None else rows
+    lines = [f"#model_version:{model},score_date:{score_date}", "cve,epss,percentile"]
+    lines += [f"{cve},{score!r},{percentile!r}" for cve, (score, percentile) in rows.items()]
+    return gzip.compress(("\n".join(lines) + "\n").encode("utf-8"), mtime=0)
+
+
+def epss_fetch(raw: bytes | Exception):
+    """fetch(url) that returns `raw` or raises it, and records every URL in `.calls`."""
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if isinstance(raw, Exception):
+            raise raw
+        return raw
+
+    fetch.calls = calls
+    return fetch
 
 
 def _git(repo: Path, *args: str) -> str:

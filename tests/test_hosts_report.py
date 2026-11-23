@@ -242,6 +242,59 @@ class FixStateTest(ReportCase):
         self.assertIn("a\\|b", text)
 
 
+class EpssTest(ReportCase):
+    KEV = "kev:CVE-2024-1086:linux-image-6.8.0-45-generic@6.8.0-45.45"
+    VULN = "vuln:openssl@3.0.13"
+
+    def scored(self, kev_epss=0.9144, max_epss=0.05):
+        kev = {**next(x for x in GROUPS if x["id"] == self.KEV), "epss": kev_epss, "epss_percentile": 0.999}
+        vuln = {**next(x for x in GROUPS if x["id"] == self.VULN), "max_epss": max_epss}
+        return [kev, vuln]
+
+    def line(self, md, id_):
+        return next(x for x in md.splitlines() if f"`{id_}`" in x)
+
+    def test_hosts_md_shows_scores(self):
+        doc = {**document({"box-a": entry(self.scored())}),
+               "epss": {"available": True, "score_date": "2026-11-23T12:00:23Z"}}
+        md = self.render(doc)
+        self.assertIn("(KEV, EPSS 91.4%) in ", md)
+        self.assertIn(" - highest EPSS 5.0%", md)
+        self.assertIn("EPSS scores of 2026-11-23 (FIRST)", md)
+        self.assertIn("CVE-2024-1086 (KEV, EPSS 91.4%) in linux-image-6.8.0-45-generic 6.8.0-45.45: fix installable",
+                      self.line(md, self.KEV))
+        self.assertIn("2 open CVEs, no fix installable - highest EPSS 5.0%", self.line(md, self.VULN))
+        self.assertIn("EPSS scores of 2026-11-23 (FIRST): the probability that a CVE is exploited in the next "
+                      "30 days. Shown for information; host priorities do not depend on it.", md)
+        table_end = md.index("\n\n", md.index("| Host |"))
+        self.assertTrue(md[table_end:].lstrip("\n").startswith("EPSS scores of 2026-11-23 (FIRST)"))
+        self.assertNotIn("\u2014", md)          # no em dash
+
+    def test_missing_score_is_no_epss_not_zero(self):
+        doc = {**document({"box-a": entry(self.scored(None, None))}),
+               "epss": {"available": True, "score_date": "2026-11-23T12:00:23Z"}}
+        md = self.render(doc)
+        self.assertIn("CVE-2024-1086 (KEV, no EPSS) in ", self.line(md, self.KEV))
+        self.assertIn("no fix installable - no EPSS", self.line(md, self.VULN))
+        self.assertNotIn("EPSS no EPSS", md)
+        self.assertNotIn("0.0%", md)
+
+    def test_hosts_md_when_scores_were_not_available(self):
+        doc = {**document({"box-a": entry(self.scored(None, None))}),
+               "epss": {"available": False, "score_date": None}}
+        md = self.render(doc)
+        self.assertIn("EPSS scores were not available in this check.", md)
+        self.assertEqual(md.count("EPSS"), 1)
+        self.assertIn("CVE-2024-1086 (KEV) in ", self.line(md, self.KEV))
+
+    def test_hosts_md_without_epss_is_unchanged(self):
+        plain = [x for x in GROUPS if x["id"] in (self.KEV, self.VULN)]
+        md_plain = self.render(document({"box-a": entry(plain)}))
+        md_without = self.render(document({"box-a": entry(self.scored())}))   # scored findings, no `epss` key
+        self.assertNotIn("EPSS", md_without)
+        self.assertEqual(md_without, md_plain)
+
+
 class StatusTest(ReportCase):
     def failed_doc(self, findings=(), checked_at=CHECKED, summary=None):
         return document({"box-a": entry(findings, status="failed", error="ssh: connect timed out",

@@ -88,6 +88,32 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(rep["stats"]["branches"], 3)
         self.assertEqual(rep["stats"]["unique_package_versions"], 2)
 
+    def build_with_epss(self, scores, epss=None):
+        """One lodash row whose advisories carry the given `epss` values (key absent when scores is None)."""
+        vulns = []
+        for i, score in enumerate(scores or [None]):
+            v = vuln(f"GHSA-{i + 1}", "HIGH", 7.5)
+            if scores is not None:
+                v["epss"], v["epss_percentile"] = score, None if score is None else 0.5
+            vulns.append(v)
+        with tempfile.TemporaryDirectory() as tmp:
+            return report.build(config(Path(tmp)), [inv("zeta", "main", [LODASH])],
+                                [Finding("zeta", "main", LODASH, vulns)], [], [], [], SOURCES_OK, epss=epss)
+
+    def test_no_max_epss_without_the_epss_key(self):
+        rep = self.build_with_epss(None)
+        self.assertNotIn("max_epss", rep["vulnerabilities"][0])
+        self.assertNotIn("epss", rep["vulnerabilities"][0]["vulns"][0])
+        self.assertNotIn("epss", rep)
+
+    def test_max_epss_is_the_highest_advisory_score(self):
+        block = {"threshold": 0.1, "available": True, "score_date": "2026-11-23T12:00:23Z",
+                 "model_version": "v2026.06.15"}
+        rep = self.build_with_epss([None, 0.2, 0.05], epss=block)
+        self.assertEqual(rep["vulnerabilities"][0]["max_epss"], 0.2)
+        self.assertEqual(rep["epss"], block)
+        self.assertIsNone(self.build_with_epss([None, None])["vulnerabilities"][0]["max_epss"])
+
 
 class AuditMdTests(unittest.TestCase):
     def write(self, tmp: Path, findings, suppressed=(), eol=(), outdated=(), sources=SOURCES_OK,
@@ -318,6 +344,151 @@ class AuditMdTests(unittest.TestCase):
         self.assertIn("🔴 EOL | nodejs | 18 | 2025-04-30", section(text, "Runtimes and base images"))
         self.assertIn("`nginx:alpine`", section(text, "Floating image tags"))
         self.assertIn("| 1 | lodash | 3.10.1 | 4.17.21 | zeta | main |", section(text, "Outdated direct dependencies (≥1 major version behind)"))
+
+
+REP_EPSS = {"threshold": 0.10, "available": True, "score_date": "2026-11-23T12:00:23Z", "model_version": "v2026.06.15"}
+MINIMIST = pkg("minimist", "1.2.5")
+
+
+def scored(v: dict, score):
+    """An advisory as the EPSS step leaves it: `epss` and `epss_percentile` set (None without a score)."""
+    return {**v, "epss": score, "epss_percentile": None if score is None else 0.9}
+
+
+class EpssAuditMdTests(unittest.TestCase):
+    def render(self, tmp: Path, findings, epss=REP_EPSS, sources=SOURCES_OK) -> str:
+        cfg = config(tmp)
+        invs = [inv("zeta", "main", [LODASH, MINIMIST, ESBUILD])]
+        rep = report.build(cfg, invs, findings, [], [], [], sources, epss=epss)
+        cfg.out.mkdir(parents=True, exist_ok=True)
+        return report.write_audit_md(rep, cfg.out).read_text(encoding="utf-8")
+
+    def findings(self, high=0.4413, medium=None, dev=None, with_epss=True):
+        mark = scored if with_epss else (lambda v, _s: v)
+        return [Finding("zeta", "main", LODASH, [mark(vuln("GHSA-1", "HIGH", 7.5, aliases=["CVE-2021-23337"]), high)]),
+                Finding("zeta", "main", MINIMIST, [mark(vuln("GHSA-2", "MEDIUM", 5.0), medium)]),
+                Finding("zeta", "main", ESBUILD, [mark(vuln("GHSA-9", "HIGH", 8.1), dev)])]
+
+    def test_epss_promoted_predicate(self):
+        prod = {"zeta"}
+        row = lambda **kw: {"kev": False, "max_severity": "MEDIUM", "max_epss": 0.2, "vulns": [{"id": "CVE-1", "severity": "MEDIUM"}],
+                            "locations": [{"project": "zeta", "branch": "main", "manifest": "m", "scope": "required"}], **kw}
+        self.assertTrue(report.epss_promoted(row(), prod, 0.10))
+        for changed in (dict(kev=True), dict(max_severity="HIGH"), dict(max_epss=0.0999), dict(max_epss=None),
+                        dict(locations=[{"project": "zeta", "branch": "main", "manifest": "m", "scope": "optional"}]),
+                        dict(locations=[{"project": "other", "branch": "main", "manifest": "m", "scope": "required"}])):
+            self.assertFalse(report.epss_promoted(row(**changed), prod, 0.10), changed)
+        self.assertFalse(report.epss_promoted(row(), prod, 0))
+        self.assertFalse(report.epss_promoted(row(), prod, None))
+
+    def test_audit_md_shows_epss_column_and_section(self):
+        # one HIGH row max_epss 0.4413 in production project zeta, one MEDIUM row max_epss None, and a dev-only
+        # HIGH row without a score (so a table shows `no EPSS`)
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.render(Path(tmp), self.findings())
+        self.assertIn("| Sev | EPSS | Package |", text)
+        self.assertIn("44.1%", text); self.assertIn("no EPSS", text)
+        self.assertIn("## Likely to be exploited (EPSS)", text)
+        self.assertIn("EPSS 44.1%", text)
+        sec = section(text, "Likely to be exploited (EPSS)")
+        self.assertIn("(scores of 2026-11-23)", sec)
+        self.assertIn("- **lodash@4.17.20** (npm, runtime scope): EPSS 44.1%, GHSA-1 CVE-2021-23337 - used by zeta@main",
+                      sec)
+        self.assertNotIn("minimist", sec)
+        self.assertEqual(headings(text).index("Likely to be exploited (EPSS)"),
+                         headings(text).index("🔴 Actively exploited (CISA KEV)") + 1)
+        self.assertIn("| HIGH 7.5 | 44.1% | lodash |", section(text, "Critical and high severity by project"))
+        self.assertIn("| HIGH 8.1 | no EPSS | esbuild |", section(text, "Dev-only findings"))
+        self.assertIn("| Promoted by EPSS (at or above 10.0%, in production or a supported release) | 0 |",
+                      section(text, "Summary"))
+        self.assertIn("never lowers a rank", text)
+
+    def test_summary_counts_promoted_rows_and_says_off_at_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.render(Path(tmp), self.findings(medium=0.25))
+            off = self.render(Path(tmp), self.findings(medium=0.25), epss={**REP_EPSS, "threshold": 0})
+        self.assertIn("| Promoted by EPSS (at or above 10.0%, in production or a supported release) | 1 |",
+                      section(text, "Summary"))
+        self.assertIn("- **minimist@1.2.5** (npm, runtime scope): EPSS 25.0%, GHSA-2 - used by zeta@main; "
+                      "promoted to priority 3", section(text, "Likely to be exploited (EPSS)"))
+        self.assertIn("| Promoted by EPSS | off |", section(off, "Summary"))
+        self.assertIn("Promotion by EPSS is turned off ([epss] promote_at = 0); scores are shown in the tables.",
+                      section(off, "Likely to be exploited (EPSS)"))
+        self.assertIn("44.1%", section(off, "Critical and high severity by project"))
+
+    def test_section_marks_the_rows_the_summary_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sec = section(self.render(Path(tmp), self.findings(medium=0.25, dev=0.5)), "Likely to be exploited (EPSS)")
+        self.assertIn("Rows marked promoted are the ones the summary counts; the others were already urgent or are "
+                      "not ranked like production.", sec)
+        lines = {line.split("**")[1]: line for line in sec.splitlines() if line.startswith("- **")}
+        self.assertEqual(sorted(lines), ["esbuild@0.17.0", "lodash@4.17.20", "minimist@1.2.5"])
+        self.assertTrue(lines["minimist@1.2.5"].endswith("; promoted to priority 3"))
+        self.assertNotIn("promoted", lines["lodash@4.17.20"])       # HIGH: already urgent
+        self.assertNotIn("promoted", lines["esbuild@0.17.0"])       # dev-only: not ranked like production
+
+    def test_score_exactly_at_the_threshold_is_counted_and_listed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            at = self.render(Path(tmp), self.findings(high=0.01, medium=0.10))
+            under = self.render(Path(tmp), self.findings(high=0.01, medium=0.0999))
+        self.assertIn("| Promoted by EPSS (at or above 10.0%, in production or a supported release) | 1 |",
+                      section(at, "Summary"))
+        self.assertIn("- **minimist@1.2.5** (npm, runtime scope): EPSS 10.0%", section(at, "Likely to be exploited (EPSS)"))
+        self.assertIn("| Promoted by EPSS (at or above 10.0%, in production or a supported release) | 0 |",
+                      section(under, "Summary"))
+        self.assertNotIn("minimist", section(under, "Likely to be exploited (EPSS)"))
+
+    def test_summary_says_not_available_when_the_source_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.render(Path(tmp), self.findings(high=None), epss={**REP_EPSS, "available": False})
+        self.assertIn("| Promoted by EPSS | not available |", section(text, "Summary"))
+        self.assertNotIn("| Promoted by EPSS (at or above", text)
+
+    def test_no_row_at_or_above_the_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.render(Path(tmp), self.findings(high=0.05))
+        self.assertIn("None of the vulnerable package versions has an EPSS score at or above 10.0%.",
+                      section(text, "Likely to be exploited (EPSS)"))
+
+    def test_by_project_rows_sort_by_epss_within_a_severity(self):
+        axios = pkg("axios", "0.21.0")
+        findings = [Finding("zeta", "main", axios, [scored(vuln("GHSA-3", "HIGH", 7.5), 0.01)]),
+                    Finding("zeta", "main", LODASH, [scored(vuln("GHSA-1", "HIGH", 7.5), 0.5)])]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            rep = report.build(cfg, [inv("zeta", "main", [axios, LODASH])], findings, [], [], [], SOURCES_OK,
+                               epss=REP_EPSS)
+            cfg.out.mkdir(parents=True)
+            sec = section(report.write_audit_md(rep, cfg.out).read_text(encoding="utf-8"),
+                          "Critical and high severity by project")
+        self.assertLess(sec.index("| lodash |"), sec.index("| axios |"))
+
+    def test_audit_md_without_epss_block_is_unchanged(self):
+        # the same report without rep["epss"] and without the row and advisory keys
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.render(Path(tmp), self.findings(with_epss=False), epss=None)
+        self.assertNotIn("EPSS", text)
+
+    def test_audit_md_says_when_epss_was_not_available(self):
+        # rep["epss"]["available"] = False, every max_epss None
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self.render(Path(tmp), self.findings(high=None), epss={**REP_EPSS, "available": False})
+        self.assertIn("EPSS scores were not available in this run. No finding was promoted or demoted because of it.", text)
+        self.assertNotIn("no EPSS", text)
+        self.assertIn("| HIGH 7.5 | n/a | lodash |", text)
+
+    def test_source_status_shows_stale_and_failed_epss(self):
+        base = {"loaded": 2, "scored": 1, "score_date": "2026-11-22T12:00:00Z", "model_version": "v2026.06.15",
+                "origin": "stale", "fetched_at": "2026-11-22T13:00:00Z", "error": None,
+                "warning": "EPSS download failed: URLError: timeout"}
+        with tempfile.TemporaryDirectory() as tmp:
+            stale = self.render(Path(tmp), self.findings(), sources={**SOURCES_OK, "epss": base})
+            failed = self.render(Path(tmp), self.findings(high=None), epss={**REP_EPSS, "available": False},
+                                 sources={**SOURCES_OK, "epss": {**base, "loaded": 0, "origin": None, "warning": None,
+                                                                  "error": "EPSS fetch failed: URLError: down"}})
+        self.assertIn("| epss | stale | ", section(stale, "Source status"))
+        self.assertIn("EPSS download failed: URLError: timeout |", section(stale, "Source status"))
+        self.assertIn("| epss | **failed** | EPSS fetch failed: URLError: down |", section(failed, "Source status"))
 
 
 class FilesTests(unittest.TestCase):

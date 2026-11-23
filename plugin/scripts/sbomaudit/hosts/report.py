@@ -20,6 +20,10 @@ Layout decisions:
   says that the decision covers that user's later logins with that key.
 - A failed host is rendered as failed with its error and the time of its last successful check; the findings
   it carries are marked as from that check, and the host is never counted as clean.
+- EPSS (only when `hosts.json` has `epss`, that is when the check ran the EPSS step): one line under the
+  table names the score date or says that no scores were available; with scores, KEV lines read
+  `<cve> (KEV, EPSS <score>) in ...` and `vuln` lines end with ` - highest EPSS <score>`; without a score they
+  read `(KEV, no EPSS)` and ` - no EPSS` (`epss.label`). Information only: no section, order or count depends on a score.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ import datetime as dt
 import re
 from pathlib import Path
 
+from .. import epss
 from .. import report as core
 from ..cache import atomic_write
 from . import store
@@ -180,16 +185,20 @@ def _hint(host: str, f: dict) -> str:
     return f"accept with: hosts accept {core.md(host)} {_code(id_)} \"<note>\"{suffix}"
 
 
-def _line(host: str, h: dict, f: dict, decisions: dict, *, critical: bool = False) -> str:
+def _line(host: str, h: dict, f: dict, decisions: dict, *, critical: bool = False, scores: bool = False) -> str:
+    """`scores`: the check had EPSS scores, so KEV and `vuln` lines show them (`no EPSS` without one)."""
     parts = [f"- {_code(f.get('id', '?'))}"]
     if critical:
         parts[0] = f"- **{core.md(GROUP_LABEL.get(f.get('group'), f.get('group')))}** {_code(f.get('id', '?'))}"
     fix = _fix_state(f) if f.get("group") == "kev" else None
     if fix and f.get("cve") and f.get("package"):
-        parts.append(f"{core.md(f['cve'])} (KEV) in {core.md(f['package'])} {core.md(f.get('version') or '')}".rstrip()
-                     + f": {fix}")
+        label = f"KEV, {epss.label(f.get('epss'))}" if scores else "KEV"
+        parts.append(f"{core.md(f['cve'])} ({label}) in {core.md(f['package'])} {core.md(f.get('version') or '')}"
+                     .rstrip() + f": {fix}")
     else:
         parts.append(core.md(f.get("text", "")) + (f" ({fix})" if fix else ""))
+    if scores and f.get("group") == "vuln":
+        parts.append(epss.label(f.get("max_epss"), "highest EPSS"))
     line = " - ".join(parts)
     if f.get("accepted"):
         line += " " + _accepted_note(host, f, decisions)
@@ -237,7 +246,7 @@ def _status_block(h: dict) -> list[str]:
     return []
 
 
-def _host_section(name: str, h: dict, decisions: dict) -> list[str]:
+def _host_section(name: str, h: dict, decisions: dict, scores: bool = False) -> list[str]:
     findings = _findings(h)
     critical = [f for f in findings if _is_critical(f)]
     rest = [f for f in findings if not _is_critical(f)]
@@ -245,7 +254,7 @@ def _host_section(name: str, h: dict, decisions: dict) -> list[str]:
     out = [f"## {core.md(name)}", "", f"Projects: {projects} · {_facts_line(h)}", "", *_status_block(h)]
 
     def lines(items, crit=False):
-        return [_line(name, h, f, decisions, critical=crit) for f in items]
+        return [_line(name, h, f, decisions, critical=crit, scores=scores) for f in items]
 
     out += _section("Critical", lines(critical, True))
     failed_checks = [f for f in critical if f.get("group") == "warning"]
@@ -295,6 +304,15 @@ def _summary_line(hosts: dict) -> str:
     return f"{total} host{'s' if total != 1 else ''}: " + ", ".join(parts)
 
 
+def _epss_line(block: dict) -> str:
+    if not block.get("available"):
+        return "EPSS scores were not available in this check."
+    date = block.get("score_date")
+    date = core.md(date[:10]) if isinstance(date, str) and date else "an unknown date"
+    return (f"EPSS scores of {date} (FIRST): the probability that a CVE is exploited in the next 30 days. "
+            "Shown for information; host priorities do not depend on it.")
+
+
 def render(doc: dict, decisions: dict) -> str:
     hosts = {n: h for n, h in (doc.get("hosts") or {}).items() if isinstance(h, dict)}
     lines = ["# Host audit", "", f"Generated {core.md(doc.get('generated_at') or '-')}", ""]
@@ -319,8 +337,12 @@ def render(doc: dict, decisions: dict) -> str:
                  value(core.md(s.get("last_unattended") or "-"))]
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
+    block = doc.get("epss") if isinstance(doc.get("epss"), dict) else None   # only when the EPSS step ran
+    scores = bool(block and block.get("available"))
+    if block is not None:
+        lines += [_epss_line(block), ""]
     for name in _host_order(hosts):
-        lines += _host_section(name, hosts[name], decisions)
+        lines += _host_section(name, hosts[name], decisions, scores)
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

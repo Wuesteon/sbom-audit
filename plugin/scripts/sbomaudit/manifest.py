@@ -175,10 +175,25 @@ def data_sources(sources: dict, cache, since: float, *, eol_keys=(), latest_keys
                 "via": "osv-scanner (OSV.dev, queried during the audit)",
                 "branches_scanned": (osv or {}).get("scanned"), "branches_failed": len((osv or {}).get("failed") or [])},
         "cisa_kev": kev_doc,
+        **({"epss": _epss_doc(sources["epss"])} if "epss" in sources else {}),   # only when the EPSS step ran
         "endoflife": {"status": _source_status(eol), **_answers(cache, eol_keys, since)},
         "registries": {"status": _source_status(reg), **_answers(cache, latest_keys, since)},
         "openvex": {"status": _source_status(vex), "statements": (vex or {}).get("statements")},
     }
+
+
+def _epss_doc(src) -> dict:
+    """The EPSS entry from sources["epss"] (epss.source): `stale` when an older cached file was used."""
+    src = src if isinstance(src, dict) else {}
+    status = "failed" if src.get("error") else ("stale" if src.get("origin") == "stale" or src.get("warning")
+                                                 else "ok")
+    return {"status": status, "entries": src.get("loaded"), "origin": src.get("origin"),
+            "fetched_at": src.get("fetched_at"), "score_date": src.get("score_date"),
+            "model_version": src.get("model_version")}
+
+
+EPSS_ORIGIN = {"live": "downloaded during this audit", "cache": "from the local cache",
+               "stale": "download failed, older file used"}
 
 
 def provenance(cfg, cache, since: float, *, sources: dict, eol_rows=(), latest_keys=(),
@@ -228,11 +243,17 @@ def _freshness(name: str, info: dict) -> str:
         return text
     if name == "openvex":
         return f"{_md(info.get('statements'))} statements in `vex/`"
+    if name == "epss":
+        if info.get("status") == "failed":
+            return "not loaded"
+        return (f"scores of {_md(info.get('score_date'))} (model {_md(info.get('model_version'))}), "
+                f"fetched {_md(info.get('fetched_at'))}, {EPSS_ORIGIN.get(info.get('origin'), _md(info.get('origin')))}")
     return ""
 
 
 SOURCE_NAMES = {"osv": "OSV (osv-scanner)", "cisa_kev": "CISA KEV", "endoflife": "endoflife.date",
-                "registries": "npm/PyPI/JSR registries", "openvex": "OpenVEX"}
+                "registries": "npm/PyPI/JSR registries", "openvex": "OpenVEX",
+                "epss": "EPSS (FIRST)"}
 
 
 def audit_md_section(prov: dict | None) -> list[str]:

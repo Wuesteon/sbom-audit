@@ -1,4 +1,4 @@
-<!-- sbom-audit-template v6 -->
+<!-- sbom-audit-template v7 -->
 # Evidence folder (written by sbom-audit)
 
 This folder is the output of the [sbom-audit](https://github.com/Wuesteon/sbom-audit) plugin: the
@@ -10,7 +10,7 @@ meant to be committed and kept as evidence. Read this file before you change any
 | Path | What it is | Who writes it |
 |---|---|---|
 | `sbom-audit.toml` | Configuration: branches, `production` flag per project, ignored projects, push | you |
-| `AUDIT.md` / `audit.json` | The audit, in triage order (secrets, KEV, critical/high in production, EOL, the rest) | the plugin |
+| `AUDIT.md` / `audit.json` | The audit, in triage order (secrets, KEV, critical/high in production and findings likely to be exploited by EPSS, EOL, the rest) | the plugin |
 | `INVENTORY.md` / `inventory.json` | Every package, image and runtime on the audited branches | the plugin |
 | `status.json` / `STATUS.md` | Machine- and human-readable summary of the last run | the plugin |
 | `issues.json` / `ISSUES.md` | The work list: every open issue with a stable id, priority, where it occurs (project or host, branches, file, line) and the fix target. Derived from the reports; nothing suppressed, decided or accepted is in it | the plugin |

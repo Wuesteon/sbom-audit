@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import enrich
+from .. import enrich, epss
 from ..cache import Cache
 from ..enrich import http_get_json, http_post_json
 from . import fingerprint, logins, osvhost, parse, report, rules, store, transport, vendors
@@ -176,7 +176,7 @@ def evaluate(host: str, h, facts: dict, *, baseline: dict | None, previous_host:
              kev: set[str], cache: Cache, now: datetime, audit_fp: str | None, fetch=http_get_json,
              post=http_post_json, vendor_cache: Cache | None = None,
              baseline_unreadable: bool = False, known_hosts_sha: str | None = None,
-             kev_error: str | None = None) -> tuple[dict, dict | None]:
+             kev_error: str | None = None, epss_scores: epss.Scores | None = None) -> tuple[dict, dict | None]:
     previous_host = previous_host or {}
     installed = facts.get("collector")
     entry = {**_base_entry(h), "status": "ok", "error": None, "checked_at": _iso(now), "attempted_at": _iso(now),
@@ -247,7 +247,7 @@ def evaluate(host: str, h, facts: dict, *, baseline: dict | None, previous_host:
         findings += vendors.check(facts.get("binaries") or [], vendor_cache, fetch=fetch)
         findings += vendors.os_eol(facts.get("os") or {}, vendor_cache, fetch=fetch,
                                    today=now.astimezone(timezone.utc).date())
-    vuln_findings, vuln_error = osvhost.match(facts, kev, cache, post=post, fetch=fetch)
+    vuln_findings, vuln_error = osvhost.match(facts, kev, cache, post=post, fetch=fetch, epss_scores=epss_scores)
     findings += vuln_findings
     if vuln_error and getattr(vuln_error, "kind", "failed") == "unsupported":
         findings.append(_finding("vuln:unavailable", "vuln", False, str(vuln_error)))
@@ -344,7 +344,12 @@ def outcome(doc: dict, names) -> tuple[list[dict], bool]:
 
 
 def check(cfg, names: list[str] | None, log, *, run=subprocess.run, sleep=time.sleep, fetch=http_get_json,
-          post=http_post_json, now: datetime | None = None) -> dict:
+          post=http_post_json, now: datetime | None = None, fetch_bytes=None) -> dict:
+    """`fetch_bytes(url) -> bytes` downloads the EPSS score file (default: epss.http_get_bytes). The EPSS step
+    runs when `[epss] enabled` and either `fetch_bytes` is given or `fetch` is not injected: a caller that
+    injects `fetch` alone gets no EPSS step and no EPSS key in `hosts.json`, as before 1.4.0. The scores are
+    information on the findings (`hosts.json` top level `epss`); no priority, flag or alert depends on them."""
+    run_epss = cfg.epss.enabled and (fetch_bytes is not None or fetch is http_get_json)
     opts = cfg.hosts
     out = Path(cfg.out)
     now = now or datetime.now(timezone.utc)
@@ -366,7 +371,15 @@ def check(cfg, names: list[str] | None, log, *, run=subprocess.run, sleep=time.s
         return doc
 
     decisions = store.read_decisions(out)
-    kev, kev_error = enrich.load_kev(Cache(out / ".cache" / "enrich", 24), fetch=fetch)
+    enrich_cache = Cache(out / ".cache" / "enrich", 24)
+    kev, kev_error = enrich.load_kev(enrich_cache, fetch=fetch)
+    epss_scores = None
+    if run_epss:   # the complete daily file, shared with the package audit through the cache; never per CVE
+        scores = epss.load(enrich_cache, fetch_bytes or epss.http_get_bytes)
+        epss_scores = scores.scores
+        doc["epss"] = {"available": scores.available, "score_date": scores.score_date}
+        if not scores.available:
+            log(f"hosts: EPSS scores not available ({scores.error}); findings are listed without them")
     try:
         audit_fp = transport.audit_fingerprint(Path(opts.key).expanduser(), run=run)
     except Exception as exc:  # noqa: BLE001 - without it the plugin's own logins are judged like any other
@@ -414,7 +427,7 @@ def check(cfg, names: list[str] | None, log, *, run=subprocess.run, sleep=time.s
                     name, h, facts, baseline=baseline, previous_host=prev, decisions=decisions, kev=kev,
                     cache=osv_cache, now=now, audit_fp=audit_fp, fetch=fetch, post=post,
                     vendor_cache=vendor_cache, baseline_unreadable=unreadable, known_hosts_sha=sha,
-                    kev_error=kev_error)
+                    kev_error=kev_error, epss_scores=epss_scores)
                 if new_baseline is not None:
                     store.write_baseline(out, name, new_baseline)
                 doc["last_checked"] = _iso(now)

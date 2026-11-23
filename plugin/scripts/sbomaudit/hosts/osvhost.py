@@ -56,6 +56,7 @@ import re
 import urllib.parse
 from pathlib import Path
 
+from .. import epss
 from ..cache import Cache
 from ..enrich import http_get_json, http_post_json
 from . import debver
@@ -306,11 +307,15 @@ def _keys(ids) -> set[str]:
 # --------------------------------------------------------------------------- match
 
 def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
-          fetch=http_get_json) -> tuple[list[dict], OsvError | None]:
+          fetch=http_get_json, epss_scores: epss.Scores | None = None) -> tuple[list[dict], OsvError | None]:
     """Findings (groups `kev`, `vuln`, `info`) and an `OsvError` or None. Never raises for bad input or a
     failed osv.dev: no ecosystem is `([], <kind "unsupported">)`; no data for the ecosystem or a failed
     querybatch is `([], <kind "failed">)`; failed record fetches keep the findings (fix "unknown") and return
-    a "failed" error too."""
+    a "failed" error too.
+
+    With `epss_scores` (the EPSS step ran; `{}` when no score file was available) every `kev` and `info:kev:`
+    finding gets `epss` and `epss_percentile` of its CVE, every `vuln` finding `max_epss`, the highest score
+    among the CVEs of its open ids; None without a score. Information only: no id, text or flag depends on it."""
     os = facts.get("os") if isinstance(facts.get("os"), dict) else None
     eco = ecosystem(os)
     if eco is None:
@@ -418,6 +423,8 @@ def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
                 fix, fixed = _fix_state(recs, gone, eco, key[0], key[1], src_cand, newest_kernel, incomparable)
             common = {"cve": cve, "package": name, "version": version, "source": key[0], "vulns": vids,
                       "fix": fix, "fixed": fixed, "candidate": candidate}
+            if epss_scores is not None:
+                common["epss"], common["epss_percentile"] = epss.score_of([cve], epss_scores)
             if counts:
                 findings.append({"id": f"kev:{cve}:{name}@{version}", "group": "kev", "critical": True,
                                  "text": f"{cve} (KEV) in {name} {version}: "
@@ -441,9 +448,12 @@ def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
         else:
             outlook = "no fix installable"
         text = f"{_plural(len(open_keys))}, {outlook}"
-        findings.append({"id": f"vuln:{name}@{version}", "group": "vuln", "critical": False, "text": text,
-                         "package": name, "version": version, "source": key[0], "open": len(open_keys),
-                         "fixable": fixable, "candidate": candidate})
+        summary = {"id": f"vuln:{name}@{version}", "group": "vuln", "critical": False, "text": text,
+                   "package": name, "version": version, "source": key[0], "open": len(open_keys),
+                   "fixable": fixable, "candidate": candidate}
+        if epss_scores is not None:
+            summary["max_epss"] = epss.score_of({_id_cve(v) for v in rest} - {None}, epss_scores)[0]
+        findings.append(summary)
 
     findings.sort(key=lambda f: (GROUP_ORDER[f["group"]], f["id"]))
     error = None

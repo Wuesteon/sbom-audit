@@ -8,8 +8,8 @@ from pathlib import Path
 
 from . import __version__
 from .cache import atomic_write
-from .report import (ACTIONABLE, _actionable, _sev_label, allowed_unsupported, counts_as_production, md,
-                     unrated_in_production)
+from .report import (ACTIONABLE, _actionable, _sev_label, allowed_unsupported, counts_as_production,
+                     epss_promoted, md, unrated_in_production)
 
 STATUS_FILE = "STATUS.md"
 STATUS_JSON = "status.json"
@@ -234,6 +234,10 @@ def _counts(rep: dict, now_open: dict, secrets: dict | None, hosts: dict | None 
               "suppressed": len(rep.get("suppressed", [])),
               "secrets": {cls: sum(1 for f in open_secrets if f.get("class") == cls) for cls in "ABC"},
               "hosts": _hosts_counts(hosts)}
+    if rep.get("epss") is not None:          # only when the EPSS step ran; not an open set, so no delta
+        counts["epss_promoted"] = (                 # None: no score file, so no count (never a 0 that reads as safe)
+            sum(1 for v in vulns if epss_promoted(v, production, rep["epss"].get("threshold")))
+            if rep["epss"].get("available") else None)
     for key in ("packages_unmatched", "coverage_gaps", "projects_not_scanned"):   # coverage gaps, only when > 0
         if stats.get(key):
             counts[key] = stats[key]
@@ -575,7 +579,10 @@ def render_md(status: dict, scheduler: dict | None, now: dt.datetime | None = No
          ""]
     n = status["counts"]
     L += [f"Counts: {n['vulnerable']} vulnerable package versions, {n['kev']} KEV, "
-          f"{n['critical_high_production']} CRITICAL/HIGH in production, {n['eol']} EOL, "
+          f"{n['critical_high_production']} CRITICAL/HIGH in production, "
+          + ((f"{n['epss_promoted']} promoted by EPSS, " if n["epss_promoted"] is not None else "EPSS not available, ")
+             if "epss_promoted" in n else "")
+          + f"{n['eol']} EOL, "
           + (f"{n['allowed_unsupported']} allowed but unsupported (declared minimum, not counted as EOL), "
              if n.get("allowed_unsupported") else "") +
           f"{n['floating_tags']} floating tags, {n['suppressed']} suppressed by VEX.", ""]

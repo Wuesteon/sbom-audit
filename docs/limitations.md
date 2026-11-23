@@ -127,6 +127,7 @@ adds.
 | Every `run` / `scan` | your git remotes | `git fetch --prune origin` (turn off with `fetch = false`) | `gitio.py` |
 | Every `run` / `audit` | api.osv.dev (by osv-scanner) | package names, versions and ecosystems from the SBOMs | `matching.py` |
 | Every `run` / `audit` | www.cisa.gov | nothing; the KEV catalogue is downloaded (once per 24 h) | `enrich.py` |
+| Every `run` / `audit` and host mode, unless `[epss] enabled = false` | epss.empiricalsecurity.com | nothing; the complete daily EPSS file is downloaded (once per 24 h) | `epss.py` |
 | Every `run` / `audit` | endoflife.date | product and cycle, e.g. `nodejs/20` (once per 24 h) | `enrich.py` |
 | Every `run` / `audit` | registry.npmjs.org, pypi.org, jsr.io | the name of each direct dependency (once per 24 h) | `enrich.py` |
 | `incident` | api.osv.dev | the advisory id | `lookup.py` |

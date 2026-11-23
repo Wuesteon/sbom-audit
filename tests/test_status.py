@@ -434,6 +434,65 @@ class AllowedUnsupportedTest(unittest.TestCase):
         self.assertNotIn("allowed but unsupported", text)
 
 
+class EpssCountTest(unittest.TestCase):
+    EPSS = {"threshold": 0.10, "available": True, "score_date": "2026-11-23T12:00:23Z", "model_version": "v2025.03.14"}
+
+    @staticmethod
+    def scored(name, sev, max_epss, **kw):
+        v = row(name, "1", sev, **kw)
+        v["max_epss"] = max_epss
+        return v
+
+    def test_promoted_rows_are_counted_and_named_in_the_counts_line(self):
+        rep = make_rep(vulns=[self.scored("hot", "MEDIUM", 0.5), self.scored("cold", "MEDIUM", 0.01),
+                              self.scored("high", "HIGH", 0.5), self.scored("side", "MEDIUM", 0.5,
+                                                                             locations=(("side", "required"),))])
+        rep["epss"] = dict(self.EPSS)
+        s = build(rep)
+        self.assertEqual(s["counts"]["epss_promoted"], 1)
+        self.assertNotIn("epss_promoted", s["open"])
+        self.assertNotIn("epss_promoted", s["open_rules"])
+        with tempfile.TemporaryDirectory() as tmp:
+            text = status.write_md(Path(tmp), s, None).read_text(encoding="utf-8")
+        self.assertIn("1 CRITICAL/HIGH in production, 1 promoted by EPSS, 0 EOL, ", text)
+
+    def test_failed_source_counts_null_and_says_not_available(self):
+        rep = make_rep(vulns=[self.scored("hot", "MEDIUM", None)])
+        rep["epss"] = {**self.EPSS, "available": False}
+        s = build(rep)
+        self.assertIn("epss_promoted", s["counts"])
+        self.assertIsNone(s["counts"]["epss_promoted"])
+        self.assertIsNone(json.loads(json.dumps(s))["counts"]["epss_promoted"])
+        again = build(rep, previous=s)                       # a second run compares with the first: no crash
+        self.assertEqual(again["deltas"], build(make_rep(vulns=[self.scored("hot", "MEDIUM", None)]),
+                                                previous=s)["deltas"])
+        with tempfile.TemporaryDirectory() as tmp:
+            text = status.write_md(Path(tmp), again, None).read_text(encoding="utf-8")
+        self.assertIn("0 CRITICAL/HIGH in production, EPSS not available, 0 EOL, ", text)
+        self.assertNotIn("None promoted", text)
+        self.assertNotIn("0 promoted", text)
+
+    def test_session_hook_reads_a_null_count(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "session_start_hook", Path(__file__).resolve().parents[1] / "plugin" / "templates" / "session-hook" / "session-start.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        rep = make_rep(vulns=[self.scored("hot", "MEDIUM", None)])
+        rep["epss"] = {**self.EPSS, "available": False}
+        s = json.loads(json.dumps(build(rep)))
+        self.assertNotIn("EPSS", "\n".join(hook.facts("line", s)))
+
+    def test_no_epss_count_without_the_epss_step(self):
+        s = build(make_rep(vulns=[self.scored("hot", "MEDIUM", 0.5)]))
+        self.assertNotIn("epss_promoted", s["counts"])
+        with tempfile.TemporaryDirectory() as tmp:
+            text = status.write_md(Path(tmp), s, None).read_text(encoding="utf-8")
+        counts_line = next(line for line in text.splitlines() if line.startswith("Counts:"))
+        self.assertNotIn("EPSS", counts_line)
+        self.assertIn("0 CRITICAL/HIGH in production, 0 EOL, ", counts_line)
+
+
 class MarkdownTest(unittest.TestCase):
     def test_md_sections_order(self):
         s = build(make_rep(sources={"osv": {"queried": 3, "failed": []}}), secrets=secrets_doc(a=1, oldest=3),

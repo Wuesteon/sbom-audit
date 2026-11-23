@@ -16,7 +16,7 @@ This adds the marketplace `wuesteon-plugins` and installs the plugin in one step
 in [Quickstart](#quickstart).
 
 Point it at a folder of git repositories. It builds one CycloneDX SBOM per project and branch,
-audits them all at once against OSV, CISA KEV and endoflife.date, scans every repository's history
+audits them all at once against OSV, CISA KEV, FIRST's EPSS scores and endoflife.date, scans every repository's history
 for leaked credentials, optionally checks your Linux servers, and then helps Claude write an
 assessment of the result in your session. Decisions are recorded as OpenVEX and kept in a private
 `security/` git repository, so the next run and the next incident start from what you already know.
@@ -25,7 +25,7 @@ Most scanners answer per repository and per concern. sbom-audit answers the ques
 raises, across the whole portfolio:
 
 - *Which of our projects run this package, on which branch, directly or transitively?*
-- *Is it on CISA's actively-exploited list?*
+- *Is it on CISA's actively-exploited list? How likely is it to be exploited in the next 30 days (EPSS)?*
 - *Which runtimes and base images are past end of life? Which images float on `latest`?*
 - *Did a credential ever land in git history?*
 - *What did we decide about this finding last time?*
@@ -73,7 +73,7 @@ The run writes a `security/` folder next to your repositories:
 | File | Contents |
 |---|---|
 | `STATUS.md` / `status.json` | One-screen summary of the last run, with deltas since the previous one |
-| `AUDIT.md` / `audit.json` | The audit: KEV first, then CRITICAL/HIGH per project (production first), EOL runtimes, floating tags, outdated direct dependencies |
+| `AUDIT.md` / `audit.json` | The audit: KEV first, then CRITICAL/HIGH per project (production first) with each one's EPSS score, findings likely to be exploited by EPSS, EOL runtimes, floating tags, outdated direct dependencies |
 | `ISSUES.md` / `issues.json` | Work list for a person or an agent: every open issue, most urgent first, with a fix target |
 | `REPORT.html` | Management report: one self-contained page that prints to A4/PDF, with the overall state, what needs action now, decisions on record, coverage, the CRA evidence mapping and, for configured products, the CRA readiness per product (English or German; [sample](evals/fixtures/security/REPORT.html)) |
 | `INVENTORY.md` / `inventory.json` | Every package, image and runtime per project and branch |
@@ -92,9 +92,9 @@ Sample from the committed demo fixture [`evals/fixtures/security/AUDIT.md`](eval
 
 **`main`** — 1 vulnerable package version
 
-| Sev | Package | Version | Advisories | Fix target | Direct | Manifest | Worst advisory |
-|---|---|---|---|---|---|---|---|
-| HIGH 7.2 | lodash | 4.17.20 | 1 | 4.17.21 | yes | `package-lock.json` | GHSA-35jh-r3h4-6jhm (CVE-2021-23337): Command Injection in lodash |
+| Sev | EPSS | Package | Version | Advisories | Fix target | Direct | Manifest | Worst advisory |
+|---|---|---|---|---|---|---|---|---|
+| HIGH 7.2 | 1.2% | lodash | 4.17.20 | 1 | 4.17.21 | yes | `package-lock.json` | GHSA-35jh-r3h4-6jhm (CVE-2021-23337): Command Injection in lodash |
 ```
 
 ### Released versions (opt-in)
@@ -177,8 +177,8 @@ with no network call.
 ## Privacy
 
 No source code, SBOM or secret value leaves your machine. Outbound requests go only to public
-databases (osv.dev, CISA, endoflife.date, the npm/PyPI/JSR registries, api.github.com) and carry
-package names, versions or advisory ids, plus your own git remotes and, if you enable host mode, your
+databases (osv.dev, CISA, FIRST's EPSS file, endoflife.date, the npm/PyPI/JSR registries, api.github.com)
+and carry package names, versions or advisory ids (the CISA and EPSS lists are downloaded whole, sending nothing), plus your own git remotes and, if you enable host mode, your
 own servers. gitleaks runs locally. The evidence repository lists your open vulnerabilities, so the
 plugin refuses to push it to a public remote. In host mode your servers' installed package names and
 versions also go to osv.dev, and with `[schedule] assess = true` the weekly run starts a headless

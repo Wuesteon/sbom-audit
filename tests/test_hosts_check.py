@@ -4,6 +4,7 @@ Nothing here opens a connection: `run` is a fake that answers each ssh call with
 `CompletedProcess`, `sleep` records its calls, and osv.dev and CISA KEV are fakes too. Hosts and
 addresses are example data (203.0.113.0/24, box-a style names).
 """
+import dataclasses
 import datetime as dt
 import json
 import shutil
@@ -15,11 +16,12 @@ import unittest
 import urllib.error
 from pathlib import Path
 
-from sbomaudit import config, enrich, status
+from sbomaudit import config, enrich, epss, status
 from sbomaudit.hosts import checker, osvhost, parse, store, transport
 from sbomaudit import hosts
 from unittest import mock
 
+from tests.helpers import epss_fetch, epss_gz
 from tests.hosts_fixture import collector_doc, section_text
 
 UTC = dt.timezone.utc
@@ -728,6 +730,87 @@ class RunTest(CheckCase):
         self.assertEqual(hosts.read(self.out)["hosts"]["box-a"]["status"], "ok")
         self.assertEqual((hosts.HOSTS_JSON, hosts.HOSTS_MD), ("hosts.json", "HOSTS.md"))
         self.assertIs(hosts.check, checker.check)
+
+
+class EpssCheckTest(CheckCase):
+    """EPSS scores on host findings: information only; the step needs `fetch_bytes` when `fetch` is injected."""
+    SCORES = {KEV_CVE: (0.9144, 0.999), "CVE-2024-13176": (0.05, 0.9)}
+
+    def scored_net(self) -> FakeNet:
+        net = kev_net()
+        net.vulns[("openssl", "3.0.13-0ubuntu3.4")] = ["UBUNTU-CVE-2024-9143", "UBUNTU-CVE-2024-13176"]
+        return net
+
+    def epss_check(self, fetch_bytes, now=NOW, cfg=None):
+        net = self.scored_net()
+        return hosts.check(cfg or self.cfg(), None, self.logs.append, run=FakeRun({"box-a": [ok(collector_doc())]}),
+                           sleep=self.sleeps.append, fetch=net.fetch, post=net.post, now=now,
+                           fetch_bytes=fetch_bytes)
+
+    def test_check_with_epss_scores(self):
+        fetch_bytes = epss_fetch(epss_gz(self.SCORES))
+        doc = self.epss_check(fetch_bytes)
+        self.assertEqual(doc["epss"], {"available": True, "score_date": "2026-11-23T12:00:23Z"})
+        self.assertEqual(fetch_bytes.calls, [epss.EPSS_URL])          # the whole file; nothing about the host
+        by_id = {f["id"]: f for f in self.entry(doc)["findings"]}
+        kev = by_id["kev:CVE-2024-9143:openssl@3.0.13-0ubuntu3.4"]
+        self.assertEqual((kev["epss"], kev["epss_percentile"]), (0.9144, 0.999))
+        self.assertEqual(by_id["vuln:openssl@3.0.13-0ubuntu3.4"]["max_epss"], 0.05)
+        self.assertEqual(store.read(self.out)["epss"], doc["epss"])
+        self.assertTrue((self.out / ".cache" / "enrich" / epss.CACHE_FILE).exists())   # shared with the audit
+
+    def test_check_with_epss_outage_adds_no_finding(self):
+        without = self.epss_check(None)
+        shutil.rmtree(self.out)
+        self.out.mkdir()
+        doc = self.epss_check(epss_fetch(OSError("down")))
+        self.assertEqual(doc["epss"], {"available": False, "score_date": None})
+        got, before = self.entry(doc), self.entry(without)
+        self.assertEqual([(f["id"], f["critical"]) for f in got["findings"]],
+                         [(f["id"], f["critical"]) for f in before["findings"]])
+        self.assertEqual(got["critical"], before["critical"])
+        self.assertEqual(got["status"], "ok")
+        self.assertFalse(any(f["id"].startswith("section-failed:") for f in got["findings"]))
+        self.assertEqual([f["text"] for f in got["findings"]], [f["text"] for f in before["findings"]])
+
+    def test_check_without_fetch_bytes_has_no_epss(self):
+        doc = self.epss_check(None)
+        self.assertNotIn("epss", doc)
+        self.assertNotIn("epss", store.read(self.out))
+        for f in self.entry(doc)["findings"]:
+            self.assertFalse({"epss", "epss_percentile", "max_epss"} & set(f), f["id"])
+
+    def test_epss_disabled_skips_the_download(self):
+        cfg = self.cfg()
+        cfg = dataclasses.replace(cfg, epss=dataclasses.replace(cfg.epss, enabled=False))
+        fetch_bytes = epss_fetch(epss_gz(self.SCORES))
+        doc = self.epss_check(fetch_bytes, cfg=cfg)
+        self.assertNotIn("epss", doc)
+        self.assertEqual(fetch_bytes.calls, [])
+
+    def test_changed_scores_are_not_a_change_between_checks(self):
+        first = self.epss_check(epss_fetch(epss_gz(self.SCORES)))
+        before = status.build(status.empty_report(), secrets=None, previous=None, duration_s=1, exit_code=0,
+                              run_host="mac", mode="full", hosts=first)
+        shutil.rmtree(self.out / ".cache" / "enrich")                # a new day's file with other scores
+        doc = self.epss_check(epss_fetch(epss_gz({KEV_CVE: (0.2, 0.5)}, score_date="2026-11-24T12:00:00Z")),
+                              now=LATER)
+        kev = next(f for f in self.entry(doc)["findings"] if f["id"].startswith("kev:"))
+        self.assertEqual(kev["epss"], 0.2)
+        self.assertEqual(self.entry(doc)["critical"], self.entry(first)["critical"])
+        after = status.refresh_hosts(before, doc)
+        self.assertEqual((after["deltas"]["hosts_critical"]["new"], after["deltas"]["hosts_critical"]["resolved"]),
+                         ([], []))
+
+    def test_failed_host_keeps_the_scores_of_its_last_check(self):
+        first = self.epss_check(epss_fetch(epss_gz(self.SCORES)))
+        net = self.scored_net()
+        doc = hosts.check(self.cfg(), None, self.logs.append,
+                          run=FakeRun({"box-a": [fail(1, b"sudo: a password is required\n")]}),
+                          sleep=self.sleeps.append, fetch=net.fetch, post=net.post, now=LATER,
+                          fetch_bytes=epss_fetch(OSError("down")))
+        self.assertEqual(self.entry(doc)["status"], "failed")
+        self.assertEqual(self.entry(doc)["findings"], self.entry(first)["findings"])
 
 
 # --------------------------------------------------------------------------- review fix round 1

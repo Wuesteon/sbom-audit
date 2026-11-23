@@ -612,6 +612,55 @@ class DetailTests(TmpCacheCase):
         self.assertEqual(err.kind, "failed")
 
 
+class EpssTests(TmpCacheCase):
+    """EPSS scores on host findings: information only, never in an id or a text."""
+    OPENSSL = "3.0.13-0ubuntu3.4"
+
+    def openssl_match(self, **kw):
+        osv = FakeOSV(vulns={("openssl", self.OPENSSL): ["UBUNTU-CVE-2024-9143", "UBUNTU-CVE-2024-13176",
+                                                         "UBUNTU-CVE-2024-0002", "USN-7278-1"]},
+                      records={"UBUNTU-CVE-2024-9143": recorded("vuln-UBUNTU-CVE-2024-9143.json")})
+        findings, err = osvhost.match(facts([pkg("openssl", self.OPENSSL)]), {"CVE-2024-9143"}, self.cache,
+                                      post=osv.post, fetch=osv.fetch, **kw)
+        self.assertIsNone(err)
+        by_id = {f["id"]: f for f in findings}
+        return (findings, by_id[f"kev:CVE-2024-9143:openssl@{self.OPENSSL}"], by_id[f"vuln:openssl@{self.OPENSSL}"])
+
+    def test_kev_and_vuln_findings_carry_epss(self):
+        scores = {"CVE-2024-9143": (0.9144, 0.999), "CVE-2024-13176": (0.05, 0.9), "CVE-2024-0002": (0.01, 0.5)}
+        _, kev_finding, vuln_finding = self.openssl_match(epss_scores=scores)
+        self.assertEqual((kev_finding["epss"], kev_finding["epss_percentile"]), (0.9144, 0.999))
+        self.assertEqual(vuln_finding["max_epss"], 0.05)
+        self.assertNotIn("EPSS", kev_finding["text"] + kev_finding["id"] + vuln_finding["text"] + vuln_finding["id"])
+        self.assertNotIn("epss", vuln_finding)
+        self.assertNotIn("max_epss", kev_finding)
+
+    def test_findings_without_epss_scores_are_unchanged(self):
+        findings_before, _, _ = self.openssl_match()
+        for f in findings_before:
+            self.assertFalse({"epss", "epss_percentile", "max_epss"} & set(f), f["id"])
+        findings, _, _ = self.openssl_match(epss_scores=None)
+        self.assertEqual(findings, findings_before)
+
+    def test_unscored_cve_is_none_not_zero(self):
+        _, kev_finding, vuln_finding = self.openssl_match(epss_scores={})
+        self.assertIsNone(kev_finding["epss"])
+        self.assertIsNone(kev_finding["epss_percentile"])
+        self.assertIsNone(vuln_finding["max_epss"])
+
+    def test_kev_on_a_kernel_that_is_not_running_carries_epss(self):
+        rec = recorded("vuln-UBUNTU-CVE-2024-1086.json")
+        osv = FakeOSV(vulns={("linux", "6.8.0-45.45"): ["UBUNTU-CVE-2024-1086"],
+                             ("linux", "6.8.0-40.40"): ["UBUNTU-CVE-2024-1086"]},
+                      records={"UBUNTU-CVE-2024-1086": rec})
+        findings, err = osvhost.match(facts(KERNELS), {"CVE-2024-1086"}, self.cache, post=osv.post, fetch=osv.fetch,
+                                      epss_scores={"CVE-2024-1086": (0.75, 0.98)})
+        self.assertIsNone(err)
+        [info] = [f for f in findings if f["id"].startswith("info:kev:")]
+        self.assertEqual((info["epss"], info["epss_percentile"]), (0.75, 0.98))
+        self.assertNotIn("EPSS", info["text"])
+
+
 class FailureTests(TmpCacheCase):
     def test_api_failure_is_error_not_clean(self):
         def post(url, body):

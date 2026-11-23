@@ -100,6 +100,14 @@ class ReportOpts:
     language: str = "en"  # one of REPORT_LANGUAGES
 
 
+@dataclass
+class EpssOpts:
+    """[epss]: FIRST's exploit probability scores (epss.py). `enabled = false` skips the download;
+    `promote_at` is the score (a fraction, 0.10 = 10%) from which a finding is promoted; 0 turns that off."""
+    enabled: bool = True
+    promote_at: float = 0.10
+
+
 DEFAULT_HOST_KEY = "~/.ssh/sbom-audit_ed25519"
 _HOST_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")   # the same rule as hosts.store.check_host
 
@@ -142,6 +150,7 @@ class Config:
     hosts: HostsOpts = field(default_factory=HostsOpts)
     assess: AssessProvider = field(default_factory=AssessProvider)
     report: ReportOpts = field(default_factory=ReportOpts)
+    epss: EpssOpts = field(default_factory=EpssOpts)
     releases: ReleasesOpts | None = None  # [releases]: the portfolio default, off when absent
     digest: str | None = None  # sha256 of the sbom-audit.toml bytes `load` read; None: no file was read
 
@@ -355,6 +364,22 @@ def _report(data) -> ReportOpts:
                       language=language)
 
 
+EPSS_KEYS = ("enabled", "promote_at")
+
+
+def _epss(data) -> EpssOpts:
+    if not isinstance(data, dict):
+        raise ConfigError("[epss] must be a table")
+    unknown = sorted(set(data) - set(EPSS_KEYS))
+    if unknown:              # a typo must not go unnoticed: promote_at changes priorities
+        raise ConfigError(f"[epss]: unknown key {unknown[0]} (known: {', '.join(EPSS_KEYS)})")
+    promote_at = data.get("promote_at", 0.10)
+    if (isinstance(promote_at, bool) or not isinstance(promote_at, (int, float))
+            or not 0 <= promote_at <= 1):
+        raise ConfigError("[epss] promote_at must be a fraction from 0 to 1 (0.10 for 10%; 0 turns promotion off)")
+    return EpssOpts(enabled=_bool(data.get("enabled", True), "[epss] enabled"), promote_at=float(promote_at))
+
+
 RELEASES_KEYS = ("tags", "keep", "support_months", "support_until", "prereleases")
 
 
@@ -476,6 +501,7 @@ def load(out: Path, root: Path | None = None, env: Mapping[str, str] | None = No
         hosts=_hosts(data.get("hosts", {})),
         assess=_assess(data.get("assess", {}), env, out),
         report=_report(data.get("report", {})),
+        epss=_epss(data.get("epss", {})),
         releases=releases,
         digest=digest,
     )
@@ -690,6 +716,13 @@ def write_default(out: Path, cfg: Config, discovered: list[Project] | None = Non
         "# [report]",
         '# organisation = "..."',
         '# language = "en"',
+        "",
+        "# EPSS: FIRST's daily probability that a CVE is exploited in the next 30 days (one download of the",
+        "# complete score file; nothing about your packages is sent). promote_at is a fraction (0.10 for 10%);",
+        "# 0 turns promotion off. enabled = false skips the download.",
+        "# [epss]",
+        "# enabled = true",
+        "# promote_at = 0.10",
         "",
         "# Release scanning (off until tags is set): one SBOM and audit per release tag for the newest `keep`",
         "# tags, and each release's support period (months from its date and/or an end date; both: the later).",

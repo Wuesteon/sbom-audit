@@ -20,7 +20,7 @@ from sbomaudit.errors import ToolError
 from sbomaudit.model import BranchInventory, Component
 from sbomaudit.readers import runtime_component
 
-from tests.helpers import make_repo
+from tests.helpers import epss_fetch, epss_gz, make_repo
 
 V3_CRIT = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
 LODASH = Component(kind="package", ecosystem="npm", name="lodash", version="4.17.20",
@@ -124,6 +124,7 @@ class BrokenRepoTests(unittest.TestCase):
     def test_cli_run_and_scan_exit_2(self):
         out = str(self.cfg.out)
         with tools_present(), mock.patch.object(pipeline.enrich, "http_get_json", offline), \
+             mock.patch.object(pipeline.epss, "http_get_bytes", epss_fetch(epss_gz())), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(["--out", out, "scan", "--no-fetch"]), 2)
             self.assertEqual(cli.main(["--out", out, "run", "--no-fetch"]), 2)
@@ -152,7 +153,8 @@ class BrokenRepoTests(unittest.TestCase):
 
 
 class RunTests(unittest.TestCase):
-    def run_with(self, tmp: Path, osv, invs=None, before=None, http=offline) -> tuple[int, Config]:
+    def run_with(self, tmp: Path, osv, invs=None, before=None, http=offline,
+                 http_bytes=None) -> tuple[int, Config]:
         cfg = make_cfg(tmp)
         if before:
             before(cfg)
@@ -161,9 +163,82 @@ class RunTests(unittest.TestCase):
              mock.patch.object(pipeline.scan, "scan", return_value=scan_result(*(invs or [inventory()]))), \
              mock.patch.object(pipeline.matching, "run_osv_scanner", **osv) as run_osv, \
              contextlib.redirect_stdout(io.StringIO()):
-            rc = pipeline.run(cfg, http=http, log=self.said.append)
+            rc = pipeline.run(cfg, http=http, log=self.said.append, http_bytes=http_bytes)
         self.osv_calls = run_osv.call_count
         return rc, cfg
+
+    @staticmethod
+    def epss_hit() -> dict:
+        """osv_hit() with the alias CVE-2021-23337, the CVE epss_gz() scores (CVE-2026-1 is not a valid CVE id)."""
+        hit = osv_hit()
+        hit["results"][0]["packages"][0]["vulnerabilities"][0]["aliases"] = ["CVE-2021-23337"]
+        return hit
+
+    def audit_json(self, cfg: Config) -> dict:
+        return json.loads((cfg.out / "audit.json").read_text())
+
+    def test_epss_scores_reach_audit_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, cfg = self.run_with(Path(tmp), {"return_value": self.epss_hit()}, http_bytes=epss_fetch(epss_gz()))
+            rep = self.audit_json(cfg)
+        self.assertEqual(rc, pipeline.EXIT_FINDINGS)
+        self.assertEqual(rep["epss"], {"threshold": 0.10, "available": True,
+                                       "score_date": "2026-11-23T12:00:23Z", "model_version": "v2026.06.15"})
+        row = rep["vulnerabilities"][0]
+        self.assertEqual((row["max_epss"], row["vulns"][0]["epss"], row["vulns"][0]["epss_percentile"]),
+                         (0.0123, 0.0123, 0.79))
+        self.assertEqual(rep["sources"]["epss"]["origin"], "live")
+        self.assertIn("EPSS …", self.said)
+
+    def test_no_epss_step_when_only_http_is_injected(self):
+        with mock.patch.object(pipeline.epss, "http_get_bytes", epss_fetch(OSError("must not be called"))) as fetch, \
+             tempfile.TemporaryDirectory() as tmp:
+            rc, cfg = self.run_with(Path(tmp), {"return_value": self.epss_hit()})
+            rep = self.audit_json(cfg)
+        self.assertEqual(rc, pipeline.EXIT_FINDINGS)
+        self.assertNotIn("epss", rep)
+        self.assertNotIn("epss", rep["sources"])
+        self.assertNotIn("max_epss", rep["vulnerabilities"][0])
+        self.assertNotIn("epss", rep["vulnerabilities"][0]["vulns"][0])
+        self.assertEqual(fetch.calls, [])
+
+    def test_epss_disabled_by_config(self):
+        def disable(cfg):
+            (cfg.out / config.CONFIG_NAME).write_text("[epss]\nenabled = false\n")
+            cfg.epss = config.load(cfg.out).epss
+        fetch = epss_fetch(epss_gz())
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, cfg = self.run_with(Path(tmp), {"return_value": self.epss_hit()}, before=disable, http_bytes=fetch)
+            rep = self.audit_json(cfg)
+        self.assertEqual(rc, pipeline.EXIT_FINDINGS)
+        self.assertNotIn("epss", rep)
+        self.assertNotIn("epss", rep["sources"])
+        self.assertNotIn("max_epss", rep["vulnerabilities"][0])
+        self.assertEqual(fetch.calls, [])
+
+    def test_epss_outage_without_cache_fails_the_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, cfg = self.run_with(Path(tmp), {"return_value": self.epss_hit()},
+                                    http_bytes=epss_fetch(OSError("down")))
+            rep = self.audit_json(cfg)
+        self.assertEqual(rc, pipeline.EXIT_SOURCE_FAILED)
+        self.assertEqual((rep["epss"]["available"], rep["vulnerabilities"][0]["max_epss"]), (False, None))
+        self.assertIn("down", rep["sources"]["epss"]["error"])
+
+    def test_epss_outage_with_an_older_file_is_stale_not_failed(self):
+        real_time = pipeline.time.time
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, cfg = self.run_with(Path(tmp), {"return_value": self.epss_hit()}, http_bytes=epss_fetch(epss_gz()))
+            self.assertEqual(rc, pipeline.EXIT_FINDINGS)
+            with tools_present(), mock.patch("sbomaudit.cache.time.time", lambda: real_time() + 25 * 3600), \
+                 mock.patch.object(pipeline.scan, "scan", return_value=scan_result(inventory())), \
+                 mock.patch.object(pipeline.matching, "run_osv_scanner", return_value=self.epss_hit()), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                rc = pipeline.run(cfg, http=offline, http_bytes=epss_fetch(OSError("down")))
+            rep = self.audit_json(cfg)
+        self.assertEqual(rc, pipeline.EXIT_FINDINGS)
+        self.assertEqual((rep["sources"]["epss"]["origin"], rep["vulnerabilities"][0]["max_epss"]), ("stale", 0.0123))
+        self.assertIsNone(rep["sources"]["epss"]["error"])
 
     def test_run_refreshes_the_guard_in_the_isolated_config_dir_only(self):
         def snapshot(folder: Path):
@@ -985,6 +1060,7 @@ class PreflightTests(unittest.TestCase):
             with mock.patch("sbomaudit.preflight.shutil.which", which_without("syft", "gh")), \
                  mock.patch.object(pipeline.matching, "run_osv_scanner", return_value={"results": []}), \
                  mock.patch.object(pipeline.enrich, "http_get_json", offline), \
+                 mock.patch.object(pipeline.epss, "http_get_bytes", epss_fetch(epss_gz())), \
                  contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(cli.main(["--out", str(cfg.out), "audit"]), 0)
 
@@ -998,6 +1074,7 @@ class CliTests(unittest.TestCase):
             with tools_present(), \
                  mock.patch.object(pipeline.matching, "run_osv_scanner", return_value=osv_hit()), \
                  mock.patch.object(pipeline.enrich, "http_get_json", offline), \
+                 mock.patch.object(pipeline.epss, "http_get_bytes", epss_fetch(epss_gz())), \
                  contextlib.redirect_stdout(buf):
                 rc = cli.main(["--out", str(cfg.out), "audit"])
             self.assertEqual(rc, 1)
@@ -1022,10 +1099,42 @@ class CliTests(unittest.TestCase):
                  mock.patch.object(pipeline.scan, "scan", return_value=scan_result(inventory())), \
                  mock.patch.object(pipeline.matching, "run_osv_scanner", return_value={"results": []}), \
                  mock.patch.object(pipeline.enrich, "http_get_json", offline), \
+                 mock.patch.object(pipeline.epss, "http_get_bytes", epss_fetch(epss_gz())), \
                  contextlib.redirect_stdout(buf):
                 rc = cli.main(["--out", str(cfg.out), "run", "--root", str(cfg.root), "--no-fetch"])
             self.assertEqual(rc, 0)
             self.assertRegex(buf.getvalue(), r"\d+(\.\d+)?s")
+
+
+class SummaryLineEpssTests(unittest.TestCase):
+    @staticmethod
+    def rep(max_epss=0.5, epss_block=True) -> dict:
+        row = {"ecosystem": "npm", "name": "hot", "version": "1.0.0", "kev": False, "max_severity": "MEDIUM",
+               "max_epss": max_epss,
+               "locations": [{"project": "zeta", "branch": "main", "manifest": "package.json", "scope": "required"}],
+               "vulns": [{"id": "GHSA-1", "severity": "MEDIUM", "epss": max_epss}]}
+        rep = {"stats": {"projects": 1, "branches": 1}, "vulnerabilities": [row], "runtimes": [], "suppressed": [],
+               "production_projects": ["zeta"]}
+        if epss_block:
+            rep["epss"] = {"threshold": 0.10, "available": True, "score_date": "2026-11-23T12:00:23Z",
+                           "model_version": "v2025.03.14"}
+        return rep
+
+    def line(self, rep: dict) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            return pipeline.summary_line(rep, make_cfg(Path(tmp)), 0.0)
+
+    def test_promoted_rows_are_named(self):
+        self.assertIn(", 1 promoted by EPSS", self.line(self.rep()))
+
+    def test_failed_source_prints_no_zero_count(self):
+        rep = self.rep(max_epss=None)
+        rep["epss"]["available"] = False
+        self.assertNotIn("promoted", self.line(rep))
+
+    def test_nothing_about_epss_without_the_step_or_a_promotion(self):
+        self.assertNotIn("EPSS", self.line(self.rep(epss_block=False)))
+        self.assertNotIn("EPSS", self.line(self.rep(max_epss=0.01)))
 
 
 class EmptyPortfolioTests(unittest.TestCase):
