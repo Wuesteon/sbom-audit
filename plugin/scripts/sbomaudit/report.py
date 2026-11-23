@@ -12,7 +12,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import __version__, coverage, gaps, gitio, sbomimport, sbomquality
+from . import __version__, coverage, epss, gaps, gitio, sbomimport, sbomquality
 from .config import Config
 from .cvss import SEV_ORDER, base_label
 from .enrich import DECLARED_FLOORS, fixed_in
@@ -465,11 +465,13 @@ def _source_status(sources: dict) -> list[str]:
     for name, info in sources.items():
         failed = info.get("failed") or []
         counts = ", ".join(f"{k}={v}" for k, v in info.items()
-                           if k not in ("failed", "error", "skipped") and v is not None)
+                           if k not in ("failed", "error", "skipped", "warning") and v is not None)
         if info.get("skipped"):
             status, detail = "skipped", md(info["skipped"]) if isinstance(info["skipped"], str) else "–"
         elif info.get("error"):
             status, detail = "**failed**", md(info["error"])
+        elif info.get("warning"):            # an older copy was used (EPSS): the warning says why
+            status, detail = "stale", (f"{md(counts)}; " if counts else "") + md(info["warning"])
         elif failed:
             status = f"**partial** ({len(failed)} failed)"
             detail = "; ".join(f"{failed_label(f)}: {md(f['error'])}" for f in failed)
@@ -510,6 +512,7 @@ def _summary(rep: dict) -> list[str]:
          + " (excluding dev-only)", len(prod_rows)),
         ("Severity not rated in production" + (" or supported releases" if st.get("releases") else "")
          + " (excluding dev-only, KEV)", sum(1 for v in vulns if unrated_in_production(v, production))),
+        *_epss_summary_rows(rep, production),
         ("Packages with version not resolved, not checked for vulnerabilities", st.get("unresolved_versions", 0)),
         ("Dev-only vulnerable package versions", len(dev_only)),
         ("Vulnerable direct dependencies", sum(1 for v in vulns if v["direct_anywhere"])),
@@ -550,6 +553,36 @@ def unrated_in_production(v: dict, production: set[str]) -> bool:
             and any(counts_as_production(l, production) for l in v.get("locations") or []))
 
 
+def epss_promoted(v: dict, production: set[str], threshold: float | None) -> bool:
+    """A package version the EPSS rule moves from priority 6 to 3: not KEV, not CRITICAL/HIGH, no unrated
+    advisory, in runtime scope of a production project or supported release, and a score at or above the
+    threshold. EPSS never lowers a rank, so it only ever adds rows here."""
+    return (not v.get("kev") and v.get("max_severity") not in ACTIONABLE and not coverage.unrated_advisories(v)
+            and any(counts_as_production(l, production) for l in v.get("locations") or [])
+            and epss.likely(v.get("max_epss"), threshold))
+
+
+def _epss_on(block: dict) -> bool:
+    """Promotion by EPSS is switched on (`[epss] promote_at` greater than 0)."""
+    return epss.likely(1.0, block.get("threshold"))
+
+
+def _epss_summary_rows(rep: dict, production: set[str]) -> list[tuple[str, object]]:
+    block = rep.get("epss")
+    if not block:
+        return []
+    if not _epss_on(block):
+        return [("Promoted by EPSS", "off")]
+    threshold = block["threshold"]
+    return [(f"Promoted by EPSS (at or above {epss.text(threshold)}, in production or a supported release)",
+             sum(1 for v in rep["vulnerabilities"] if epss_promoted(v, production, threshold)))]
+
+
+def _epss_cell(v: dict, block: dict) -> str:
+    """The EPSS column: the row's highest score, `no EPSS` without one, `n/a` when no scores were loaded."""
+    return epss.text(v.get("max_epss")) if block.get("available") else "n/a"
+
+
 def _fix_cells(v: dict) -> tuple[str, str, str]:
     """(severity cell, fix target cell, worst advisory cell) for one vulnerable package version."""
     fixes = [s.get("fixed_in") for s in v["vulns"]]
@@ -575,7 +608,33 @@ def _kev_section(vulns: list[dict]) -> list[str]:
     return L + [""]
 
 
-def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
+def _epss_section(vulns: list[dict], block: dict) -> list[str]:
+    L = ["## Likely to be exploited (EPSS)", ""]
+    if not block.get("available"):
+        return L + ["EPSS scores were not available in this run. No finding was promoted or demoted because of it.", ""]
+    if not _epss_on(block):
+        return L + ["Promotion by EPSS is turned off ([epss] promote_at = 0); scores are shown in the tables.", ""]
+    threshold = block["threshold"]
+    intro = (f"EPSS is FIRST's daily estimate of the probability that a CVE is exploited in the next 30 days (scores "
+             f"of {str(block.get('score_date') or 'unknown date')[:10]}). It is a forecast and exists only for CVEs: "
+             "a low or missing score does not mean safe.")
+    rows = sorted((v for v in vulns if epss.likely(v.get("max_epss"), threshold)),
+                  key=lambda v: (-v["max_epss"], v["name"], v["version"] or ""))
+    if not rows:
+        return L + [f"{intro} None of the vulnerable package versions has an EPSS score at or above "
+                    f"{epss.text(threshold)}.", ""]
+    L += [f"{intro} Package versions at or above {epss.text(threshold)}:", ""]
+    for v in rows:
+        ids = ", ".join(" ".join([s.get("id", "?")] + [c for c in s.get("cves", []) if c != s.get("id")])
+                        for s in v["vulns"] if epss.likely(s.get("epss"), threshold))
+        where = ", ".join(sorted({f"{l['project']}@{l['branch']}" for l in v["locations"]}))
+        scope = "dev-only" if v["scope"] == "optional" else "runtime scope"
+        L.append(f"- **{md(_pkg(v))}@{v['version'] or 'unresolved'}** ({v['ecosystem']}, {scope}): "
+                 f"EPSS {epss.text(v['max_epss'])}, {md(ids)} - used by {md(where)}")
+    return L + [""]
+
+
+def _by_project_section(vulns: list[dict], production: set[str], block: dict | None = None) -> list[str]:
     L = ["## Critical and high severity by project", "",
          "KEV, CRITICAL and HIGH package versions with runtime scope; dev-only occurrences are listed further down. "
          "Production projects come first. `Fix target` is the lowest version that closes every listed advisory "
@@ -591,16 +650,21 @@ def _by_project_section(vulns: list[dict], production: set[str]) -> list[str]:
                 per[l["project"]][l["branch"]].append((v, l))
     if not per:
         return L + ["None.", ""]
+    threshold = block.get("threshold") if block else None
     for p in sorted(per, key=lambda p: (p not in production, p.lower())):
         L += [f"### {p}" + (" (production)" if p in production else ""), ""]
         for b in sorted(per[p]):
-            rows = sorted(per[p][b], key=lambda vl: (not vl[0]["kev"], SEV_ORDER.get(vl[0]["max_severity"], 5), vl[0]["name"]))
+            rows = sorted(per[p][b], key=lambda vl: (not vl[0]["kev"], SEV_ORDER.get(vl[0]["max_severity"], 5),
+                                                     epss.order(vl[0].get("max_epss"), threshold) if block else 0,
+                                                     vl[0]["name"]))
             L += [f"**`{b}`** — {len(rows)} vulnerable package version{'' if len(rows) == 1 else 's'}", "",
-                  "| Sev | Package | Version | Advisories | Fix target | Direct | Manifest | Worst advisory |",
-                  "|---|---|---|---|---|---|---|---|"]
+                  "| Sev |" + (" EPSS |" if block else "")
+                  + " Package | Version | Advisories | Fix target | Direct | Manifest | Worst advisory |",
+                  "|---|---|---|---|---|---|---|---|" + ("---|" if block else "")]
             for v, l in rows:
                 sev, fix, worst = _fix_cells(v)
-                L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+                ep = f" {_epss_cell(v, block)} |" if block else ""
+                L.append(f"| {sev} |{ep} {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
                          f"{_direct_cell(l.get('direct'))} | `{md(l['manifest'])}` | {worst} |")
             L.append("")
     return L
@@ -680,18 +744,20 @@ def _outdated_section(outdated: list[dict]) -> list[str]:
     return L
 
 
-def _dev_only_section(vulns: list[dict]) -> list[str]:
+def _dev_only_section(vulns: list[dict], block: dict | None = None) -> list[str]:
     L = ["## Dev-only findings", "",
          "KEV, CRITICAL and HIGH package versions that occur here only as a devDependency or build-time tool "
          "(SBOM scope `optional`, labelled dev-only). Fix them, but they are not a production exposure.", ""]
     rows = [(v, l) for v in vulns if _actionable(v) for l in v["locations"] if l.get("scope") == "optional"]
     if not rows:
         return L + ["None.", ""]
-    L += ["| Sev | Package | Version | Advisories | Fix target | Direct | Project@branch | Manifest | Scope |",
-          "|---|---|---|---|---|---|---|---|---|"]
+    L += ["| Sev |" + (" EPSS |" if block else "")
+          + " Package | Version | Advisories | Fix target | Direct | Project@branch | Manifest | Scope |",
+          "|---|---|---|---|---|---|---|---|---|" + ("---|" if block else "")]
     for v, l in rows:
         sev, fix, _ = _fix_cells(v)
-        L.append(f"| {sev} | {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
+        ep = f" {_epss_cell(v, block)} |" if block else ""
+        L.append(f"| {sev} |{ep} {md(_pkg(v))} | {v['version'] or 'unresolved'} | {len(v['vulns'])} | {fix} | "
                  f"{_direct_cell(l.get('direct'))} | {l['project']}@{l['branch']} | `{md(l['manifest'])}` | dev-only |")
     return L + [""]
 
@@ -761,6 +827,16 @@ def _imports_line(imports: list[dict]) -> list[str]:
     return [text + ".", ""]
 
 
+def _epss_method(block: dict) -> str:
+    """The method sentence on EPSS (FIRST's exploit probability scores) under the report's header."""
+    if not _epss_on(block):
+        return ("EPSS (FIRST's exploit probability scores) never lowers a rank, and promotion by EPSS is turned off "
+                "(`[epss] promote_at = 0`).")
+    return ("EPSS (FIRST's exploit probability scores) never lowers a rank: it only ranks up a package version that "
+            "is not KEV, CRITICAL or HIGH, in production or a supported release, whose score is at or above "
+            f"{epss.text(block['threshold'])} (`[epss] promote_at`).")
+
+
 def write_audit_md(rep: dict, out: Path) -> Path:
     out = Path(out)
     production = set(rep.get("production_projects", []))
@@ -769,17 +845,22 @@ def write_audit_md(rep: dict, out: Path) -> Path:
          "(committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), "
          "endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements "
          "in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.", ""]
+    block = rep.get("epss")
+    if block:                                   # only when the EPSS step ran: AUDIT.md is unchanged without it
+        L += [_epss_method(block), ""]
     L += _imports_line(rep.get("imported_sboms") or [])
     L += _source_status(rep.get("sources") or {})
     L += _summary(rep)
     L += _kev_section(rep["vulnerabilities"])
-    L += _by_project_section(rep["vulnerabilities"], production)
+    if block:
+        L += _epss_section(rep["vulnerabilities"], block)
+    L += _by_project_section(rep["vulnerabilities"], production, block)
     if any(unrated_in_production(v, production) for v in rep["vulnerabilities"]):
         L += coverage.unrated_section(rep["vulnerabilities"], lambda v: unrated_in_production(v, production))
     L += _runtime_section(rep["runtimes"])
     L += _floating_section(rep["unpinned_images"])
     L += _outdated_section(rep["outdated"])
-    L += _dev_only_section(rep["vulnerabilities"])
+    L += _dev_only_section(rep["vulnerabilities"], block)
     L += _suppressed_section(rep["suppressed"])
     L += _releases_section(rep.get("releases") or [])
     if rep.get("unresolved_versions"):

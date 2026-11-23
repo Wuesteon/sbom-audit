@@ -138,6 +138,37 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(failed["data_sources"]["cisa_kev"]["status"], "failed")
         self.assertIsNone(failed["data_sources"]["cisa_kev"]["origin"])
 
+    def test_data_sources_epss(self):
+        cache, since = self.cache, time.time()
+        src = {"loaded": 2, "scored": 1, "score_date": "2026-11-23T12:00:23Z", "model_version": "v2026.06.15",
+               "origin": "live", "fetched_at": "2026-11-24T03:00:00+00:00", "error": None, "warning": None}
+        doc = manifest.data_sources({"epss": src}, cache, since)["epss"]
+        self.assertEqual(doc, {"status": "ok", "entries": 2, "origin": "live", "fetched_at": "2026-11-24T03:00:00+00:00",
+                               "score_date": "2026-11-23T12:00:23Z", "model_version": "v2026.06.15"})
+        self.assertEqual(manifest.data_sources({"epss": {**src, "origin": "stale", "warning": "EPSS download failed: x"}},
+                                               cache, since)["epss"]["status"], "stale")
+        self.assertEqual(manifest.data_sources({"epss": {**src, "loaded": 0, "origin": None, "error": "EPSS fetch failed: x"}},
+                                               cache, since)["epss"]["status"], "failed")
+        self.assertNotIn("epss", manifest.data_sources({}, cache, since))
+
+    def test_audit_md_section_epss_freshness(self):
+        src = {"loaded": 2, "scored": 1, "score_date": "2026-11-23T12:00:23Z", "model_version": "v2026.06.15",
+               "origin": "cache", "fetched_at": "2026-11-24T03:00:00Z", "error": None, "warning": None}
+
+        def line(source):
+            prov = manifest.provenance(None, self.cache, time.time(), sources={"epss": source}, tools={})
+            return next(l for l in manifest.audit_md_section(prov) if l.startswith("| EPSS (FIRST) |"))
+
+        self.assertEqual(line(src), "| EPSS (FIRST) | ok | scores of 2026-11-23T12:00:23Z (model v2026.06.15), "
+                                    "fetched 2026-11-24T03:00:00Z, from the local cache |")
+        self.assertTrue(line({**src, "origin": "live"}).endswith(", downloaded during this audit |"))
+        self.assertTrue(line({**src, "origin": "stale", "warning": "EPSS download failed: x"})
+                        .endswith("| stale | scores of 2026-11-23T12:00:23Z (model v2026.06.15), "
+                                  "fetched 2026-11-24T03:00:00Z, download failed, older file used |"))
+        self.assertEqual(line({**src, "loaded": 0, "origin": None, "fetched_at": None, "score_date": None,
+                               "model_version": None, "error": "EPSS fetch failed: x"}),
+                         "| EPSS (FIRST) | failed | not loaded |")
+
     def test_try_provenance_never_raises(self):
         prov = manifest.try_provenance(None, None, 0, sources={})
         self.assertIn("error", prov)
