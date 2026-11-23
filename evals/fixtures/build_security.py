@@ -2,7 +2,8 @@
 
 Synthetic and deterministic: three fixture projects (see `projects/`), fixed timestamps, one
 real advisory (lodash 4.17.20, GHSA-35jh-r3h4-6jhm / CVE-2021-23337) so `incident` gets a `hit`
-from the live OSV record. No credentials, no host names, no absolute paths.
+from the live OSV record, and a synthetic EPSS score on it. No credentials, no host names, no
+absolute paths.
 
     PYTHONPATH=plugin/scripts python3 evals/fixtures/build_security.py
 """
@@ -46,7 +47,11 @@ INVS = [
 ]
 LODASH_VULN = {"id": "GHSA-35jh-r3h4-6jhm", "aliases": ["CVE-2021-23337"], "cves": ["CVE-2021-23337"],
                "summary": "Command Injection in lodash", "severity": "HIGH", "cvss": 7.2,
-               "fixed": ["4.17.21"], "published": "2021-05-06", "modified": "2024-02-01", "withdrawn": False}
+               "fixed": ["4.17.21"], "published": "2021-05-06", "modified": "2024-02-01", "withdrawn": False,
+               "epss": 0.0123, "epss_percentile": 0.79}
+EPSS_FETCHED_AT = "2026-11-07T02:59:00Z"
+EPSS_SCORE_DATE = "2026-11-06T00:00:00Z"
+EPSS_MODEL = "v2025.03.14"
 
 
 def main() -> None:
@@ -60,8 +65,13 @@ def main() -> None:
     report._now = lambda: INVENTORY_AT  # fixed timestamps keep the checked-in files reproducible
     scan.write_inventory(cfg, scan.ScanResult(inventories=INVS, generated_at=INVENTORY_AT))
     report.write_inventory_md(cfg, INVS, out)
+    # fixed EPSS values (synthetic): what epss.source and the pipeline's EPSS block record on a real run
+    epss_source = {"loaded": 300000, "scored": 1, "score_date": EPSS_SCORE_DATE, "model_version": EPSS_MODEL,
+                   "origin": "live", "fetched_at": EPSS_FETCHED_AT, "error": None, "warning": None}
+    epss_block = {"threshold": cfg.epss.promote_at, "available": True, "score_date": EPSS_SCORE_DATE,
+                  "model_version": EPSS_MODEL}
     rep = report.build(cfg, INVS, [Finding("shop-web", "main", LODASH_OLD, [LODASH_VULN])], [], [], [],
-                       {"osv-scanner": {"scanned": 3, "failed": []}})
+                       {"osv-scanner": {"scanned": 3, "failed": []}, "epss": epss_source}, epss=epss_block)
     rep["generated_at"] = AUDIT_AT
     rep["provenance"] = {  # fixed values: what manifest.provenance records on a real run
         "sbom_audit": "fixture", "python": "3.12.0", "platform": "fixture", "config_sha256": None,
@@ -71,6 +81,8 @@ def main() -> None:
                     "branches_failed": 0},
             "cisa_kev": {"status": "ok", "entries": 1400, "origin": "live", "fetched_at": "2026-11-07T02:59:00+00:00",
                          "catalog_version": "2026.11.06", "catalog_date": "2026-11-06T15:00:00.000Z"},
+            "epss": {"status": "ok", "entries": 300000, "origin": "live", "fetched_at": EPSS_FETCHED_AT,
+                     "score_date": EPSS_SCORE_DATE, "model_version": EPSS_MODEL},
             "endoflife": {"status": "ok", "answers": 0, "live": 0, "cached": 0, "without_answer": 0,
                           "oldest_fetch": None, "newest_fetch": None},
             "registries": {"status": "ok", "answers": 0, "live": 0, "cached": 0, "without_answer": 0,

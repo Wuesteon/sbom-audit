@@ -58,6 +58,10 @@ assess_budget_usd = 5.0
 [secrets]
 enabled = true
 
+[epss]                                # optional: FIRST's exploit probability scores
+enabled = true                        # false: no download, no EPSS column or rule
+promote_at = 0.10                     # a fraction (0.10 = 10%); 0 turns promotion off
+
 [assess]                              # optional: assessment drafts by an OpenAI-compatible endpoint
 base_url = "https://openrouter.ai/api/v1"
 model = "openai/gpt-5.2"
@@ -78,14 +82,15 @@ Release scanning (`[releases]`, off by default) is described in
 [Releases](#releases-an-sbom-per-released-version).
 
 **2. Run.** `/sbom-audit:run` builds one CycloneDX SBOM per project and branch with Syft,
-runs osv-scanner against them, marks CISA KEV entries, queries endoflife.date for every
+runs osv-scanner against them, marks CISA KEV entries, adds FIRST's EPSS score to every CVE
+(see [EPSS](#epss-likely-to-be-exploited)), queries endoflife.date for every
 runtime and base image, compares direct dependencies with their registries, applies the
 VEX statements, scans new commits for secrets, writes `AUDIT.md`, `audit.json`,
 `INVENTORY.md`, `inventory.json`, `STATUS.md`, `status.json`, `SECRETS.md`,
 `secrets.json` and the work list `issues.json`, appends a line to `log.md`, commits the evidence (`commit = true`) and then
 opens the assessment: an incident sweep of the last 30 days across every runtime and
 framework in the inventory, triage in the fixed order open class A secrets → KEV →
-CRITICAL/HIGH in production and open class B secrets → EOL → floating tags → dev-only
+CRITICAL/HIGH in production, issues promoted by EPSS and open class B secrets → EOL → floating tags → dev-only
 tooling, and a written `## Assessment YYYY-MM-DD` section with actions per project. A portfolio of about ten
 repositories takes a few minutes; run it in the background.
 
@@ -171,6 +176,41 @@ never as clean:
   (`status.json` `counts.unrated_production`), and `issues.json` gives it priority 3 with reason
   `unrated_production`, next to CRITICAL/HIGH, until someone has read it.
 
+<a id="epss-likely-to-be-exploited"></a>**EPSS: likely to be exploited.** EPSS is FIRST's daily estimate of
+the probability that a CVE is exploited in the next 30 days. Each run downloads the complete score file
+once (`https://epss.empiricalsecurity.com/epss_scores-current.csv.gz`, one GET without a query string,
+so nothing about your packages is sent) and keeps it for 24 h in `.cache/enrich/epss-scores.csv.gz`; the
+host check uses the same file.
+
+```toml
+[epss]
+enabled = true        # false skips the download; no EPSS field, column or rule appears anywhere
+promote_at = 0.10     # a fraction from 0 to 1 (0.10 for 10%); 0 turns promotion off, scores are still shown
+```
+
+- Every advisory in `audit.json` gets `epss` and `epss_percentile` (null without a score), every row
+  `max_epss`, and the top level `epss` (`threshold`, `available`, `score_date`, `model_version`).
+  `sources.epss` holds the counts, the score date, the model version, the origin (`live`, `cache` or
+  `stale`) and the fetch time.
+- **The rule.** A package version that is not KEV, not CRITICAL/HIGH and not unrated, in runtime scope of a
+  production project or supported release, with a score at or above `promote_at`, moves from priority 6
+  to 3 in `issues.json` (reason `epss_production`). Its title ends with `(likely to be exploited: EPSS at
+  or above 10.0%)`: the threshold, not the score, so the title does not change every day. EPSS never
+  lowers a priority.
+- `AUDIT.md` gets a method sentence under the header, the summary row "Promoted by EPSS (at or above
+  10.0%, in production or a supported release)" (or `off`), the section "Likely to be exploited (EPSS)"
+  and an EPSS column in the by-project and dev-only tables. A missing score reads `no EPSS`, never 0%; a
+  score under 0.1% reads `<0.1%`. `STATUS.md` and the run summary count the promoted ones
+  (`status.json` `counts.epss_promoted`); `REPORT.html` adds an EPSS column and the reason "Likely to be
+  exploited (EPSS)"; `incident` and `lookup` show the score in their evidence, the `issues` query line
+  at its end.
+- **Outage.** When the download fails and an older file is cached, that file is used: the source status
+  is `stale` with the reason and the date of the scores, and the exit code does not change. Without any
+  file the source is failed (exit 2, as for KEV), no finding is promoted and the EPSS section says the
+  scores were not available. A network that blocks the host should set `enabled = false`.
+- An `audit.json` without the top-level `epss` key (written by 1.3.x, or with `enabled = false`) gives
+  the same reports as 1.3.1.
+
 Each `audit.json` vulnerability row also carries `package` (the OSV name: `group:artifact` for Maven,
 otherwise the name) and `purl` (without qualifiers); `issues.json` `details.package` uses the same name.
 Every name a reader sees uses it: the `AUDIT.md` tables (KEV, by project, dev-only, not rated, suppressed
@@ -253,7 +293,8 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
   fingerprint, never the value), `eol`, `floating_tag`, `host`.
 - `priority`: 1 class A secret · 2 KEV and critical host findings · 3 CRITICAL/HIGH in a production
   project or a supported release (reason `critical_high_production`), an advisory there that is not
-  rated (`unrated_production`), and class B secrets · 4 end of life, and secrets ranked lower by their
+  rated (`unrated_production`), a package version whose EPSS score is at or above `[epss]
+  promote_at` there (`epss_production`, see [EPSS](#epss-likely-to-be-exploited)), and class B secrets · 4 end of life, and secrets ranked lower by their
   path context (`secret_context`, see [Secrets](#secrets)) · 5 floating tag · 6 everything else,
   among them a declared minimum (`engines.node`, `requires-python`) that allows an end-of-life
   version (`eol_minimum`, see [What is read per ecosystem](#what-is-read-per-ecosystem); what
@@ -267,8 +308,13 @@ The plugin reports and never fixes. What it hands to whoever does fix, a person 
 - `details.direct` says whether the package is a direct dependency of that manifest (`true`), a
   transitive one (`false`) or that the scan could not tell (`null`: unknown, never counted as
   transitive), `details.dev_only` whether only dev-only scopes hold it. The list is ordered by
-  priority, production first, then direct dependencies, then unknown, then transitive ones, then
-  severity, place and id: a direct dependency's fix lands in your own
+  priority, production first, then the issues at or above the EPSS threshold (`details.epss_likely`),
+  then direct dependencies, then unknown, then transitive ones, then the higher EPSS score (an issue
+  without a score counts as if its score were the threshold), then severity, place and id. Host issues
+  are never moved by a score. With EPSS, `issues.json` has the top-level `epss` (`threshold`,
+  `available`, `score_date`), `details.max_epss`, `details.epss_likely` and per advisory `epss` and
+  `epss_percentile`; `ISSUES.md` has an EPSS column (`n/a` when no scores were loaded, `–` for
+  anything that is not a vulnerability). Why direct first: a direct dependency's fix lands in your own
   manifest; a transitive one is fixed through the parent that pulls it in or a lockfile refresh; for an
   unknown one check the manifest first. The priority never depends on it. `ISSUES.md` and
   `REPORT.html` say how many vulnerabilities at priority 2 and 3 are direct, how many transitive and,
@@ -301,7 +347,7 @@ with the next `run` or `audit`, like in `AUDIT.md`.
 
 Branches show what you are building; a manufacturer also answers for what it shipped. With
 `[releases]`, every run also scans the newest release tags of a project, each through the same
-pipeline as a branch: its own SBOM, OSV, CISA KEV, endoflife.date and VEX.
+pipeline as a branch: its own SBOM, OSV, CISA KEV, EPSS, endoflife.date and VEX.
 
 ```toml
 [releases]                    # portfolio default; absent = off, nothing changes
@@ -651,7 +697,12 @@ projects = ["shop-web"]              # optional: named in the report
 
 **What is checked.**
 
-- Installed packages against OSV, joined to CISA KEV, with whether a fix is installable by apt. When the KEV list cannot be loaded (and is not cached), every checked host gets the critical `section-failed:kev` and keeps its earlier KEV findings: an outage never reads as resolved.
+- Installed packages against OSV, joined to CISA KEV, with whether a fix is installable by apt. With
+  `[epss] enabled` (the default), KEV findings carry the CVE's EPSS score and `vuln` findings the highest
+  one (`hosts.json` `epss`, `epss_percentile`, `max_epss`, top level `epss`); `HOSTS.md` shows an EPSS line
+  under the table, `(KEV, EPSS x)` and ` - highest EPSS x`. This is information only: no host priority,
+  flag or alert depends on it, finding ids and texts never contain a score, and missing scores do not fail
+  the check. When the KEV list cannot be loaded (and is not cached), every checked host gets the critical `section-failed:kev` and keeps its earlier KEV findings: an outage never reads as resolved.
 - Packages from third-party apt repositories, and known binaries outside apt against their latest GitHub release. The collector runs a binary (`caddy`, `node`, `docker-compose`) for its version only when root alone can change it: the file and every directory above it, through each symlink hop, owned by root and not group- or other-writable. Any other binary is not run and is the critical `permissive:binary-untrusted:<path>`, because whoever can change it gets root the next time root runs it. The check covers the file that is executed, not what it loads: a root-owned wrapper script that execs a binary in a user's home, or a pip-installed `docker-compose` v1 importing from a writable `dist-packages`, still passes.
 - A fingerprint of the host (users, sudoers, `authorized_keys`, listening sockets, units, timers, cron, effective sshd config, firewall, apt sources, container names and ports) against the baseline you accepted. Kernel and reboot flag, loopback sockets and a renamed process on a known socket are informational. A unit, timer or cron file that a package owns and that changes during that package's upgrade is shown as an explained change, not a new finding.
 - Permissive defaults: AppArmor off or in complain mode, a firewall whose default incoming policy is allow or accept (deny, drop and reject are fine), sshd `PasswordAuthentication yes`, `PermitRootLogin yes` or `KbdInteractiveAuthentication yes`.
@@ -779,7 +830,7 @@ security/
 ├── reports/<date>-report.html         # dated copy of REPORT.html
 ├── log.md                   # append-only: one line per run, secrets scan and host action
 ├── manifest.json            # the last run: tool versions, data source dates, SHA-256 of every file it wrote
-└── .cache/                  # KEV, endoflife.date and registry answers, 24 h; gitignored
+└── .cache/                  # KEV, EPSS, endoflife.date and registry answers, 24 h; gitignored
 ```
 
 | Artefact | Written by | Edit by hand? |
@@ -828,7 +879,7 @@ records how the reports were produced and what they were when the run finished:
 | `run` | `command`, `started_at`, `finished_at` (UTC), `exit_code` |
 | `config` | SHA-256 of the `sbom-audit.toml` the run read (`null` when it read none) |
 | `tools` | version of syft, osv-scanner and git as each tool reports it (`syft version`, `osv-scanner --version`, `git --version`), gh when the run uses it, and the secrets engine actually used (gitleaks or betterleaks); `unknown` when a tool does not answer, `not installed` when it is not on PATH |
-| `data_sources` | per source (`osv`, `cisa_kev`, `endoflife`, `registries`, `openvex`, `secrets`, `hosts`): `status` (ok, partial, failed, skipped, not run) and freshness: OSV is queried live by osv-scanner (`queried_at`, the audit's time in UTC); CISA KEV gives catalogue version and date, fetch time and whether it came live or from the 24 h cache; endoflife.date and the registries give the number of lookups answered live and from the cache and the oldest and newest fetch time |
+| `data_sources` | per source (`osv`, `cisa_kev`, `epss`, `endoflife`, `registries`, `openvex`, `secrets`, `hosts`): `status` (ok, stale, partial, failed, skipped, not run) and freshness: OSV is queried live by osv-scanner (`queried_at`, the audit's time in UTC); CISA KEV gives catalogue version and date, fetch time and whether it came live or from the 24 h cache; EPSS gives the number of scores, score date, model version, fetch time and origin (`live`, `cache`, or `stale` when an older file was used after a failed download); endoflife.date and the registries give the number of lookups answered live and from the cache and the oldest and newest fetch time |
 | `audited` | per project and branch or release tag: the audited commit, `release_tag`, `complete` (no error on that branch), and for an imported build SBOM its file, SHA-256, commit and staleness |
 | `files` | `{path: {sha256, bytes}}` for every file the run wrote (reports, JSON, dated copies, `sbom/**/*.cdx.json`, imported SBOMs) and every decision file it read (`vex/*.openvex.json`, `secrets-decisions.toml`, `hosts-decisions.toml`); `append_only: true` on `AUDIT.md` and `log.md` |
 | `refreshed` | one line per later command that rewrote evidence: `at`, `command`, `files`, `removed` |
@@ -1031,6 +1082,7 @@ outbound hosts, all public databases except your own git remotes, servers, Anthr
 | your git remotes | `git fetch --prune origin` before every scan (`fetch = false` disables); the push of `security/` when `push = true` | the usual fetch and push |
 | osv.dev | osv-scanner during every run; `api.osv.dev/v1/vulns/<id>` during `incident` | package names and versions; the advisory id; with `[hosts]`, `api.osv.dev/v1/querybatch` receives each server's Debian/Ubuntu source package names and versions |
 | www.cisa.gov | once per 24 h | nothing; the KEV catalogue is downloaded |
+| epss.empiricalsecurity.com | once per 24 h (`[epss] enabled = false` disables) | nothing; the complete daily EPSS file is downloaded |
 | endoflife.date | once per runtime cycle per 24 h; with `[hosts]`, once per server OS release and vendor-table binary per 24 h | product and cycle, e.g. `nodejs/20`, `ubuntu/22.04` |
 | registry.npmjs.org, pypi.org, jsr.io | once per direct dependency per 24 h | the package name |
 | api.github.com | Dependabot and secret-scanning status reads, the visibility check of the evidence repository's remote, `[discovery]` listing and clones, `setup --enable-dependabot` after confirmation; with `[hosts]`, the releases endpoint for the binaries in the vendor table | the repository name |
@@ -1417,6 +1469,13 @@ machine per mode, is [Limitations](limitations.md); the plain-CLI sequence is
   `strictly`/`require`/`prefer` and anything computed are not evaluated. Without `gradle.lockfile` a
   Gradle project has no transitive packages and its declared versions are lower bounds (see
   [Gradle](#gradle)); use lock files or the CycloneDX Gradle plugin's SBOM.
+- EPSS is a forecast, not a fact: a score is the estimated probability of exploitation in the next 30
+  days, and it changes daily, so a finding can be promoted one day and not the next, and `audit.json`
+  and `issues.json` differ from day to day even when no dependency changed. Scores exist only
+  for CVEs; an advisory with only a GHSA, PYSEC or GO id has none, and a missing or low score does not
+  mean safe. The 10% default for `promote_at` is a judgement, not a standard: on the maintainer's own
+  portfolio it promoted nothing at any threshold from 1% to 50%, and ordered 2 of 98 priority-3 issues
+  to the top. EPSS never lowers a priority.
 - An advisory that no source rates reads "not rated"; it ranks with CRITICAL/HIGH in production
   (issues priority 3) rather than below LOW, and someone has to read it to know how bad it is.
 - No reachability analysis: a vulnerable package in the lockfile counts as a finding until

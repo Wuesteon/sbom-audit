@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sbom-audit explained</title>
-<meta name="description" content="What the sbom-audit Claude Code plugin does and how a run works: SBOMs per repository and branch, OSV.dev, CISA KEV, endoflife.date, a secrets scan, OpenVEX, and a written assessment.">
+<meta name="description" content="What the sbom-audit Claude Code plugin does and how a run works: SBOMs per repository and branch, OSV.dev, CISA KEV, EPSS, endoflife.date, a secrets scan, OpenVEX, and a written assessment.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -216,7 +216,7 @@
 <header class="hero">
   <div class="hero-top">
     <h1>sbom-audit</h1>
-    <span class="ver">Claude Code plugin, version 1.3.1</span>
+    <span class="ver">Claude Code plugin, version 1.4.0</span>
   </div>
   <p class="lede">Know what every repository in a folder is built from, and whether today's advisory touches it.</p>
   <p>It reads the committed branches of every repo (<code>main</code> and <code>dev</code> by default), never your working copy, writes one software bill of materials per project and branch, checks it against the public vulnerability databases, and leaves the evidence in a <code>security/</code> folder with its own history. Claude does the part the databases cannot: the sweep for incidents that are too fresh, the triage, and a written assessment with actions per project.</p>
@@ -306,7 +306,7 @@
       <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M4 14h20"/><circle class="accent" cx="8" cy="14" r="2.5"/><circle cx="14" cy="14" r="2.5"/><circle cx="20" cy="14" r="2.5"/><path d="M5 6h4M12 6h4M19 6h4M5 22h4M12 22h4M19 22h4"/></svg>
       <div>
         <h3>/sbom-audit:run</h3>
-        <p>One SBOM per project and branch. Vulnerabilities from OSV.dev, the actively exploited ones marked from CISA KEV, end-of-life runtimes and base images, direct dependencies that are majors behind, and an incremental secrets scan. It writes <code>STATUS.md</code> and <code>issues.json</code>, the list of every open issue and where it occurs for whoever fixes it, then Claude reads the report and writes the assessment.<span class="muted">Minutes for ten repositories. Run it in the background.</span></p>
+        <p>One SBOM per project and branch. Vulnerabilities from OSV.dev, the actively exploited ones marked from CISA KEV, each CVE's EPSS score, end-of-life runtimes and base images, direct dependencies that are majors behind, and an incremental secrets scan. It writes <code>STATUS.md</code> and <code>issues.json</code>, the list of every open issue and where it occurs for whoever fixes it, then Claude reads the report and writes the assessment.<span class="muted">Minutes for ten repositories. Run it in the background.</span></p>
       </div>
     </div>
     <div class="cmd">
@@ -399,7 +399,7 @@
     <li>
       <div>
         <h3>Enrich</h3>
-        <p>The CISA catalogue of known exploited vulnerabilities marks what is used in real attacks. endoflife.date dates every runtime and base image. npm, PyPI and JSR say how many major versions behind each direct dependency is. A lookup that fails is reported as failed, retried next run, and never shown as clean.</p>
+        <p>The CISA catalogue of known exploited vulnerabilities marks what is used in real attacks. FIRST's EPSS scores estimate how likely a CVE is to be exploited in the next 30 days; a MEDIUM or LOW finding in production at or above 10% moves up to the critical and high rank, and a score never moves anything down. endoflife.date dates every runtime and base image. npm, PyPI and JSR say how many major versions behind each direct dependency is. A lookup that fails is reported as failed, retried next run, and never shown as clean.</p>
       </div>
     </li>
     <li>
@@ -425,7 +425,7 @@
   <h3 style="margin-top:40px;">The triage order never changes</h3>
   <ul class="ladder">
     <li><span class="bar">Class A secrets, then KEV</span><span>A leaked admin key or an exploit in the wild. Fix before anything else.</span></li>
-    <li><span class="bar">Critical and high in production</span><span>Projects marked <code>production = true</code> come first; class B secrets rank here too.</span></li>
+    <li><span class="bar">Critical and high in production</span><span>Projects marked <code>production = true</code> come first; class B secrets and findings likely to be exploited by EPSS rank here too.</span></li>
     <li><span class="bar">End-of-life runtimes and images</span><span>No more security patches, whatever the scanner says today.</span></li>
     <li><span class="bar">Floating image tags</span><span><code>latest</code> and <code>alpine</code> rebuild to whatever is current.</span></li>
     <li><span class="bar">Dev-only tooling</span><span>Labelled as such and counted separately, never inflated.</span></li>
@@ -479,6 +479,7 @@
       <tr><td>your git remotes</td><td><code>git fetch --prune origin</code> before every scan (<code>fetch = false</code> disables it); the push of <code>security/</code> when <code>push = true</code></td><td>the usual fetch and push</td></tr>
       <tr><td>osv.dev</td><td>osv-scanner during every run; <code>api.osv.dev/v1/vulns/&lt;id&gt;</code> during <code>incident</code></td><td>package names and versions; the advisory id; in host mode, each server's Debian/Ubuntu package names and versions</td></tr>
       <tr><td>www.cisa.gov</td><td>once per 24 hours</td><td>nothing; the catalogue is downloaded</td></tr>
+      <tr><td>epss.empiricalsecurity.com</td><td>once per 24 hours, unless <code>[epss] enabled = false</code></td><td>nothing; the complete daily EPSS file is downloaded</td></tr>
       <tr><td>endoflife.date</td><td>once per runtime cycle per 24 hours; in host mode, once per server OS release</td><td>product and cycle, such as <code>nodejs/20</code></td></tr>
       <tr><td>registry.npmjs.org, pypi.org, jsr.io</td><td>once per direct dependency per 24 hours</td><td>the package name</td></tr>
       <tr><td>api.github.com</td><td>Dependabot and secret-scanning status reads, the visibility check of the evidence repository's remote, <code>[discovery]</code> listing and clones, <code>setup --enable-dependabot</code> after confirmation; in host mode, the releases endpoint for known binaries</td><td>the repository name</td></tr>
@@ -505,7 +506,7 @@ cd ~/projects &amp;&amp; claude       <span class="c"># the folder that holds yo
 </section>
 
 <footer>
-  <span>sbom-audit 1.3.1, MIT licence</span>
+  <span>sbom-audit 1.4.0, MIT licence</span>
   <span><a href="https://github.com/Wuesteon/sbom-audit">github.com/Wuesteon/sbom-audit</a></span>
   <span><a href="https://github.com/Wuesteon/sbom-audit/blob/main/docs/reference.md">Reference</a></span>
   <span>Nils Weiser, <a href="https://waiser.dev">waiser.dev</a></span>

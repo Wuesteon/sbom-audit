@@ -4,6 +4,16 @@
   "osv-scanner": {
    "scanned": 3,
    "failed": []
+  },
+  "epss": {
+   "loaded": 300000,
+   "scored": 1,
+   "score_date": "2026-11-06T00:00:00Z",
+   "model_version": "v2025.03.14",
+   "origin": "live",
+   "fetched_at": "2026-11-07T02:59:00Z",
+   "error": null,
+   "warning": null
   }
  },
  "vulnerabilities": [
@@ -42,12 +52,15 @@
      "published": "2021-05-06",
      "modified": "2024-02-01",
      "withdrawn": false,
+     "epss": 0.0123,
+     "epss_percentile": 0.79,
      "kev": false,
      "fixed_in": "4.17.21"
     }
    ],
    "max_severity": "HIGH",
-   "kev": false
+   "kev": false,
+   "max_epss": 0.0123
   }
  ],
  "runtimes": [],
@@ -71,6 +84,12 @@
  "production_projects": [
   "shop-web"
  ],
+ "epss": {
+  "threshold": 0.1,
+  "available": true,
+  "score_date": "2026-11-06T00:00:00Z",
+  "model_version": "v2025.03.14"
+ },
  "provenance": {
   "sbom_audit": "fixture",
   "python": "3.12.0",
@@ -96,6 +115,14 @@
     "fetched_at": "2026-11-07T02:59:00+00:00",
     "catalog_version": "2026.11.06",
     "catalog_date": "2026-11-06T15:00:00.000Z"
+   },
+   "epss": {
+    "status": "ok",
+    "entries": 300000,
+    "origin": "live",
+    "fetched_at": "2026-11-07T02:59:00Z",
+    "score_date": "2026-11-06T00:00:00Z",
+    "model_version": "v2025.03.14"
    },
    "endoflife": {
     "status": "ok",

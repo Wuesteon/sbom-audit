@@ -7,7 +7,7 @@ description: Use when asked which package, image or runtime versions repos use, 
 
 ## Overview
 
-Syft writes a CycloneDX SBOM per project and branch from the committed tree (`main`, `dev`; never the working tree). osv-scanner matches it against OSV.dev; the plugin adds CISA KEV (actively exploited), endoflife.date (runtimes and base images), registry "majors behind" and your OpenVEX decisions, then writes `security/AUDIT.md`, `INVENTORY.md`, `audit.json`, `inventory.json`, a dated copy under `reports/` and one line in `log.md`. You are the layer on top: interpret, sweep for incidents too fresh for the databases, turn findings into per-project actions.
+Syft writes a CycloneDX SBOM per project and branch from the committed tree (`main`, `dev`; never the working tree). osv-scanner matches it against OSV.dev; the plugin adds CISA KEV (actively exploited), EPSS, endoflife.date (runtimes and base images), registry "majors behind" and your OpenVEX decisions, then writes `security/AUDIT.md`, `INVENTORY.md`, `audit.json`, `inventory.json`, a dated copy under `reports/` and one line in `log.md`. You are the layer on top: interpret, sweep for incidents too fresh for the databases, turn findings into per-project actions.
 
 **Never answer "are we affected by X" from memory.** The knowledge cutoff predates the question. Run the command, search the web.
 
@@ -18,7 +18,7 @@ Syft writes a CycloneDX SBOM per project and branch from the committed tree (`ma
 /sbom-audit:run                        scan + audit + secrets + commit, minutes; --only <project>, --no-fetch
 /sbom-audit:status                     STATUS.md from the last run; writes nothing
 /sbom-audit:assess                     the assessment below as one workflow; verified decisions after one confirmation
-/sbom-audit:lookup astro 'expo-*' caddy   who uses what, from the last scan, in a second
+/sbom-audit:lookup astro 'expo-*' caddy   who uses what, from the last scan
 /sbom-audit:incident CVE-2026-…        verdict per project@branch: hit / unknown / present_not_affected / absent
 /sbom-audit:vex <project> <id> <status>   record a decision; applied by every run
 /sbom-audit:secrets scan|report|resolve   leaked credentials in git history; decisions per fingerprint
@@ -33,7 +33,7 @@ Direct: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sbom_audit_cli.py" <command> --h
 
 1. Read `security/AUDIT.md`. **Source status** first: a failed source means that section is empty, not clean.
 2. **Incident sweep.** Web search (extended) for advisories from the last 30 days for every runtime and framework in the `INVENTORY.md` overview, plus anything the user named. For each: affected versions, then `/sbom-audit:incident <id>` or `lookup <package>`; record hit or no hit with the version as evidence. For a transitive hit name the parent (`npm ls`, `pnpm why`, `uv tree --package`, read-only) so the fix lands on the right manifest.
-3. **Triage order:** open class A secrets → KEV → CRITICAL/HIGH in production projects (`production = true` in `sbom-audit.toml`) and open class B secrets → EOL runtimes and base images → floating image tags → dev-only tooling. Mark dev-only (devDependencies, build stages) explicitly. `minimum` runtimes are not EOL.
+3. **Triage order:** open class A secrets → KEV → CRITICAL/HIGH in production projects (`production = true` in `sbom-audit.toml`), `epss_production` and open class B secrets → EOL runtimes and base images → floating image tags → dev-only tooling. Mark dev-only (devDependencies, build stages) explicitly. `minimum` runtimes are not EOL.
 4. **Write it down.** Append `## Assessment YYYY-MM-DD` to `security/AUDIT.md`: incident-sweep table, prioritized actions per project (manifest, package, current → target). Append one line to `security/log.md`. Draft VEX statements and secrets decisions as one list; record them (`vex add`, `secrets resolve`) only after the user confirms it.
 5. **The plugin fixes nothing.** `security/issues.json` (readable: `ISSUES.md`) is the work list for whoever does: every open issue with id, priority, place and fix target; `issues --project <p> --max-priority 3 --json` selects. Fix per project, per PR, with that project's tests. No `npm audit fix --force`, no bulk upgrades.
 

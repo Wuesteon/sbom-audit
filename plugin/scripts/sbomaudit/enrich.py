@@ -2,6 +2,7 @@
 
 Every lookup goes through `fetch(url) -> obj` (injectable for tests) and the `Cache`.
 Outbound hosts: www.cisa.gov, endoflife.date, registry.npmjs.org, pypi.org, jsr.io.
+EPSS scores (epss.empiricalsecurity.com) are downloaded by `epss.py`.
 """
 from __future__ import annotations
 
