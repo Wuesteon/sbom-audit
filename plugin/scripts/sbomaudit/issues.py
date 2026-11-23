@@ -315,14 +315,18 @@ def _hosts(doc: dict | None, accepted: dict[str, set[str]] | None = None) -> lis
             if not critical and (f.get("accepted") or not (
                     group in HOST_GROUPS or (group == "vuln" and f.get("fixable")))):
                 continue
+            details = {"finding": f["id"], "group": group, "package": f.get("package"),
+                       "version": f.get("version") or f.get("installed"), "cve": f.get("cve")}
+            for key in ("epss", "max_epss"):     # only when the host check ran the EPSS step; information only
+                if key in f:
+                    details[key] = f[key]
             issues.append({
                 "id": f"host:{name}:{f['id']}",
                 "kind": "host", "priority": 2 if critical else 6, "reason": "host_critical" if critical else "other",
                 "severity": "critical" if critical else None, "production": bool(h.get("production")),
                 "title": str(f.get("text") or f["id"]),
                 "where": {"host": name, "projects": list(h.get("projects") or []), "path": None, "line": None},
-                "details": {"finding": f["id"], "group": group, "package": f.get("package"),
-                            "version": f.get("version") or f.get("installed"), "cve": f.get("cve")},
+                "details": details,
                 "fix": _host_fix(f),
             })
     return issues
@@ -374,10 +378,12 @@ def split_text(split: dict) -> str:
 def _sort_key(i: dict, threshold: float | None = None):
     """Priority, production first, at or above the EPSS threshold first, direct dependencies before unknown and
     transitive ones, the higher EPSS score (none: as if it were `threshold`), severity, place, id. Without EPSS
-    fields the two EPSS elements are the same for every issue, so the order is that of 1.3.x."""
+    fields the two EPSS elements are the same for every issue, so the order is that of 1.3.x. The score orders
+    vulnerability issues only: a host issue's score is information, so it never moves the issue."""
     place = i["where"].get("project") or i["where"].get("host") or ""
     details = i.get("details") if isinstance(i.get("details"), dict) else {}
-    order = epss.order(details["max_epss"], threshold) if "max_epss" in details else 0.0
+    scored = i.get("kind") == "vulnerability" and "max_epss" in details
+    order = epss.order(details["max_epss"], threshold) if scored else 0.0
     return (i["priority"], not i["production"], not details.get("epss_likely", False), dependency_rank(i), order,
             SEV_ORDER.get(str(i.get("severity")), 5), place.lower(), i["id"])
 

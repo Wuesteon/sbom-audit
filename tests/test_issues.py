@@ -397,6 +397,39 @@ class EpssTest(unittest.TestCase):
             self.assertEqual(with_epss[key]["title"], i["title"])
         self.assertEqual(with_epss["host:web:vuln:curl"]["priority"], 6)
 
+    def test_host_issue_details_carry_the_finding_score(self):
+        hosts = host_doc([{"id": "vuln:curl", "group": "vuln", "text": "curl", "fixable": 1, "fix": "installable",
+                           "candidate": "8.5", "max_epss": 0.05},
+                          {"id": "vuln:zlib", "group": "vuln", "text": "zlib", "fixable": 1, "fix": "installable",
+                           "candidate": "1.3"},
+                          {"id": "kev:CVE-1", "group": "kev", "text": "kev open", "epss": 0.9144,
+                           "epss_percentile": 0.999},
+                          {"id": "kev:CVE-2", "group": "kev", "text": "kev unscored", "epss": None,
+                           "epss_percentile": None}])
+        got = by_id(issues.build(make_rep(), None, hosts))
+        self.assertEqual(got["host:web:vuln:curl"]["details"]["max_epss"], 0.05)
+        self.assertNotIn("max_epss", got["host:web:vuln:zlib"]["details"])
+        self.assertNotIn("epss", got["host:web:vuln:zlib"]["details"])
+        self.assertEqual(got["host:web:kev:CVE-1"]["details"]["epss"], 0.9144)
+        self.assertNotIn("max_epss", got["host:web:kev:CVE-1"]["details"])
+        self.assertIn("epss", got["host:web:kev:CVE-2"]["details"])
+        self.assertIsNone(got["host:web:kev:CVE-2"]["details"]["epss"])
+        self.assertEqual(got["host:web:kev:CVE-1"]["priority"], 2)
+        self.assertEqual(got["host:web:vuln:curl"]["title"], "curl")
+
+    def test_host_issue_order_does_not_depend_on_epss(self):
+        def findings(**scores):
+            return [{"id": f"vuln:{name}", "group": "vuln", "text": name, "fixable": 1, "fix": "installable",
+                     "candidate": "9", **({"max_epss": scores[name]} if name in scores else {})}
+                    for name in ("aaa", "zzz")]
+        plain = [i["id"] for i in issues.build(make_rep(), None, host_doc(findings()))["issues"]]
+        self.assertEqual(plain, ["host:web:vuln:aaa", "host:web:vuln:zzz"])
+        for rep in (make_rep(), make_rep(epss=dict(EPSS))):
+            with self.subTest(epss="epss" in rep):
+                scored = issues.build(rep, None, host_doc(findings(aaa=0.001, zzz=0.9)))["issues"]
+                self.assertEqual([i["id"] for i in scored], plain)
+                self.assertEqual({i["priority"] for i in scored}, {6})
+
 
 class RefreshTest(unittest.TestCase):
     def setUp(self):
