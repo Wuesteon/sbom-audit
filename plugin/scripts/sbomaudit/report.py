@@ -193,6 +193,8 @@ def _vulnerabilities(findings: list[Finding], releases: dict | None = None) -> l
         g["scope"] = _scope_of(scopes[key])
         g["max_severity"] = _sev_label(g["vulns"][0]) if g["vulns"] else "UNKNOWN"
         g["kev"] = any(v["kev"] for v in g["vulns"])
+        if any("epss" in v for v in g["vulns"]):     # only when the EPSS step ran (pipeline.audit)
+            g["max_epss"] = max((v["epss"] for v in g["vulns"] if v.get("epss") is not None), default=None)
         rows.append(g)
     rows.sort(key=lambda g: (not g["kev"], SEV_ORDER.get(g["max_severity"], 5),
                              -(g["vulns"][0].get("cvss") or 0) if g["vulns"] else 0, g["name"], g["version"]))
@@ -382,12 +384,14 @@ def _unchecked_actions_notes(inventories: list[BranchInventory]) -> list[str]:
 
 def build(cfg: Config, inventories: list[BranchInventory], findings: list[Finding],
           suppressed: list[Suppressed], eol: list[dict], outdated: list[dict], sources: dict | None,
-          releases: dict | None = None, skipped: list[dict] | None = None) -> dict:
+          releases: dict | None = None, skipped: list[dict] | None = None, epss: dict | None = None) -> dict:
     """Everything the writers need, JSON-serialisable (this is `audit.json`).
 
     `releases` is `releases.context()`: (project, branch) -> release info for every release inventory.
     Locations in a supported release carry `release: <tag>`; out-of-support releases are left out of
-    `vulnerabilities` and `runtimes` (they are listed in `releases` and in `releases.json`)."""
+    `vulnerabilities` and `runtimes` (they are listed in `releases` and in `releases.json`).
+    `epss`: {"threshold", "available", "score_date", "model_version"} when the EPSS step ran, else None (no
+    `epss` key, and no EPSS field on any row or advisory)."""
     packages = [c for inv in inventories for c in inv.components if c.kind == "package"]
     stats = {
         "projects": len({i.project for i in inventories}),
@@ -434,6 +438,8 @@ def build(cfg: Config, inventories: list[BranchInventory], findings: list[Findin
         rep["imported_sboms"] = imports
         stats["imported_sboms"] = len(imports)
         stats["imported_sboms_not_current"] = sum(1 for r in imports if sbomimport.staleness(r))
+    if epss is not None:                     # only when the EPSS step ran: audit.json is unchanged without it
+        rep["epss"] = dict(epss)
     if releases:                             # only with release scanning: audit.json is unchanged without it
         stats["releases"] = len(releases)
         rep["releases"] = [{"project": p, "branch": b, "tag": r["tag"], "date": r.get("date"),

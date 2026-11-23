@@ -106,6 +106,39 @@ class ConfigTests(unittest.TestCase):
         (out / "sbom-audit.toml").write_text(text)
         return out
 
+    def load_with(self, text):
+        return config.load(self._write_toml(text))
+
+    def test_epss_defaults(self):
+        cfg = config.load(self.tmp / "security")
+        self.assertEqual((cfg.epss.enabled, cfg.epss.promote_at), (True, 0.10))
+
+    def test_epss_keys(self):
+        cfg = self.load_with("[epss]\nenabled = false\npromote_at = 0\n")
+        self.assertEqual((cfg.epss.enabled, cfg.epss.promote_at), (False, 0.0))
+        self.assertIsInstance(cfg.epss.promote_at, float)
+
+    def test_epss_promote_at_must_be_a_fraction(self):
+        for bad in ('"0.1"', "true", "-0.1", "10", "1.01"):
+            with self.subTest(bad), self.assertRaises(ConfigError) as ctx:
+                self.load_with(f"[epss]\npromote_at = {bad}\n")
+            self.assertIn("[epss] promote_at", str(ctx.exception))
+            self.assertIn("0.10 for 10%", str(ctx.exception))
+        self.assertEqual(self.load_with("[epss]\npromote_at = 1\n").epss.promote_at, 1.0)
+
+    def test_epss_enabled_must_be_a_bool(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self.load_with('[epss]\nenabled = "no"\n')
+        self.assertIn("[epss] enabled", str(ctx.exception))
+
+    def test_write_default_mentions_epss_commented_and_loads(self):
+        out = self.tmp / "security"
+        text = config.write_default(out, config.load(out)).read_text()
+        self.assertIn("# [epss]", text)
+        self.assertIn("# promote_at = 0.10", text)
+        cfg = config.load(out)
+        self.assertEqual((cfg.epss.enabled, cfg.epss.promote_at), (True, 0.10))
+
     def test_load_release1_keys(self):
         out = self._write_toml(
             'commit = false\npush = true\n[discovery]\ngithub_owner = "Example-Org"\n'

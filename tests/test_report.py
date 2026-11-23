@@ -88,6 +88,32 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(rep["stats"]["branches"], 3)
         self.assertEqual(rep["stats"]["unique_package_versions"], 2)
 
+    def build_with_epss(self, scores, epss=None):
+        """One lodash row whose advisories carry the given `epss` values (key absent when scores is None)."""
+        vulns = []
+        for i, score in enumerate(scores or [None]):
+            v = vuln(f"GHSA-{i + 1}", "HIGH", 7.5)
+            if scores is not None:
+                v["epss"], v["epss_percentile"] = score, None if score is None else 0.5
+            vulns.append(v)
+        with tempfile.TemporaryDirectory() as tmp:
+            return report.build(config(Path(tmp)), [inv("zeta", "main", [LODASH])],
+                                [Finding("zeta", "main", LODASH, vulns)], [], [], [], SOURCES_OK, epss=epss)
+
+    def test_no_max_epss_without_the_epss_key(self):
+        rep = self.build_with_epss(None)
+        self.assertNotIn("max_epss", rep["vulnerabilities"][0])
+        self.assertNotIn("epss", rep["vulnerabilities"][0]["vulns"][0])
+        self.assertNotIn("epss", rep)
+
+    def test_max_epss_is_the_highest_advisory_score(self):
+        block = {"threshold": 0.1, "available": True, "score_date": "2026-11-23T12:00:23Z",
+                 "model_version": "v2026.06.15"}
+        rep = self.build_with_epss([None, 0.2, 0.05], epss=block)
+        self.assertEqual(rep["vulnerabilities"][0]["max_epss"], 0.2)
+        self.assertEqual(rep["epss"], block)
+        self.assertIsNone(self.build_with_epss([None, None])["vulnerabilities"][0]["max_epss"])
+
 
 class AuditMdTests(unittest.TestCase):
     def write(self, tmp: Path, findings, suppressed=(), eol=(), outdated=(), sources=SOURCES_OK,
