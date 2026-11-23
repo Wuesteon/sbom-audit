@@ -283,6 +283,121 @@ class BuildTest(unittest.TestCase):
         self.assertIn("(b0, b1, b2 +6 more)", issues.render_md(doc))
 
 
+EPSS = {"threshold": 0.10, "available": True, "score_date": "2026-11-23T12:00:23Z"}
+
+
+def scored(name, sev, max_epss, project="zeta", scope="required", direct=True, kev=False):
+    """A vulnerability row as audit.json has it after the EPSS step: `max_epss` on the row, a score per advisory."""
+    v = vuln(name, sev, [(project, "main", "package.json", scope)], kev=kev)
+    for loc in v["locations"]:
+        loc["direct"] = direct
+    for a in v["vulns"]:
+        a.update(epss=max_epss, epss_percentile=None if max_epss is None else 0.95)
+    v["max_epss"] = max_epss
+    return v
+
+
+def epss_rep(*rows, epss=EPSS):
+    return make_rep(production_projects=["zeta"], vulnerabilities=list(rows), epss=dict(epss))
+
+
+class EpssTest(unittest.TestCase):
+    def test_likely_exploited_medium_in_production_is_priority_3(self):
+        (i,) = issues.build(epss_rep(scored("lib", "MEDIUM", 0.12)), None, None)["issues"]
+        self.assertEqual((i["priority"], i["reason"]), (3, "epss_production"))
+        self.assertIn(i["reason"], issues.PRIORITY_REASONS[3])
+        self.assertTrue(i["title"].endswith(" (likely to be exploited: EPSS at or above 10.0%)"))
+        self.assertEqual((i["details"]["max_epss"], i["details"]["epss_likely"]), (0.12, True))
+        self.assertEqual([(a["epss"], a["epss_percentile"]) for a in i["details"]["advisories"]],
+                         [(0.12, 0.95), (0.12, 0.95)])
+
+    def test_epss_rule_needs_production_runtime_scope_and_a_score(self):   # Review Focus 5
+        cases = {"not production": scored("lib", "MEDIUM", 0.12, project="side"),
+                 "optional scope": scored("lib", "MEDIUM", 0.12, scope="optional"),
+                 "no score": scored("lib", "MEDIUM", None),
+                 "below the threshold": scored("lib", "MEDIUM", 0.0999)}
+        for case, row in cases.items():
+            with self.subTest(case):
+                (i,) = issues.build(epss_rep(row), None, None)["issues"]
+                self.assertEqual((i["priority"], i["reason"]), (6, "other"))
+                self.assertNotIn("likely to be exploited", i["title"])
+        (i,) = issues.build(epss_rep(cases["optional scope"]), None, None)["issues"]
+        self.assertEqual((i["details"]["max_epss"], i["details"]["epss_likely"]), (0.12, True))
+
+    def test_epss_never_lowers_a_priority(self):
+        got = by_id(issues.build(epss_rep(scored("kev", "MEDIUM", 0.0001, kev=True),
+                                          scored("crit", "CRITICAL", 0.0001),
+                                          scored("unrated", None, None)), None, None))
+        self.assertEqual((got["vuln:zeta:package.json:npm:kev@1.0.0"]["priority"],
+                          got["vuln:zeta:package.json:npm:kev@1.0.0"]["reason"]), (2, "kev"))
+        self.assertEqual((got["vuln:zeta:package.json:npm:crit@1.0.0"]["priority"],
+                          got["vuln:zeta:package.json:npm:crit@1.0.0"]["reason"]), (3, "critical_high_production"))
+        self.assertEqual((got["vuln:zeta:package.json:npm:unrated@1.0.0"]["priority"],
+                          got["vuln:zeta:package.json:npm:unrated@1.0.0"]["reason"]), (3, "unrated_production"))
+
+    def test_threshold_zero_turns_promotion_off(self):
+        (i,) = issues.build(epss_rep(scored("lib", "MEDIUM", 0.9), epss={**EPSS, "threshold": 0}),
+                            None, None)["issues"]
+        self.assertEqual(i["priority"], 6)
+        self.assertFalse(i["details"]["epss_likely"])
+
+    def test_order_inside_a_priority(self):
+        rep = epss_rep(scored("t_likely", "HIGH", 0.30, direct=False), scored("d_high", "HIGH", 0.05),
+                       scored("d_none", "HIGH", None), scored("d_low", "HIGH", 0.01),
+                       scored("t_mid", "HIGH", 0.08, direct=False))
+        doc = issues.build(rep, None, None)
+        self.assertEqual({i["priority"] for i in doc["issues"]}, {3})
+        names = [i["details"]["package"] for i in doc["issues"]]
+        self.assertEqual(names, ["t_likely", "d_none", "d_high", "d_low", "t_mid"])
+
+    def test_audit_without_epss_builds_issues_as_before(self):       # Review Focus 3
+        doc = issues.build(make_rep(production_projects=["zeta"],
+                                    vulnerabilities=[vuln("lib", "MEDIUM", [("zeta", "main", "package.json",
+                                                                             "required")])]), None, None)
+        self.assertNotIn("epss", doc)
+        self.assertNotIn("max_epss", doc["issues"][0]["details"])
+        self.assertNotIn("epss_likely", doc["issues"][0]["details"])
+        self.assertNotIn("epss", doc["issues"][0]["details"]["advisories"][0])
+        self.assertNotIn("EPSS", issues.render_md(doc))
+        self.assertNotIn("EPSS", issues._line(doc["issues"][0]))
+
+    def test_issues_md_has_the_epss_column(self):
+        rep = epss_rep(scored("lib", "MEDIUM", 0.12), scored("cold", "HIGH", None))
+        secrets = {"findings": [secret("fp", "A")]}
+        doc = issues.build(rep, secrets, None)
+        self.assertEqual(doc["epss"], EPSS)
+        md = issues.render_md(doc)
+        self.assertIn("| P | Kind | EPSS | Issue | Where | Fix | Open since |", md)
+        self.assertIn("EPSS at or above 10.0% there", md)
+        self.assertIn("3 CRITICAL/HIGH in production or a supported release, or not rated there, or EPSS at or "
+                      "above 10.0% there (off when the threshold is 0), class B secret", md)
+        self.assertIn("Within a priority, production comes first, then findings at or above the EPSS threshold, "
+                      "then direct dependencies before transitive ones, then the higher EPSS score.", md)
+        self.assertNotIn("direct dependencies are listed first", md)
+        self.assertIn("Transitive does not mean harmless", md)
+        self.assertIn("| 3 | vulnerability, direct | 12.0% | lib 1.0.0", md)
+        self.assertIn("| 3 | vulnerability, direct | no EPSS | cold 1.0.0", md)
+        self.assertIn("| 1 | secret | – |", md)
+        got = by_id(doc)
+        self.assertTrue(issues._line(got["vuln:zeta:package.json:npm:lib@1.0.0"]).endswith(" EPSS 12.0%"))
+        self.assertTrue(issues._line(got["vuln:zeta:package.json:npm:cold@1.0.0"]).endswith(" EPSS no EPSS"))
+        self.assertNotIn("EPSS", issues._line(got["secret:fp"]))
+        off = issues.build(epss_rep(scored("lib", "MEDIUM", None), epss={**EPSS, "available": False}), None, None)
+        self.assertIn("| 6 | vulnerability, direct | n/a | lib 1.0.0", issues.render_md(off))
+
+    def test_host_priorities_do_not_change_with_epss(self):
+        hosts = host_doc([{"id": "vuln:curl", "group": "vuln", "text": "curl", "fixable": 1, "fix": "installable",
+                           "candidate": "8.5", "max_epss": 0.9},
+                          {"id": "kev:CVE-1", "group": "kev", "text": "kev open", "max_epss": 0.9}])
+        with_epss = by_id(issues.build(make_rep(epss=dict(EPSS)), None, hosts))
+        without = by_id(issues.build(make_rep(), None, hosts))
+        self.assertEqual(sorted(with_epss), sorted(without))
+        for key, i in without.items():
+            self.assertEqual((with_epss[key]["priority"], with_epss[key]["reason"]), (i["priority"], i["reason"]))
+            self.assertEqual(with_epss[key]["title"], i["title"])
+        self.assertEqual(with_epss["host:web:vuln:curl"]["priority"], 6)
+
+
 class RefreshTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

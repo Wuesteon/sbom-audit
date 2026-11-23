@@ -263,8 +263,12 @@ def summary_line(rep: dict, cfg: Config, started: float) -> str:
     eol = sum(1 for r in rep["runtimes"] if r["status"] == "EOL")
     allowed = sum(1 for r in rep["runtimes"] if report.allowed_unsupported(r))
     rel = f", {s['releases']} releases" if s.get("releases") else ""
-    unrated = sum(1 for v in vulns if report.unrated_in_production(v, set(rep.get("production_projects") or [])))
+    production = set(rep.get("production_projects") or [])
+    unrated = sum(1 for v in vulns if report.unrated_in_production(v, production))
+    threshold = (rep.get("epss") or {}).get("threshold")
+    promoted = sum(1 for v in vulns if report.epss_promoted(v, production, threshold))
     gaps = (f", {unrated} not rated in production" if unrated else "") + (
+        f", {promoted} promoted by EPSS" if promoted else "") + (
         f", {s['unresolved_versions']} packages with version not resolved (not checked)"
         if s.get("unresolved_versions") else "")
     return (f"{s['projects']} projects, {s['branches']} branches{rel}: {len(vulns)} vulnerable package versions "

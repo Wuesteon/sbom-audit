@@ -1106,6 +1106,32 @@ class CliTests(unittest.TestCase):
             self.assertRegex(buf.getvalue(), r"\d+(\.\d+)?s")
 
 
+class SummaryLineEpssTests(unittest.TestCase):
+    @staticmethod
+    def rep(max_epss=0.5, epss_block=True) -> dict:
+        row = {"ecosystem": "npm", "name": "hot", "version": "1.0.0", "kev": False, "max_severity": "MEDIUM",
+               "max_epss": max_epss,
+               "locations": [{"project": "zeta", "branch": "main", "manifest": "package.json", "scope": "required"}],
+               "vulns": [{"id": "GHSA-1", "severity": "MEDIUM", "epss": max_epss}]}
+        rep = {"stats": {"projects": 1, "branches": 1}, "vulnerabilities": [row], "runtimes": [], "suppressed": [],
+               "production_projects": ["zeta"]}
+        if epss_block:
+            rep["epss"] = {"threshold": 0.10, "available": True, "score_date": "2026-11-23T12:00:23Z",
+                           "model_version": "v2025.03.14"}
+        return rep
+
+    def line(self, rep: dict) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            return pipeline.summary_line(rep, make_cfg(Path(tmp)), 0.0)
+
+    def test_promoted_rows_are_named(self):
+        self.assertIn(", 1 promoted by EPSS", self.line(self.rep()))
+
+    def test_nothing_about_epss_without_the_step_or_a_promotion(self):
+        self.assertNotIn("EPSS", self.line(self.rep(epss_block=False)))
+        self.assertNotIn("EPSS", self.line(self.rep(max_epss=0.01)))
+
+
 class EmptyPortfolioTests(unittest.TestCase):
     def test_run_in_a_folder_without_repositories_exits_2(self):
         with tempfile.TemporaryDirectory() as tmp:
