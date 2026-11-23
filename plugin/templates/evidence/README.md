@@ -49,7 +49,7 @@ databases except your own git remotes, are:
 | your git remotes | `git fetch --prune origin` before every scan (`fetch = false` disables); the push of this folder when `push = true` | the usual fetch and push |
 | osv.dev | osv-scanner during every run; `api.osv.dev/v1/vulns/<id>` during `incident` | package names and versions; the advisory id |
 | www.cisa.gov | once per 24 h | nothing; the KEV catalogue is downloaded |
-| epss.empiricalsecurity.com | once per 24 h | nothing; the complete daily EPSS file is downloaded |
+| epss.empiricalsecurity.com | once per 24 h (`[epss] enabled = false` disables) | nothing; the complete daily EPSS file is downloaded |
 | endoflife.date | once per runtime cycle per 24 h; with `[hosts]`, once per server OS release | product and cycle, e.g. `nodejs/20` |
 | registry.npmjs.org, pypi.org, jsr.io | once per direct dependency per 24 h | the package name |
 | api.github.com | Dependabot and secret-scanning status reads, the visibility check of this repository's remote, `[discovery]` clones, `setup --enable-dependabot` after confirmation; with `[hosts]`, the releases endpoint for the binaries in the vendor table | the repository name |

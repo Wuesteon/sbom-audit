@@ -11,15 +11,21 @@ supported release move from priority 6 to 3 in `issues.json` (reason `epss_produ
 threshold 10%), the order inside a priority changes (likely ones first, then the higher score), and
 there is a new outbound host, `epss.empiricalsecurity.com`. To keep the scores but stop the promotion,
 set `promote_at = 0` under `[epss]` in `sbom-audit.toml`; to stop the download and every EPSS field,
-column and rule, set `enabled = false`.
+column and rule, set `enabled = false`. If `epss.empiricalsecurity.com` cannot be reached and no earlier
+file is cached (allow-listed egress in CI, an air-gapped machine), the EPSS source is `failed` and the run
+exits 2, as for KEV. Allow the host, or set `[epss] enabled = false`. `promote_at = 0` turns only the
+promotion off; issues are still ordered by score inside a priority. Only `enabled = false` restores the
+1.3.1 order. Scores change daily, so `audit.json`, `issues.json` and the reports can differ from one day
+to the next with no change in your dependencies.
 
 ### Added
 - EPSS step in `audit` and `run`: one GET of the complete daily file
   `https://epss.empiricalsecurity.com/epss_scores-current.csv.gz` (no query string, nothing about your
   packages is sent), kept for 24 h as `.cache/enrich/epss-scores.csv.gz` and shared with the host check.
 - Config `[epss]`: `enabled = true` and `promote_at = 0.10` (a fraction; `0` turns promotion off). A
-  value outside 0 to 1, or a bool, is a config error that shows `0.10 for 10%`. The default
-  `sbom-audit.toml` carries the block commented out.
+  value outside 0 to 1, or a bool, is a config error that shows `0.10 for 10%`. An unknown key in
+  `[epss]` (a typo such as `promote_att`) is a config error that names the key, as in `[releases]`. The
+  default `sbom-audit.toml` carries the block commented out.
 - Priority rule `epss_production` (priority 3): a package version that is not KEV, not CRITICAL/HIGH and
   not unrated, in runtime scope of a production project or supported release, with an EPSS score at or
   above `promote_at`. The issue title names the threshold, not the score, so it does not change daily.
@@ -28,18 +34,22 @@ column and rule, set `enabled = false`.
   severity, place and id. Host issues are never moved by a score.
 - `audit.json`: top-level `epss`, per advisory `epss` and `epss_percentile`, per row `max_epss`,
   `sources.epss`. `issues.json`: top-level `epss`, `details.max_epss`, `details.epss_likely` and the
-  scores per advisory; `SCHEMA` stays 1. `status.json`: `counts.epss_promoted`. `manifest.json`:
+  scores per advisory; `SCHEMA` stays 1. `status.json`: `counts.epss_promoted` (`null` when no score
+  file was available). `manifest.json`:
   `data_sources.epss`.
-- `AUDIT.md`: a method sentence, the summary row "Promoted by EPSS", the section "Likely to be exploited
-  (EPSS)" and an EPSS column in the by-project and dev-only tables. `ISSUES.md` and `REPORT.html` (EN,
-  DE): an EPSS column and the reason "Likely to be exploited (EPSS)". `STATUS.md` and the run summary
-  count the promoted ones; `incident` shows the score in its evidence, the `issues` query line at its end.
+- `AUDIT.md`: a method sentence, the summary row "Promoted by EPSS" (`off` at `promote_at = 0`, `not
+  available` when no score file was available), the section "Likely to be exploited (EPSS)" (its rows
+  that the summary counts end with `; promoted to priority 3`) and an EPSS column in the by-project and
+  dev-only tables. `ISSUES.md` and `REPORT.html` (EN, DE): an EPSS column and the reason "Likely to be
+  exploited (EPSS)". `STATUS.md` and the run summary count the promoted ones (`STATUS.md` reads `EPSS
+  not available` when no score file was available); `incident` shows the score in its evidence, the
+  `issues` query line at its end (`no EPSS` without a score).
 - Hosts: KEV findings carry the CVE's score, `vuln` findings the highest one, in `hosts.json` and
-  `HOSTS.md`. Information only: no host priority depends on it, and finding ids and texts never contain
+  `HOSTS.md` (`(KEV, no EPSS)` and ` - no EPSS` without a score). Information only: no host priority depends on it, and finding ids and texts never contain
   a score.
 
 ### Changed
-- A missing score reads `no EPSS`, never 0%; a score under 0.1% reads `<0.1%`.
+- A missing score reads `no EPSS`, never 0%; a score that rounds to 0.0% reads `<0.1%`.
 - A failed download with an older cached file uses that file: the source status is `stale` with the
   reason and the score date, and the exit code does not change. Without any file the source is failed
   (exit 2, as for KEV) and nothing is promoted.

@@ -188,6 +188,9 @@ enabled = true        # false skips the download; no EPSS field, column or rule 
 promote_at = 0.10     # a fraction from 0 to 1 (0.10 for 10%); 0 turns promotion off, scores are still shown
 ```
 
+Any other key in `[epss]` is a config error that names it (a typo such as `promote_att` would otherwise
+keep the default threshold).
+
 - Every advisory in `audit.json` gets `epss` and `epss_percentile` (null without a score), every row
   `max_epss`, and the top level `epss` (`threshold`, `available`, `score_date`, `model_version`).
   `sources.epss` holds the counts, the score date, the model version, the origin (`live`, `cache` or
@@ -198,15 +201,19 @@ promote_at = 0.10     # a fraction from 0 to 1 (0.10 for 10%); 0 turns promotion
   or above 10.0%)`: the threshold, not the score, so the title does not change every day. EPSS never
   lowers a priority.
 - `AUDIT.md` gets a method sentence under the header, the summary row "Promoted by EPSS (at or above
-  10.0%, in production or a supported release)" (or `off`), the section "Likely to be exploited (EPSS)"
-  and an EPSS column in the by-project and dev-only tables. A missing score reads `no EPSS`, never 0%; a
-  score under 0.1% reads `<0.1%`. `STATUS.md` and the run summary count the promoted ones
+  10.0%, in production or a supported release)" (or `off`, or `not available`), the section "Likely to be exploited (EPSS)"
+  and an EPSS column in the by-project and dev-only tables. The section lists every package version at or
+  above the threshold; the rows the summary counts end with `; promoted to priority 3`, the others were
+  already urgent or are not ranked like production. A missing score reads `no EPSS`, never 0%; a score
+  that rounds to 0.0% reads `<0.1%`. `STATUS.md` and the run summary count the promoted ones
   (`status.json` `counts.epss_promoted`); `REPORT.html` adds an EPSS column and the reason "Likely to be
-  exploited (EPSS)"; `incident` shows the score in its evidence, the `issues` query line at its end.
+  exploited (EPSS)"; `incident` shows the score in its evidence, the `issues` query line at its end
+  (`no EPSS` without a score).
 - **Outage.** When the download fails and an older file is cached, that file is used: the source status
   is `stale` with the reason and the date of the scores, and the exit code does not change. Without any
-  file the source is failed (exit 2, as for KEV), no finding is promoted and the EPSS section says the
-  scores were not available. A network that blocks the host should set `enabled = false`.
+  file the source is failed (exit 2, as for KEV), no finding is promoted, the EPSS section and the
+  summary row say the scores were not available, `status.json` `counts.epss_promoted` is `null` and
+  `STATUS.md` reads `EPSS not available`. A network that blocks the host should set `enabled = false`.
 - An `audit.json` without the top-level `epss` key (written by 1.3.x, or with `enabled = false`) gives
   the same reports as 1.3.1.
 
@@ -699,7 +706,8 @@ projects = ["shop-web"]              # optional: named in the report
 - Installed packages against OSV, joined to CISA KEV, with whether a fix is installable by apt. With
   `[epss] enabled` (the default), KEV findings carry the CVE's EPSS score and `vuln` findings the highest
   one (`hosts.json` `epss`, `epss_percentile`, `max_epss`, top level `epss`); `HOSTS.md` shows an EPSS line
-  under the table, `(KEV, EPSS x)` and ` - highest EPSS x`. This is information only: no host priority,
+  under the table, `(KEV, EPSS x)` and ` - highest EPSS x` (`(KEV, no EPSS)` and ` - no EPSS` without a
+  score). This is information only: no host priority,
   flag or alert depends on it, finding ids and texts never contain a score, and missing scores do not fail
   the check. When the KEV list cannot be loaded (and is not cached), every checked host gets the critical `section-failed:kev` and keeps its earlier KEV findings: an outage never reads as resolved.
 - Packages from third-party apt repositories, and known binaries outside apt against their latest GitHub release. The collector runs a binary (`caddy`, `node`, `docker-compose`) for its version only when root alone can change it: the file and every directory above it, through each symlink hop, owned by root and not group- or other-writable. Any other binary is not run and is the critical `permissive:binary-untrusted:<path>`, because whoever can change it gets root the next time root runs it. The check covers the file that is executed, not what it loads: a root-owned wrapper script that execs a binary in a user's home, or a pip-installed `docker-compose` v1 importing from a writable `dist-packages`, still passes.

@@ -44,7 +44,7 @@ class FolderDocsTest(unittest.TestCase):
         (out / "README.md").write_text("my own readme\n")
         self.assertEqual([p.name for p in evidence.write_folder_docs(out)], ["CLAUDE.md"])
         self.assertEqual((out / "README.md").read_text(), "my own readme\n")
-        # an older marker is refreshed; the template here is v3, so fake a v0 file
+        # an older marker is refreshed: fake a v0 file, older than any template
         (out / "CLAUDE.md").write_text(MARKER.format(0) + "\nold text\n")
         again = evidence.write_folder_docs(out)
         self.assertEqual([p.name for p in again], ["CLAUDE.md"])
