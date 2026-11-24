@@ -27,7 +27,7 @@ concurrency:
 
 env:
   # The sbom-audit release tag this workflow runs; bump it when you update the plugin.
-  SBOM_AUDIT_REF: "sbom-audit--v1.4.0"
+  SBOM_AUDIT_REF: "sbom-audit--v1.4.1"
   # Pinned 2026-11-09; check for newer: gh api repos/<owner>/<repo>/releases/latest --jq .tag_name
   # Each download is checked against the checksum file of its release before it is installed.
   SYFT_VERSION: "1.56.0"

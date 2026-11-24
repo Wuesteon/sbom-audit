@@ -82,9 +82,6 @@ class ReleaseTests(unittest.TestCase):
                        "epss.empiricalsecurity.com", "stale"):
             self.assertIn(needle, section, needle)
         self.assertNotIn("—", section.split("\n", 1)[1], "no em dash in the entry's text")
-        self.assertEqual(VERSION, "1.4.0")
-        template = (ROOT / "plugin" / "templates" / "github-actions" / "sbom-audit.yml").read_text()
-        self.assertIn('SBOM_AUDIT_REF: "sbom-audit--v1.4.0"', template)
 
     def test_changelog_has_1_4_1_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
@@ -95,6 +92,9 @@ class ReleaseTests(unittest.TestCase):
                        "promote_at = 0"):
             self.assertIn(needle, section, needle)
         self.assertNotIn("—", section.split("\n", 1)[1], "no em dash in the entry's text")
+        self.assertEqual(VERSION, "1.4.1")
+        template = (ROOT / "plugin" / "templates" / "github-actions" / "sbom-audit.yml").read_text()
+        self.assertIn('SBOM_AUDIT_REF: "sbom-audit--v1.4.1"', template)
 
     def test_changelog_has_1_0_0_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
