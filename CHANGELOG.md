@@ -27,6 +27,11 @@ exit code changes, and `audit.json` and `issues.json` are unchanged.
   intro says so. Before, it said "Rows marked promoted are the ones the summary counts" above a list
   with no marked row.
 
+### Documentation
+- Evals, 2026-11-24 (three runs per arm): every case at or above 0.8 with the plugin (`assess`, `hosts`,
+  `incident`, `lookup`, `run`, `setup` 1.00, `secrets` 0.96); no eval exception is recorded for 1.4.1.
+  Details in `CONTRIBUTING.md`.
+
 ## 1.4.0 — 2026-11-24
 
 EPSS scores: FIRST's daily estimate of the probability that a CVE is exploited in the next 30 days. They
