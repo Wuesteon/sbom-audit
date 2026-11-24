@@ -705,9 +705,11 @@ projects = ["shop-web"]              # optional: named in the report
 
 - Installed packages against OSV, joined to CISA KEV, with whether a fix is installable by apt. With
   `[epss] enabled` (the default), KEV findings carry the CVE's EPSS score and `vuln` findings the highest
-  one (`hosts.json` `epss`, `epss_percentile`, `max_epss`, top level `epss`); `HOSTS.md` shows an EPSS line
-  under the table, `(KEV, EPSS x)` and ` - highest EPSS x` (`(KEV, no EPSS)` and ` - no EPSS` without a
-  score). This is information only: no host priority,
+  one with the CVE that has it (`hosts.json` `epss`, `epss_percentile`, `max_epss`, `max_epss_cve`, top
+  level `epss`); `HOSTS.md` shows an EPSS line under the table and `(KEV, EPSS x)` on KEV lines. A package
+  line ends with ` - highest EPSS x (<cve>)` only when its highest score is 10% or more: a lower one is not
+  shown, and the line under the table says so. The 10% is fixed and does not read `[epss] promote_at`.
+  Without a score the lines read `(KEV, no EPSS)` and ` - no EPSS`. This is information only: no host priority,
   flag or alert depends on it, finding ids and texts never contain a score, and missing scores do not fail
   the check. When the KEV list cannot be loaded (and is not cached), every checked host gets the critical `section-failed:kev` and keeps its earlier KEV findings: an outage never reads as resolved.
 - Packages from third-party apt repositories, and known binaries outside apt against their latest GitHub release. The collector runs a binary (`caddy`, `node`, `docker-compose`) for its version only when root alone can change it: the file and every directory above it, through each symlink hop, owned by root and not group- or other-writable. Any other binary is not run and is the critical `permissive:binary-untrusted:<path>`, because whoever can change it gets root the next time root runs it. The check covers the file that is executed, not what it loads: a root-owned wrapper script that execs a binary in a user's home, or a pip-installed `docker-compose` v1 importing from a writable `dist-packages`, still passes.

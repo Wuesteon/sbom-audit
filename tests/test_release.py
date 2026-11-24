@@ -76,15 +76,25 @@ class ReleaseTests(unittest.TestCase):
 
     def test_changelog_has_1_4_0_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()
-        self.assertRegex(text, r"^# Changelog\n\n## 1\.4\.0 — 2026-11-24\n")
+        self.assertRegex(text, r"\n## 1\.4\.0 — 2026-11-24\n")
         section = text.split("## 1.4.0", 1)[1].split("\n## ", 1)[0]
         for needle in ("EPSS", "epss_production", "Upgrade note", "[epss]", "promote_at", "enabled = false",
                        "epss.empiricalsecurity.com", "stale"):
             self.assertIn(needle, section, needle)
         self.assertNotIn("—", section.split("\n", 1)[1], "no em dash in the entry's text")
-        self.assertEqual(VERSION, "1.4.0")
+
+    def test_changelog_has_1_4_1_section(self):
+        text = (ROOT / "CHANGELOG.md").read_text()
+        self.assertRegex(text, r"^# Changelog\n\n## 1\.4\.1 — 2026-11-24\n")
+        self.assertLess(text.find("## 1.4.1"), text.find("## 1.4.0"), "newest entry first")
+        section = text.split("## 1.4.1", 1)[1].split("\n## ", 1)[0]
+        for needle in ("HOSTS.md", "max_epss_cve", "no EPSS", "REPORT.html", "ISSUES.md", "AUDIT.md",
+                       "promote_at = 0"):
+            self.assertIn(needle, section, needle)
+        self.assertNotIn("—", section.split("\n", 1)[1], "no em dash in the entry's text")
+        self.assertEqual(VERSION, "1.4.1")
         template = (ROOT / "plugin" / "templates" / "github-actions" / "sbom-audit.yml").read_text()
-        self.assertIn('SBOM_AUDIT_REF: "sbom-audit--v1.4.0"', template)
+        self.assertIn('SBOM_AUDIT_REF: "sbom-audit--v1.4.1"', template)
 
     def test_changelog_has_1_0_0_section(self):
         text = (ROOT / "CHANGELOG.md").read_text()

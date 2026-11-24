@@ -631,14 +631,16 @@ class EpssTests(TmpCacheCase):
         _, kev_finding, vuln_finding = self.openssl_match(epss_scores=scores)
         self.assertEqual((kev_finding["epss"], kev_finding["epss_percentile"]), (0.9144, 0.999))
         self.assertEqual(vuln_finding["max_epss"], 0.05)
+        self.assertEqual(vuln_finding["max_epss_cve"], "CVE-2024-13176")
         self.assertNotIn("EPSS", kev_finding["text"] + kev_finding["id"] + vuln_finding["text"] + vuln_finding["id"])
         self.assertNotIn("epss", vuln_finding)
         self.assertNotIn("max_epss", kev_finding)
+        self.assertNotIn("max_epss_cve", kev_finding)
 
     def test_findings_without_epss_scores_are_unchanged(self):
         findings_before, _, _ = self.openssl_match()
         for f in findings_before:
-            self.assertFalse({"epss", "epss_percentile", "max_epss"} & set(f), f["id"])
+            self.assertFalse({"epss", "epss_percentile", "max_epss", "max_epss_cve"} & set(f), f["id"])
         findings, _, _ = self.openssl_match(epss_scores=None)
         self.assertEqual(findings, findings_before)
 
@@ -647,6 +649,7 @@ class EpssTests(TmpCacheCase):
         self.assertIsNone(kev_finding["epss"])
         self.assertIsNone(kev_finding["epss_percentile"])
         self.assertIsNone(vuln_finding["max_epss"])
+        self.assertIsNone(vuln_finding["max_epss_cve"])
 
     def test_kev_on_a_kernel_that_is_not_running_carries_epss(self):
         rec = recorded("vuln-UBUNTU-CVE-2024-1086.json")

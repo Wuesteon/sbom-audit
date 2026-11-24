@@ -22,8 +22,11 @@ Layout decisions:
   it carries are marked as from that check, and the host is never counted as clean.
 - EPSS (only when `hosts.json` has `epss`, that is when the check ran the EPSS step): one line under the
   table names the score date or says that no scores were available; with scores, KEV lines read
-  `<cve> (KEV, EPSS <score>) in ...` and `vuln` lines end with ` - highest EPSS <score>`; without a score they
-  read `(KEV, no EPSS)` and ` - no EPSS` (`epss.label`). Information only: no section, order or count depends on a score.
+  `<cve> (KEV, EPSS <score>) in ...`, and a `vuln` line whose highest score is at or above `EPSS_SHOWN_FROM`
+  ends with ` - highest EPSS <score> (<cve>)`, the CVE that has that score (no CVE for a `hosts.json` written
+  before 1.4.1); a lower highest score is not shown, and the line under the table says so. Without a score
+  they read `(KEV, no EPSS)` and ` - no EPSS` (`epss.label`): a missing score is never left out. Information
+  only: no section, order or count depends on a score.
 """
 from __future__ import annotations
 
@@ -40,6 +43,8 @@ HOSTS_MD = store.HOSTS_MD
 ADMIN_ACTIONS = ("bootstrap", "unbootstrap", "patch")
 ALWAYS_CRITICAL = ("warning", "hostkey")
 NOTE_MAX = 200
+# a package line shows its highest EPSS score from here up; fixed, because no host rule reads `[epss] promote_at`
+EPSS_SHOWN_FROM = epss.DEFAULT_THRESHOLD
 # the section order after Critical, Failed checks and Host key: (heading, groups)
 SECTIONS = [("KEV", ("kev",)), ("Patch automation", ("patch",)), ("Logins", ("login",)),
             ("Fingerprint changes", ("change",)), ("Permissive defaults", ("permissive",)),
@@ -198,7 +203,12 @@ def _line(host: str, h: dict, f: dict, decisions: dict, *, critical: bool = Fals
     else:
         parts.append(core.md(f.get("text", "")) + (f" ({fix})" if fix else ""))
     if scores and f.get("group") == "vuln":
-        parts.append(epss.label(f.get("max_epss"), "highest EPSS"))
+        top = f.get("max_epss")
+        if top is None:
+            parts.append(epss.label(None))
+        elif top >= EPSS_SHOWN_FROM:
+            cve = f.get("max_epss_cve")          # absent in a hosts.json written before 1.4.1
+            parts.append(epss.label(top, "highest EPSS") + (f" ({core.md(cve)})" if cve else ""))
     line = " - ".join(parts)
     if f.get("accepted"):
         line += " " + _accepted_note(host, f, decisions)
@@ -310,7 +320,9 @@ def _epss_line(block: dict) -> str:
     date = block.get("score_date")
     date = core.md(date[:10]) if isinstance(date, str) and date else "an unknown date"
     return (f"EPSS scores of {date} (FIRST): the probability that a CVE is exploited in the next 30 days. "
-            "Shown for information; host priorities do not depend on it.")
+            "Shown for information; host priorities do not depend on it. A package line names its highest score "
+            f"and the CVE behind it from {EPSS_SHOWN_FROM:.0%} up; a lower one is not shown, and `no EPSS` "
+            "means that none of the package's open CVEs has a score.")
 
 
 def render(doc: dict, decisions: dict) -> str:

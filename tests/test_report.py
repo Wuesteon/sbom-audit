@@ -427,6 +427,14 @@ class EpssAuditMdTests(unittest.TestCase):
         self.assertNotIn("promoted", lines["lodash@4.17.20"])       # HIGH: already urgent
         self.assertNotIn("promoted", lines["esbuild@0.17.0"])       # dev-only: not ranked like production
 
+    def test_section_says_so_when_no_listed_row_is_promoted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sec = section(self.render(Path(tmp), self.findings()), "Likely to be exploited (EPSS)")
+        self.assertIn("- **lodash@4.17.20**", sec)
+        self.assertNotIn("Rows marked promoted", sec)
+        self.assertIn("a low or missing score does not mean safe. None of the rows below is promoted: each was "
+                      "already urgent or is not ranked like production. Package versions at or above 10.0%:", sec)
+
     def test_score_exactly_at_the_threshold_is_counted_and_listed(self):
         with tempfile.TemporaryDirectory() as tmp:
             at = self.render(Path(tmp), self.findings(high=0.01, medium=0.10))

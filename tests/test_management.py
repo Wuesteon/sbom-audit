@@ -381,6 +381,21 @@ class TestEpss(ManagementTestCase):
         self.assertLess(text.index("CISA KEV catalogue answered"), text.index("EPSS scores (FIRST) answered"))
         self.assertLess(text.index("EPSS scores (FIRST) answered"), text.index("endoflife.date answered"))
 
+    def test_action_sentence_does_not_name_epss_when_promotion_is_off(self):
+        out = with_epss(full_folder(self.tmp / "security"))
+        for name in ("audit.json", "issues.json"):
+            doc = json.loads((out / name).read_text())
+            doc["epss"]["threshold"] = 0                      # [epss] promote_at = 0: scores shown, nothing promoted
+            if name == "issues.json":
+                doc["issues"] = [i for i in doc["issues"] if i["id"] != "p1"]
+            write_json(out / name, doc)
+        data = management.load(out)
+        text = text_of(management.render(data))
+        self.assertIn("(KEV, or CRITICAL/HIGH in production or a supported release): 1,", text)
+        self.assertNotIn("likely to be exploited by EPSS", text)
+        self.assertIn("<th>EPSS</th>", management.render(data))            # the scores stay
+        self.assertNotIn("laut EPSS wahrscheinlich ausgenutzt", text_of(management.render(data, lang="de")))
+
     def test_action_list_puts_likely_issues_first_as_issues_md_does(self):
         out = with_epss(full_folder(self.tmp / "security"))
         doc = json.loads((out / "issues.json").read_text())

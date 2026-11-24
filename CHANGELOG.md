@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.4.1 — 2026-11-24
+
+Display and wording fixes after the first 1.4.0 run on a real portfolio. No priority, order, count or
+exit code changes, and `audit.json` and `issues.json` are unchanged.
+
+### Changed
+- `HOSTS.md`: a package line shows its highest EPSS score only from 10% up, and names the CVE that has
+  it: ` - highest EPSS 83.2% (<cve>)`. In 1.4.0 every package line carried the figure (about 1,100 lines
+  on five hosts, almost all below 1%), and a high figure on a package with thousands of open CVEs could
+  not be checked, because the CVE was not named. A lower score is not shown. A package none of whose open
+  CVEs has a score still reads ` - no EPSS`, so a missing score is never left out; the line under the
+  table states both. The 10% is fixed and does not read `[epss] promote_at`: no host rule depends on a
+  score.
+- `hosts.json`: `vuln` findings carry `max_epss_cve` next to `max_epss` (`null` without a score). A
+  `hosts.json` written by 1.4.0 has no such field, so its high scores are shown without a CVE until the
+  next `hosts check`.
+
+### Fixed
+- `REPORT.html` (EN, DE): with `promote_at = 0` the sentence above the action list no longer says
+  ", or likely to be exploited by EPSS".
+- `ISSUES.md`: with `promote_at = 0` the sentence on the order inside a priority no longer names an EPSS
+  threshold. It reads "production comes first, then direct dependencies before transitive ones, then the
+  higher EPSS score", which is the order such a run uses.
+- `AUDIT.md`, section "Likely to be exploited (EPSS)": when none of the listed rows is promoted, the
+  intro says so. Before, it said "Rows marked promoted are the ones the summary counts" above a list
+  with no marked row.
+
+### Documentation
+- Evals, 2026-11-24 (three runs per arm): every case at or above 0.8 with the plugin (`assess`, `hosts`,
+  `incident`, `lookup`, `run`, `setup` 1.00, `secrets` 0.96); no eval exception is recorded for 1.4.1.
+  Details in `CONTRIBUTING.md`.
+
 ## 1.4.0 — 2026-11-24
 
 EPSS scores: FIRST's daily estimate of the probability that a CVE is exploited in the next 30 days. They
