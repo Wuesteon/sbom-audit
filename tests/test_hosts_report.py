@@ -246,10 +246,21 @@ class EpssTest(ReportCase):
     KEV = "kev:CVE-2024-1086:linux-image-6.8.0-45-generic@6.8.0-45.45"
     VULN = "vuln:openssl@3.0.13"
 
-    def scored(self, kev_epss=0.9144, max_epss=0.05):
+    LEGEND = ("EPSS scores of 2026-11-23 (FIRST): the probability that a CVE is exploited in the next 30 days. "
+              "Shown for information; host priorities do not depend on it. A package line names its highest score "
+              "and the CVE behind it from 10% up; a lower one is not shown, and `no EPSS` means that none of the "
+              "package's open CVEs has a score.")
+
+    def scored(self, kev_epss=0.9144, max_epss=0.05, cve="CVE-2024-13176"):
         kev = {**next(x for x in GROUPS if x["id"] == self.KEV), "epss": kev_epss, "epss_percentile": 0.999}
         vuln = {**next(x for x in GROUPS if x["id"] == self.VULN), "max_epss": max_epss}
+        if cve is not None:
+            vuln["max_epss_cve"] = cve if max_epss is not None else None
         return [kev, vuln]
+
+    def scored_md(self, **kw):
+        return self.render({**document({"box-a": entry(self.scored(**kw))}),
+                            "epss": {"available": True, "score_date": "2026-11-23T12:00:23Z"}})
 
     def line(self, md, id_):
         return next(x for x in md.splitlines() if f"`{id_}`" in x)
@@ -259,16 +270,29 @@ class EpssTest(ReportCase):
                "epss": {"available": True, "score_date": "2026-11-23T12:00:23Z"}}
         md = self.render(doc)
         self.assertIn("(KEV, EPSS 91.4%) in ", md)
-        self.assertIn(" - highest EPSS 5.0%", md)
         self.assertIn("EPSS scores of 2026-11-23 (FIRST)", md)
         self.assertIn("CVE-2024-1086 (KEV, EPSS 91.4%) in linux-image-6.8.0-45-generic 6.8.0-45.45: fix installable",
                       self.line(md, self.KEV))
-        self.assertIn("2 open CVEs, no fix installable - highest EPSS 5.0%", self.line(md, self.VULN))
-        self.assertIn("EPSS scores of 2026-11-23 (FIRST): the probability that a CVE is exploited in the next "
-                      "30 days. Shown for information; host priorities do not depend on it.", md)
+        self.assertIn(self.LEGEND, md.splitlines())
         table_end = md.index("\n\n", md.index("| Host |"))
         self.assertTrue(md[table_end:].lstrip("\n").startswith("EPSS scores of 2026-11-23 (FIRST)"))
         self.assertNotIn("\u2014", md)          # no em dash
+
+    def test_package_line_names_the_cve_behind_a_high_score(self):
+        line = self.line(self.scored_md(max_epss=0.832), self.VULN)
+        self.assertTrue(line.endswith("2 open CVEs, no fix installable - highest EPSS 83.2% (CVE-2024-13176)"), line)
+        at = self.line(self.scored_md(max_epss=0.10), self.VULN)
+        self.assertTrue(at.endswith(" - highest EPSS 10.0% (CVE-2024-13176)"), at)
+
+    def test_package_line_shows_no_score_below_ten_percent(self):
+        for low in (0.0999, 0.05, 0.0):
+            line = self.line(self.scored_md(max_epss=low), self.VULN)
+            self.assertTrue(line.endswith("2 open CVEs, no fix installable"), line)
+            self.assertNotIn("EPSS", line)
+
+    def test_high_score_from_a_check_before_1_4_1_is_shown_without_a_cve(self):
+        line = self.line(self.scored_md(max_epss=0.832, cve=None), self.VULN)
+        self.assertTrue(line.endswith(" - highest EPSS 83.2%"), line)
 
     def test_missing_score_is_no_epss_not_zero(self):
         doc = {**document({"box-a": entry(self.scored(None, None))}),

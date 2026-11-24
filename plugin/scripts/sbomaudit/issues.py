@@ -494,7 +494,10 @@ def render_md(doc: dict) -> str:
     within = ("Within a priority, direct dependencies are listed first: they are fixed in "
               if block is None else
               "Within a priority, production comes first, then findings at or above the EPSS threshold, then direct "
-              "dependencies before transitive ones, then the higher EPSS score. A direct one is fixed in ")
+              "dependencies before transitive ones, then the higher EPSS score. A direct one is fixed in "
+              if promoting else
+              "Within a priority, production comes first, then direct dependencies before transitive ones, then "
+              "the higher EPSS score. A direct one is fixed in ")
     L = [f"# Open issues {doc['generated_at'][:10]}", "",
          "What is open and where, for whoever fixes it. Derived from `audit.json`, `secrets.json` and `hosts.json`; "
          "the machine-readable list is `issues.json`. Never edit either by hand. Suppressed, decided, accepted and "

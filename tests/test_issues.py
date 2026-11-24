@@ -397,6 +397,9 @@ class EpssTest(unittest.TestCase):
         self.assertNotIn(self.SPLIT_131, on)
         off = issues.render_md(issues.build(epss_rep(*rows, epss={**EPSS, "threshold": 0}), None, None))
         self.assertIn(self.SPLIT_131 + "1, of which 1 in direct", off)
+        self.assertIn("Within a priority, production comes first, then direct dependencies before transitive ones, "
+                      "then the higher EPSS score. A direct one is fixed in your own manifest", off)
+        self.assertNotIn("EPSS threshold", off)
         plain = issues.render_md(issues.build(make_rep(production_projects=["zeta"], vulnerabilities=[
             vuln("hot", "HIGH", [("zeta", "main", "package.json", "required")])]), None, None))
         self.assertIn(self.SPLIT_131, plain)

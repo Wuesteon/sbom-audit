@@ -1205,7 +1205,7 @@ def _epss_cell(i: dict, block: dict, S: dict) -> str:
 
 
 def _action(data: dict, S: dict) -> str:
-    from . import issues
+    from . import epss, issues
     audit = data["audit"] if isinstance(data["audit"], dict) else {}
     block = audit.get("epss") if isinstance(audit.get("epss"), dict) else None   # None: EPSS did not run
     L = [f"<section><h2>{S['s_action']}</h2>"]
@@ -1231,7 +1231,7 @@ def _action(data: dict, S: dict) -> str:
     if split["total"]:
         parts = S["action_deps_split_unknown" if split["unknown"] else "action_deps_split"].format(**split)
         deps = S["action_deps"].format(n=split["total"], split=parts,
-                                       epss=S["action_deps_epss"] if block is not None else "")
+                                       epss=S["action_deps_epss"] if epss.promoting(block) else "")
         L.append(f"<p>{e(deps)}</p>")
     if urgent:
         rows = []

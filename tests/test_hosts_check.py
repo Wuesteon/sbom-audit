@@ -756,6 +756,7 @@ class EpssCheckTest(CheckCase):
         kev = by_id["kev:CVE-2024-9143:openssl@3.0.13-0ubuntu3.4"]
         self.assertEqual((kev["epss"], kev["epss_percentile"]), (0.9144, 0.999))
         self.assertEqual(by_id["vuln:openssl@3.0.13-0ubuntu3.4"]["max_epss"], 0.05)
+        self.assertEqual(by_id["vuln:openssl@3.0.13-0ubuntu3.4"]["max_epss_cve"], "CVE-2024-13176")
         self.assertEqual(store.read(self.out)["epss"], doc["epss"])
         self.assertTrue((self.out / ".cache" / "enrich" / epss.CACHE_FILE).exists())   # shared with the audit
 
@@ -778,7 +779,7 @@ class EpssCheckTest(CheckCase):
         self.assertNotIn("epss", doc)
         self.assertNotIn("epss", store.read(self.out))
         for f in self.entry(doc)["findings"]:
-            self.assertFalse({"epss", "epss_percentile", "max_epss"} & set(f), f["id"])
+            self.assertFalse({"epss", "epss_percentile", "max_epss", "max_epss_cve"} & set(f), f["id"])
 
     def test_epss_disabled_skips_the_download(self):
         cfg = self.cfg()

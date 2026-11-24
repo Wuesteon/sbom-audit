@@ -171,6 +171,17 @@ def score_of(ids, scores: Scores) -> tuple[float | None, float | None]:
     return best if best else (None, None)
 
 
+def top(ids, scores: Scores) -> tuple[str | None, float | None]:
+    """(CVE, epss) of the highest-scoring CVE among `ids`, the first in sorted order on a tie; (None, None)
+    when none has a score."""
+    best = (None, None)
+    for cve in sorted({str(i).strip().upper() for i in ids}):
+        pair = scores.get(cve)
+        if pair and (best[1] is None or pair[0] > best[1]):
+            best = (cve, pair[0])
+    return best
+
+
 def mark(findings: list[Finding], data: Epss) -> int:
     """Set v["epss"] and v["epss_percentile"] on every advisory (None without a score); returns how many
     advisories have a score."""
@@ -212,6 +223,12 @@ def likely(value: float | None, threshold: float | None) -> bool:
     """True when the score reaches a threshold that is switched on (greater than 0)."""
     return (value is not None and isinstance(threshold, (int, float)) and not isinstance(threshold, bool)
             and threshold > 0 and value >= threshold)
+
+
+def promoting(block: dict | None) -> bool:
+    """Promotion by EPSS is switched on in an `epss` block of audit.json or issues.json (`[epss] promote_at`
+    greater than 0)."""
+    return isinstance(block, dict) and likely(1.0, block.get("threshold"))
 
 
 def order(value: float | None, threshold: float | None) -> float:

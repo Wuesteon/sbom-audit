@@ -564,7 +564,7 @@ def epss_promoted(v: dict, production: set[str], threshold: float | None) -> boo
 
 def _epss_on(block: dict) -> bool:
     """Promotion by EPSS is switched on (`[epss] promote_at` greater than 0)."""
-    return epss.likely(1.0, block.get("threshold"))
+    return epss.promoting(block)
 
 
 def _epss_summary_rows(rep: dict, production: set[str]) -> list[tuple[str, object]]:
@@ -625,8 +625,10 @@ def _epss_section(vulns: list[dict], block: dict, production: set[str]) -> list[
     if not rows:
         return L + [f"{intro} None of the vulnerable package versions has an EPSS score at or above "
                     f"{epss.text(threshold)}.", ""]
-    L += [f"{intro} Rows marked promoted are the ones the summary counts; the others were already urgent or are "
-          f"not ranked like production. Package versions at or above {epss.text(threshold)}:", ""]
+    marked = ("Rows marked promoted are the ones the summary counts; the others were already urgent or are not "
+              "ranked like production." if any(epss_promoted(v, production, threshold) for v in rows) else
+              "None of the rows below is promoted: each was already urgent or is not ranked like production.")
+    L += [f"{intro} {marked} Package versions at or above {epss.text(threshold)}:", ""]
     for v in rows:
         ids = ", ".join(" ".join([s.get("id", "?")] + [c for c in s.get("cves", []) if c != s.get("id")])
                         for s in v["vulns"] if epss.likely(s.get("epss"), threshold))

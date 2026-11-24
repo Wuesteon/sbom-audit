@@ -315,7 +315,8 @@ def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
 
     With `epss_scores` (the EPSS step ran; `{}` when no score file was available) every `kev` and `info:kev:`
     finding gets `epss` and `epss_percentile` of its CVE, every `vuln` finding `max_epss`, the highest score
-    among the CVEs of its open ids; None without a score. Information only: no id, text or flag depends on it."""
+    among the CVEs of its open ids, and `max_epss_cve`, the CVE that has it; both None without a score.
+    Information only: no id, text or flag depends on it."""
     os = facts.get("os") if isinstance(facts.get("os"), dict) else None
     eco = ecosystem(os)
     if eco is None:
@@ -452,7 +453,7 @@ def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
                    "package": name, "version": version, "source": key[0], "open": len(open_keys),
                    "fixable": fixable, "candidate": candidate}
         if epss_scores is not None:
-            summary["max_epss"] = epss.score_of({_id_cve(v) for v in rest} - {None}, epss_scores)[0]
+            summary["max_epss_cve"], summary["max_epss"] = epss.top({_id_cve(v) for v in rest} - {None}, epss_scores)
         findings.append(summary)
 
     findings.sort(key=lambda f: (GROUP_ORDER[f["group"]], f["id"]))

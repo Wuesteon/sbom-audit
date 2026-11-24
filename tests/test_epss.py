@@ -120,6 +120,17 @@ class EpssTests(unittest.TestCase):
         self.assertEqual([epss.label(x) for x in (0.44, 0.0004, None)], ["EPSS 44.0%", "EPSS <0.1%", "no EPSS"])
         self.assertEqual([epss.label(x, "highest EPSS") for x in (0.123, None)], ["highest EPSS 12.3%", "no EPSS"])
 
+    def test_top_names_the_cve_behind_the_highest_score(self):
+        scores = {"CVE-2024-0001": (0.05, 0.9), "CVE-2024-0002": (0.83, 0.99), "CVE-2024-0003": (0.83, 0.99)}
+        self.assertEqual(epss.top({"CVE-2024-0003", "cve-2024-0002 ", "CVE-2024-0001", "CVE-2024-0009"}, scores),
+                         ("CVE-2024-0002", 0.83))            # a tie goes to the first id in sorted order
+        self.assertEqual(epss.top(["CVE-2024-0009"], scores), (None, None))
+        self.assertEqual(epss.top([], scores), (None, None))
+
+    def test_promoting_reads_the_threshold_of_an_epss_block(self):
+        self.assertEqual([epss.promoting(b) for b in ({"threshold": 0.1}, {"threshold": 0}, {"threshold": None},
+                                                      {}, None)], [True, False, False, False, False])
+
     def test_unpack_cap_is_64_mb(self):
         self.assertEqual(epss.MAX_UNPACKED, 64 * 1024 * 1024)
 
