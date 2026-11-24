@@ -31,8 +31,21 @@ def pkg(name, version, source=None, source_version=None, arch="amd64"):
             "source_version": source_version or version}
 
 
-def facts(packages, os=NOBLE, kernel="6.8.0-45-generic", upgradable=None):
-    return {"os": os, "kernel": kernel, "packages": packages, "upgradable": upgradable or {}}
+def facts(packages, os=NOBLE, kernel="6.8.0-45-generic", upgradable=None, origins=None):
+    return {"os": os, "kernel": kernel, "packages": packages, "upgradable": upgradable or {},
+            "origins": origins or {}}
+
+
+def origin(version, site, origin_name=None, installed=True, candidate=True):
+    """One `apt-cache policy` entry as parse() gives it: a version in a repository."""
+    return {"version": version, "origin": f"https://{site}/repo", "suite": "stable", "origin_name": origin_name,
+            "site": site, "installed": installed, "candidate": candidate}
+
+
+def dpkg_only(version):
+    """The entry of an installed version that no repository lists any more."""
+    return {"version": version, "origin": "/var/lib/dpkg/status", "suite": None, "site": None,
+            "origin_name": None, "installed": True, "candidate": False}
 
 
 SENTINEL = ("openssl", "0")
@@ -339,10 +352,98 @@ class QueryTests(TmpCacheCase):
         """The real facts shape from parse() goes through; a host without open vulns is clean."""
         osv = FakeOSV()
         f = parse.parse(collector_doc())
-        self.assertEqual(osvhost.match(f, set(), self.cache, post=osv.post, fetch=osv.fetch), ([], None))
+        findings, err = osvhost.match(f, set(), self.cache, post=osv.post, fetch=osv.fetch)
+        self.assertIsNone(err)
+        self.assertEqual([x["id"] for x in findings], ["info:third-party-packages"])
+        self.assertEqual(findings[0]["packages"], ["containerd.io", "docker-ce"])
         names = {q["package"]["name"] for q in osv.posts[0]["queries"]}
         self.assertIn("linux", names)
         self.assertNotIn("linux-signed", names)
+        self.assertFalse(names & {"containerd.io", "docker-ce"})
+
+
+NODE = pkg("nodejs", "22.11.0-1nodesource1")
+SSL = pkg("openssl", "3.0.13-0ubuntu3.4")
+# the distribution lists these as never fixed in its own build, so osv.dev returns them for any version
+NODE_IDS = ["UBUNTU-CVE-2024-27983", "UBUNTU-CVE-2024-22019"]
+THIRD_PARTY_TEXT = ("not assessed (installed from a repository outside the distribution, "
+                    "whose advisories describe only its own builds): ")
+
+
+class ThirdPartyTests(TmpCacheCase):
+    """A package whose installed version comes from a third-party repository is not looked up in the
+    distribution's advisories: they describe the distribution's build of that name, not this one."""
+
+    def run_match(self, origins, packages=(NODE, SSL), upgradable=None, kev=("CVE-2024-27983",)):
+        osv = FakeOSV(vulns={("nodejs", NODE["version"]): NODE_IDS, ("nodejs", "22.12.0-1nodesource1"): NODE_IDS},
+                      records={NODE_IDS[0]: record(NODE_IDS[0], "Ubuntu:24.04:LTS", "nodejs")})
+        result = osvhost.match(facts(list(packages), upgradable=upgradable, origins=origins), set(kev),
+                               self.cache, post=osv.post, fetch=osv.fetch)
+        queried = sorted({q["package"]["name"] for body in osv.posts for q in body["queries"]} - {"openssl"})
+        return result, queried
+
+    def test_third_party_package_is_not_matched_and_is_listed(self):
+        origins = {"nodejs": [origin("22.12.0-1nodesource1", "deb.nodesource.com", "Node Source", installed=False),
+                              origin(NODE["version"], "deb.nodesource.com", "Node Source", candidate=False)],
+                   "openssl": [origin(SSL["version"], "archive.ubuntu.com", "Ubuntu")]}
+        upgradable = {"nodejs": {"candidate": "22.12.0-1nodesource1"}}
+        (findings, err), queried = self.run_match(origins, upgradable=upgradable)
+        self.assertIsNone(err)
+        self.assertEqual(queried, [])
+        self.assertEqual(findings, [{
+            "id": "info:third-party-packages", "group": "info", "critical": False,
+            "text": THIRD_PARTY_TEXT + "nodejs (deb.nodesource.com)", "packages": ["nodejs"]}])
+
+    def test_several_third_party_packages_are_one_finding(self):
+        origins = {"nodejs": [origin(NODE["version"], "deb.nodesource.com")],
+                   "docker-ce": [origin("5:27.2.0-1", "download.docker.com", "Docker")]}
+        packages = (NODE, pkg("docker-ce", "5:27.2.0-1"), pkg("docker-ce", "5:27.2.0-1", arch="i386"), SSL)
+        (findings, err), queried = self.run_match(origins, packages)
+        self.assertIsNone(err)
+        self.assertEqual(queried, [])
+        [info] = findings
+        self.assertEqual(info["text"], THIRD_PARTY_TEXT + "docker-ce (download.docker.com), nodejs (deb.nodesource.com)")
+        self.assertEqual(info["packages"], ["docker-ce", "nodejs"])
+
+    def test_distro_packages_are_matched_as_before(self):
+        """Fail closed: only a version that every listing repository places outside the distribution is
+        left out. A provider mirror with the distribution's release name, a version only dpkg knows (a
+        superseded update), and a host without origin facts are all looked up."""
+        cases = {
+            "distro archive": {"nodejs": [origin(NODE["version"], "archive.ubuntu.com", "Ubuntu")]},
+            "provider mirror": {"nodejs": [origin(NODE["version"], "mirror.provider.example", "Ubuntu")]},
+            "distro and third-party": {"nodejs": [origin(NODE["version"], "deb.nodesource.com"),
+                                                  origin(NODE["version"], "archive.ubuntu.com", "Ubuntu")]},
+            "only dpkg knows the version": {"nodejs": [
+                dpkg_only(NODE["version"]),
+                origin("22.12.0-1nodesource1", "deb.nodesource.com", installed=False)]},
+            "no entry": {},
+        }
+        for name, origins in cases.items():
+            (findings, err), queried = self.run_match(origins)
+            self.assertIsNone(err, name)
+            self.assertEqual(queried, ["nodejs"], name)
+            self.assertEqual([f["id"] for f in findings],
+                             ["kev:CVE-2024-27983:nodejs@22.11.0-1nodesource1", "vuln:nodejs@22.11.0-1nodesource1"], name)
+
+    def test_malformed_origins_never_raise_and_never_hide_a_package(self):
+        for origins in (None, "junk", ["junk"], {"nodejs": "junk"}, {"nodejs": ["junk", None]},
+                        {"nodejs": [{"installed": True, "site": 5}]},
+                        {"nodejs": [{"installed": True, "site": ""}]},
+                        {"nodejs": [{"site": "deb.nodesource.com"}]}):
+            f = facts([NODE, SSL])
+            f["origins"] = origins
+            osv = FakeOSV(vulns={("nodejs", NODE["version"]): NODE_IDS})
+            findings, err = osvhost.match(f, set(), self.cache, post=osv.post, fetch=osv.fetch)
+            self.assertIsNone(err, origins)
+            self.assertEqual([x["id"] for x in findings], ["vuln:nodejs@22.11.0-1nodesource1"], origins)
+
+    def test_host_with_only_third_party_packages_is_not_a_failed_check(self):
+        origins = {"nodejs": [origin(NODE["version"], "deb.nodesource.com")]}
+        (findings, err), queried = self.run_match(origins, packages=(NODE,))
+        self.assertIsNone(err)
+        self.assertEqual(queried, [])
+        self.assertEqual([f["id"] for f in findings], ["info:third-party-packages"])
 
 
 KERNELS = [pkg("linux-image-6.8.0-45-generic", "6.8.0-45.45", "linux-signed"),

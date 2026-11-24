@@ -236,6 +236,18 @@ def _distro_site(site: str | None) -> bool:
     return bool(site) and any(site == d or site.endswith("." + d) for d in DISTRO_DOMAINS)
 
 
+def third_party_site(origins, name: str) -> str | None:
+    """The host name of the repository a package's installed version comes from, when no repository listing
+    that version is the distribution's. None for a distribution package, for a version only dpkg knows and
+    for origin facts that are missing or malformed: the caller then treats the package as the distribution's."""
+    entries = origins.get(name) if isinstance(origins, dict) else None
+    entries = [e for e in entries if isinstance(e, dict) and e.get("installed")
+               and isinstance(e.get("site"), str) and e["site"]] if isinstance(entries, list) else []
+    if not entries or any(_distro_entry(e) for e in entries):
+        return None
+    return entries[0]["site"]
+
+
 def third_party(facts: dict) -> list[dict]:
     findings: list[dict] = []
     origins = facts.get("origins") or {}
@@ -243,11 +255,10 @@ def third_party(facts: dict) -> list[dict]:
     for pkg in facts.get("packages") or []:
         if pkg["name"] in seen:     # multiarch: one finding per package name
             continue
-        entries = [e for e in origins.get(pkg["name"], []) if e.get("installed") and e.get("site")]
-        if not entries or any(_distro_entry(e) for e in entries):
+        site = third_party_site(origins, pkg["name"])
+        if site is None:
             continue
         seen.add(pkg["name"])
-        site = entries[0]["site"]
         candidate = next((e["version"] for e in origins[pkg["name"]] if e.get("candidate")), pkg["version"])
         text = f"{pkg['name']} {pkg['version']} from {site}"
         if candidate != pkg["version"]:
