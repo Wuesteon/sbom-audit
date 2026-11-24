@@ -34,6 +34,12 @@ distribution's advisories. Found by reading the 1.4.1 host report on a real port
   `hosts check` can change from 1 to 0. Read `info:third-party-packages` in `HOSTS.md` once after the
   upgrade and follow the vendor's advisories for the packages it names.
 
+### Documentation
+- `docs/limitations.md` has a section on host packages from outside the distribution.
+- Evals, 2026-11-24 (three runs per arm): every case at or above 0.8 with the plugin (`assess`,
+  `incident`, `lookup`, `run`, `setup` 1.00, `secrets` 0.92, `hosts` 0.83); no eval exception is recorded
+  for 1.4.2. Details in `CONTRIBUTING.md`.
+
 ## 1.4.1 — 2026-11-24
 
 Display and wording fixes after the first 1.4.0 run on a real portfolio. No priority, order, count or
