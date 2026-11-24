@@ -49,6 +49,13 @@ How a host is matched (outbound host: api.osv.dev only):
   closed); linux-libc-dev, headers and tools never count. Without any kernel image the running kernel is
   reported as not assessable.
 - Every other open vulnerability counts into one non-critical `vuln` summary per binary package.
+- A package whose installed version comes only from repositories outside the distribution
+  (`rules.third_party_site`: a vendor's apt repository, a PPA) is not queried: the ecosystem's advisories
+  describe the distribution's build of that name. An advisory the distribution never fixed has no fixed
+  version, so osv.dev returns it for every version of that name, also for the vendor's current release.
+  One `info` finding `info:third-party-packages` lists these packages as not assessed, so the gap is
+  visible. Fail closed: a version only dpkg knows, a mirror carrying the distribution's release name and
+  missing or malformed origin facts all count as the distribution's and are queried.
 """
 from __future__ import annotations
 
@@ -59,7 +66,7 @@ from pathlib import Path
 from .. import epss
 from ..cache import Cache
 from ..enrich import http_get_json, http_post_json
-from . import debver
+from . import debver, rules
 
 QUERYBATCH_URL = "https://api.osv.dev/v1/querybatch"
 VULN_URL = "https://api.osv.dev/v1/vulns/"
@@ -332,8 +339,13 @@ def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
 
     # (name, version) -> (package, query key, apt candidate (binary), candidate as source version)
     binaries: dict[tuple[str, str], tuple[dict, tuple[str, str], str | None, str | None]] = {}
+    third_party: dict[str, str] = {}       # package name -> repository host: not the distribution's build
     for p in packages:
         if not isinstance(p, dict) or not all(isinstance(p.get(f), str) and p[f] for f in ("name", "version")):
+            continue
+        site = rules.third_party_site(facts.get("origins"), p["name"])
+        if site:
+            third_party[p["name"]] = site
             continue
         source, source_version = p.get("source"), p.get("source_version")
         p = {**p, "source": source if isinstance(source, str) else None,
@@ -344,7 +356,7 @@ def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
         cand = up.get("candidate")
         candidate = cand if isinstance(cand, str) and debver.compare(cand, p["version"]) > 0 else None
         binaries.setdefault((p["name"], p["version"]), (p, key, candidate, _source_candidate(p, key, candidate)))
-    if not binaries:
+    if not binaries and not third_party:
         return [], OsvError("no dpkg packages: dpkg section missing or failed")
 
     keys = {key for _, key, _, _ in binaries.values()}
@@ -396,6 +408,12 @@ def match(facts: dict, kev: set[str], cache: Cache, post=http_post_json,
         findings.append({"id": "info:signed-sources", "group": "info", "critical": False,
                          "text": "not assessed (CVEs are tracked under the unsigned source): " + ", ".join(signed),
                          "sources": signed})
+    if third_party:
+        listed = ", ".join(f"{name} ({site})" for name, site in sorted(third_party.items()))
+        findings.append({"id": "info:third-party-packages", "group": "info", "critical": False,
+                         "text": "not assessed (installed from a repository outside the distribution, "
+                                 f"whose advisories describe only its own builds): {listed}",
+                         "packages": sorted(third_party)})
     for (name, version), (p, key, candidate, src_cand) in sorted(binaries.items()):
         open_ids = found.get(key, {})
         if not open_ids:

@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.4.2 — 2026-11-24
+
+One fix in host mode: packages from a repository outside the distribution were matched against the
+distribution's advisories. Found by reading the 1.4.1 host report on a real portfolio. Project scans,
+`audit.json` and `issues.json` are unchanged.
+
+### Fixed
+- Host mode looked up every installed package by name in the distribution's advisories on osv.dev,
+  whichever repository the installed version came from. An advisory the distribution never fixed for its
+  own build has no fixed version, so osv.dev returns it for every version of that name, also for a much
+  newer build from the vendor's own apt repository. On the portfolio this was found on, 3 package lines
+  on 3 of 5 hosts each carried the same 72 CVEs of the distribution's older build; an invented version
+  number got the same 72. A package whose installed version comes only from repositories outside the
+  distribution (a vendor's apt repository, a PPA) is no longer looked up there, neither its installed
+  nor its candidate version.
+
+### Changed
+- `HOSTS.md` and `hosts.json`: one `info` finding per host, `info:third-party-packages`, lists these
+  packages with the host name of their repository as not assessed, next to `info:signed-sources`. The
+  plugin has no advisory source for a vendor's own builds, so their CVEs are not checked at all; the
+  line says so on every check, and `docs/limitations.md` has a section on it. Their pending updates stay
+  under third-party updates as before.
+- What still counts as the distribution's and is looked up as before: a provider mirror that carries the
+  distribution's release name, a package that a distribution repository and another one both list at
+  the installed version, a version that only dpkg knows (its repository was removed from the host), and
+  a host whose origin facts are missing or malformed. So a package from a removed vendor repository can
+  still be matched wrongly.
+
+### Upgrade note
+- The next `hosts check` drops the `vuln` and `kev` findings of third-party packages. A `kev` finding
+  is critical, so a host that was critical only for such a finding no longer is, and the exit code of
+  `hosts check` can change from 1 to 0. Read `info:third-party-packages` in `HOSTS.md` once after the
+  upgrade and follow the vendor's advisories for the packages it names.
+
+### Documentation
+- `docs/limitations.md` has a section on host packages from outside the distribution.
+- Evals, 2026-11-24 (three runs per arm): every case at or above 0.8 with the plugin (`assess`,
+  `incident`, `lookup`, `run`, `setup` 1.00, `secrets` 0.92, `hosts` 0.83); no eval exception is recorded
+  for 1.4.2. Details in `CONTRIBUTING.md`.
+
 ## 1.4.1 — 2026-11-24
 
 Display and wording fixes after the first 1.4.0 run on a real portfolio. No priority, order, count or

@@ -125,6 +125,13 @@ these hold:
   **Closed in 1.3.1:** the CLI now starts the real git behind the shim (`gitio.use_real_git`); rerun
   2026-11-23: `assess` 1.00 with the plugin (3 of 3 runs) on the same host.
 
+Results for 1.4.2, 2026-11-24 (three runs per arm), with/without the plugin: `assess` 1.00/0.83,
+`hosts` 0.83/0.33, `incident` 1.00/0.75, `lookup` 1.00/0.67, `run` 1.00/0.07, `secrets` 0.92/0.50,
+`setup` 1.00/0.33 (mean Δ +0.47). No exception. The runs below 1.00: one `hosts` run (0.50) whose answer
+reported the unreachable host and that nothing was changed, as the other two did, but the judge did not
+accept its wording; two `secrets` runs (0.88) that read `SECRETS.md` with a shell command, not the Read
+tool.
+
 Results for 1.4.1, 2026-11-24 (three runs per arm), with/without the plugin: `assess` 1.00/0.83,
 `hosts` 1.00/0.33, `incident` 1.00/0.75, `lookup` 1.00/0.56, `run` 1.00/0.07, `secrets` 0.96/0.50,
 `setup` 1.00/0.33 (mean Δ +0.51). No exception. The one run below 1.00: a `secrets` run that read

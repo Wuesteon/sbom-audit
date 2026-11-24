@@ -72,6 +72,19 @@ not change: a skipped project does not make the run fail. The last line of `run`
 reads `WARNING: incomplete run: N projects not scanned (…)`, so a script that checks only the exit code
 should also look for that line (or for `projects_not_scanned` in `audit.json`).
 
+## Host mode: packages from outside the distribution
+
+Host mode checks installed Debian/Ubuntu packages against the distribution's advisories on osv.dev. Those
+describe the distribution's own builds. A package installed from another repository (a vendor's apt
+repository, a PPA) has no advisory source the plugin reads, so its CVEs are not checked. `HOSTS.md` lists
+these packages per host under `info:third-party-packages` as not assessed, and shows their pending
+updates under third-party updates. Follow the vendor's advisories for them. Up to 1.4.1 such a package
+was looked up by name in the distribution's advisories, which gave findings for a build that was not
+installed.
+
+A package whose vendor repository was removed from the host, so that only dpkg knows the installed
+version, is still looked up by name and can be matched wrongly.
+
 ## Scheduler
 
 The weekly schedule installs a launchd agent on macOS and a systemd user timer on Linux.

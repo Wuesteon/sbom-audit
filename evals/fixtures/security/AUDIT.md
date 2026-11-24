@@ -1,6 +1,6 @@
 # Dependency Audit — 2026-11-07
 
-Generated 2026-11-07T03:00:00Z by sbom-audit 1.4.1. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
+Generated 2026-11-07T03:00:00Z by sbom-audit 1.4.2. Sources: Syft SBOMs per project and branch (committed tree, not the working copy), osv-scanner against OSV.dev, CISA KEV (actively exploited), endoflife.date (runtimes and base images), npm/PyPI/JSR registries (latest versions), OpenVEX statements in `vex/`. Full data: `audit.json`; what is installed where: `INVENTORY.md`.
 
 EPSS (FIRST's exploit probability scores) never lowers a rank: it only ranks up a package version that is not KEV, CRITICAL or HIGH, in production or a supported release, whose score is at or above 10.0% (`[epss] promote_at`).
 
